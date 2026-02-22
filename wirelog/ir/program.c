@@ -222,7 +222,7 @@ collect_decl(struct wirelog_program *prog, const wl_ast_node_t *decl_node)
 
         uint32_t idx = 0;
         for (uint32_t i = 0; i < decl_node->child_count; i++) {
-            wl_ast_node_t *param = decl_node->children[i];
+            const wl_ast_node_t *param = decl_node->children[i];
             if (param->type == WL_NODE_TYPED_PARAM) {
                 rel->columns[idx].name = strdup_safe(param->name);
                 rel->columns[idx].type = type_name_to_column_type(param->type_name);
@@ -263,7 +263,7 @@ collect_input(struct wirelog_program *prog, const wl_ast_node_t *input_node)
 
         uint32_t idx = 0;
         for (uint32_t i = 0; i < input_node->child_count; i++) {
-            wl_ast_node_t *param = input_node->children[i];
+            const wl_ast_node_t *param = input_node->children[i];
             if (param->type == WL_NODE_INPUT_PARAM) {
                 rel->input_param_names[idx] = strdup_safe(param->name);
                 rel->input_param_values[idx] = strdup_safe(param->str_value);
@@ -311,11 +311,11 @@ collect_rule(struct wirelog_program *prog, const wl_ast_node_t *rule_node)
     /* rule_node: children[0] = HEAD, children[1..] = body */
     if (rule_node->child_count < 1) return -1;
 
-    wl_ast_node_t *head = rule_node->children[0];
+    const wl_ast_node_t *head = rule_node->children[0];
     if (head->type != WL_NODE_HEAD || !head->name) return -1;
 
     /* Ensure relation exists */
-    wl_relation_info_t *rel = find_relation(prog, head->name);
+    const wl_relation_info_t *rel = find_relation(prog, head->name);
     if (!rel) {
         rel = add_relation(prog, head->name);
         if (!rel) return -1;
@@ -334,7 +334,7 @@ wl_program_collect_metadata(struct wirelog_program *program,
     if (!program || !ast || ast->type != WL_NODE_PROGRAM) return -1;
 
     for (uint32_t i = 0; i < ast->child_count; i++) {
-        wl_ast_node_t *child = ast->children[i];
+        const wl_ast_node_t *child = ast->children[i];
         int rc = 0;
 
         switch (child->type) {
@@ -599,7 +599,7 @@ build_atom_scan(const wl_ast_node_t *atom,
 
     /* Collect column names from atom arguments */
     for (uint32_t i = 0; i < arg_count; i++) {
-        wl_ast_node_t *arg = atom->children[i];
+        const wl_ast_node_t *arg = atom->children[i];
         if (arg->type == WL_NODE_VARIABLE) {
             scan->column_names[i] = strdup_safe(arg->name);
             var_names[i] = strdup_safe(arg->name);
@@ -640,7 +640,7 @@ build_atom_scan(const wl_ast_node_t *atom,
 
     /* Step 1b: Intra-atom FILTER for constants */
     for (uint32_t i = 0; i < arg_count; i++) {
-        wl_ast_node_t *arg = atom->children[i];
+        const wl_ast_node_t *arg = atom->children[i];
         if (arg->type == WL_NODE_INTEGER) {
             wirelog_ir_node_t *f = wl_ir_node_create(WIRELOG_IR_FILTER);
             if (!f) continue;
@@ -717,7 +717,7 @@ convert_rule(const wl_ast_node_t *rule_node)
 
     uint32_t scan_count = 0;
     for (uint32_t i = 1; i < rule_node->child_count; i++) {
-        wl_ast_node_t *b = rule_node->children[i];
+        const wl_ast_node_t *b = rule_node->children[i];
         if (b->type == WL_NODE_ATOM) {
             scans[scan_count] = build_atom_scan(b,
                 &scan_vars[scan_count], &scan_vcounts[scan_count]);
@@ -769,7 +769,7 @@ convert_rule(const wl_ast_node_t *rule_node)
     /* ---- Step 3: FILTER for explicit comparisons ---- */
 
     for (uint32_t i = 1; i < rule_node->child_count; i++) {
-        wl_ast_node_t *b = rule_node->children[i];
+        const wl_ast_node_t *b = rule_node->children[i];
         if (b->type == WL_NODE_COMPARISON && current) {
             wirelog_ir_node_t *f = wl_ir_node_create(WIRELOG_IR_FILTER);
             if (!f) continue;
@@ -793,9 +793,9 @@ convert_rule(const wl_ast_node_t *rule_node)
     /* ---- Step 4: ANTIJOIN for negations ---- */
 
     for (uint32_t i = 1; i < rule_node->child_count; i++) {
-        wl_ast_node_t *b = rule_node->children[i];
+        const wl_ast_node_t *b = rule_node->children[i];
         if (b->type == WL_NODE_NEGATION && b->child_count >= 1 && current) {
-            wl_ast_node_t *neg_atom = b->children[0];
+            const wl_ast_node_t *neg_atom = b->children[0];
             if (neg_atom->type != WL_NODE_ATOM) continue;
 
             char **neg_vars = NULL;
@@ -823,7 +823,7 @@ convert_rule(const wl_ast_node_t *rule_node)
     /* ---- Step 5: PROJECT or AGGREGATE for head ---- */
 
     bool has_agg = false;
-    wl_ast_node_t *agg_node = NULL;
+    const wl_ast_node_t *agg_node = NULL;
     uint32_t non_agg_count = 0;
 
     for (uint32_t i = 0; i < head->child_count; i++) {
@@ -910,7 +910,7 @@ wl_program_convert_rules(struct wirelog_program *program,
     uint32_t rule_idx = 0;
 
     for (uint32_t i = 0; i < ast->child_count; i++) {
-        wl_ast_node_t *child = ast->children[i];
+        const wl_ast_node_t *child = ast->children[i];
         if (child->type != WL_NODE_RULE) continue;
 
         if (rule_idx >= program->rule_count) return -1;
