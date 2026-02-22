@@ -59,8 +59,6 @@ message('  Threading: ' + threads_option)
 # Dependencies
 # ============================================================================
 
-# Standard C library
-libc_dep = cc.find_library('c', required: true)
 
 # Rust FFI (Differential Dataflow)
 # Note: In Phase 0, we need to define how Rust FFI will be integrated
