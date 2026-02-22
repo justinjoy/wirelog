@@ -159,34 +159,3 @@ jobs:
           ASAN_OPTIONS: abort_on_error=1:halt_on_error=1
           UBSAN_OPTIONS: abort_on_error=1:halt_on_error=1:print_stacktrace=1
 
-  # ==========================================================================
-  # Job 3: Static Analysis
-  # ==========================================================================
-  analysis:
-    name: Static Analysis
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y meson ninja-build cppcheck clang-tools
-
-      - name: cppcheck
-        run: >
-          cppcheck
-          --enable=warning,style,performance,portability
-          --std=c11
-          --error-exitcode=1
-          --suppress=missingIncludeSystem
-          --inline-suppr
-          -I wirelog
-          wirelog/
-
-      - name: scan-build
-        run: |
-          meson setup builddir-scan
-          scan-build --status-bugs meson compile -C builddir-scan
-        env:
-          CC: clang

@@ -1,5 +1,8 @@
 # wirelog
 
+[![CI](https://github.com/justinjoy/wirelog/actions/workflows/ci.yml/badge.svg)](https://github.com/justinjoy/wirelog/actions/workflows/ci.yml)
+[![Static Analysis](https://img.shields.io/github/actions/workflow/status/justinjoy/wirelog/static-analysis.yml?label=static%20analysis)](https://github.com/justinjoy/wirelog/actions/workflows/static-analysis.yml)
+
 **Embedded-to-Enterprise Datalog Engine**
 
 wirelog is a C11-based Datalog engine designed to work seamlessly across embedded systems and enterprise environments. It uses Differential Dataflow for execution and can optionally be optimized with nanoarrow columnar memory for embedded deployments.

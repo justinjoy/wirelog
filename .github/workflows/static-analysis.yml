@@ -1,0 +1,48 @@
+name: Static Analysis
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  cppcheck:
+    name: cppcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cppcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cppcheck
+
+      - name: Run cppcheck
+        run: >
+          cppcheck
+          --enable=warning,style,performance,portability
+          --std=c11
+          --error-exitcode=1
+          --suppress=missingIncludeSystem
+          --inline-suppr
+          -I wirelog
+          wirelog/
+
+  scan-build:
+    name: scan-build (Clang)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y meson ninja-build clang-tools
+
+      - name: Run scan-build
+        run: |
+          meson setup builddir-scan
+          scan-build --status-bugs meson compile -C builddir-scan
+        env:
+          CC: clang
