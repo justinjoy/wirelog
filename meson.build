@@ -5,7 +5,7 @@ project(
   license: 'LGPL-3.0',
   meson_version: '>=0.62.0',
   default_options: [
-    'c_std=c99',
+    'c_std=c11',
     'buildtype=release',
     'optimization=s',
     'b_lto=true',

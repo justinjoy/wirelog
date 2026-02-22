@@ -15,7 +15,7 @@
 2. **FPGA 가속 준비**: 무거운 라이브러리 없이 미래에 FPGA 가속으로 연산 오프로드 가능
 3. **철저한 레이어링**: 계층 분리로 향후 최적화 유연성 확보
 4. **nanoarrow 후순위**: 초기에는 불필요, 임베디드 최적화 단계에서 추가
-5. **C99 기반**: C11 대신 C99 사용 (더 넓은 호환성)
+5. **C11 기반**: C11 사용 (넓은 호환성 + _Static_assert, stdatomic 등 현대적 기능)
 
 ---
 
@@ -25,7 +25,7 @@
 
 **초기 (Phase 0-3): 모두 DD 기반**
 ```
-wirelog 코어 (C99)
+wirelog 코어 (C11)
 ├─ Parser (Datalog → IR)
 ├─ Optimizer (Logic Fusion, JPP, SIP, etc.)
 └─ DD Executor (Rust FFI)
@@ -43,12 +43,12 @@ wirelog 코어 (C99)
 
 **중기 (Phase 4+): 선택적 최적화**
 ```
-wirelog 코어 (C99)
+wirelog 코어 (C11)
     └─ Backend Abstraction (선택)
         │
         ├─ [Embedded Path]
         │   ├─ nanoarrow 메모리 (columnar, 선택적)
-        │   ├─ Semi-naive executor (C99)
+        │   ├─ Semi-naive executor (C11)
         │   └─ 500KB-2MB 독립 바이너리
         │
         ├─ [Enterprise Path]
@@ -99,7 +99,7 @@ wirelog 코어 (C99)
 
 **Phase 0-3: DD 기반 구현**
 ```
-wirelog (C99 parser/optimizer)
+wirelog (C11 parser/optimizer)
     ↓ (IR를 DD operator graph로 변환)
 Differential Dataflow (Rust executor, 독립)
     ↓
@@ -109,14 +109,14 @@ Result
 **이점**:
 - 입증된 성능 (Differential Dataflow의 증분 처리)
 - DD의 멀티 워커, 분산 처리 즉시 활용
-- wirelog는 파서/최적화만 C99로 구현
+- wirelog는 파서/최적화만 C11로 구현
 - 임베디드 + 엔터프라이즈 동일 기반에서 시작
 - 나중에 임베디드만 선택적으로 nanoarrow로 마이그레이션 가능
 
 **실행 경로** (모든 환경):
 ```
 초기 (Phase 0-3, Month 1-5):
-  wirelog (C99 파서/최적화)
+  wirelog (C11 파서/최적화)
       ↓
   IR → DD operator graph (변환)
       ↓
@@ -132,9 +132,9 @@ Result
 **선택적 최적화 경로** (Phase 4+):
 ```
 임베디드 환경만 (선택사항):
-  wirelog (C99 파서/최적화)
+  wirelog (C11 파서/최적화)
       ↓
-  nanoarrow executor (C99, 완전 독립)
+  nanoarrow executor (C11, 완전 독립)
       ↓
   Result (500KB-2MB 바이너리)
 
@@ -142,7 +142,7 @@ Result
   (DD 경로 유지, 변경 없음)
 
 FPGA 가속 (미래):
-  wirelog (C99 파서/최적화)
+  wirelog (C11 파서/최적화)
       ↓
   ComputeBackend abstraction
       ↓
@@ -165,7 +165,7 @@ FPGA 가속 (미래):
 └──────────────────┬──────────────────────────────────┘
                    │
 ┌──────────────────▼──────────────────────────────────┐
-│ Logic Layer (wirelog core) - C99                    │
+│ Logic Layer (wirelog core) - C11                    │
 │ - Parser (hand-written RDP, Datalog → AST)         │
 │ - IR Representation (backend-agnostic structs)      │
 │ - Optimizer (Logic Fusion, JPP, SIP, Subplan)      │
@@ -173,7 +173,7 @@ FPGA 가속 (미래):
 └──────────────────┬──────────────────────────────────┘
                    │
 ┌──────────────────▼──────────────────────────────────┐
-│ DD Translator (C99 ↔ Rust FFI)                      │
+│ DD Translator (C11 ↔ Rust FFI)                      │
 │ - IR → DD operator graph conversion                 │
 │ - Result collection from DD runtime                 │
 │ - Data marshalling                                  │
@@ -194,19 +194,19 @@ FPGA 가속 (미래):
 ### 2.1b 계층 구조 (Phase 3+: 선택적 임베디드 최적화)
 
 ```
-wirelog core (C99)
+wirelog core (C11)
     ├─ [Enterprise: DD 유지]
     │   └─ Differential Dataflow (변경 없음)
     │
     └─ [Embedded: 선택적 마이그레이션]
         └─ ComputeBackend abstraction
-            ├─ nanoarrow executor (C99)
+            ├─ nanoarrow executor (C11)
             └─ (미래) FPGA backend via Arrow IPC
 ```
 
 ### 2.2 각 레이어의 책임 (Phase 0-3)
 
-#### Logic Layer (wirelog 핵심, C99)
+#### Logic Layer (wirelog 핵심, C11)
 
 **파일 구조**:
 ```
@@ -231,14 +231,14 @@ wirelog/
 - DD와 독립적 설계
 
 **Phase 0 구현 상태**:
-- ✅ Parser 구현 (hand-written RDP, C99)
+- ✅ Parser 구현 (hand-written RDP, C11)
 - ✅ 파서 테스트: 91/91 passing (47 lexer + 44 parser)
 - ✅ Grammar: FlowLog-compatible (declarations, rules, negation, aggregation, arithmetic, comparisons, booleans, .plan marker)
 - 🔄 IR 표현 정의 (진행 중)
 - 🔄 Stratification & SCC 감지 (계획됨)
 - 🔄 최적화 passes (계획됨)
 
-#### DD Translator (C99 ↔ Rust FFI)
+#### DD Translator (C11 ↔ Rust FFI)
 
 **파일** (계획):
 ```
@@ -282,7 +282,7 @@ src/
 
 **이 때 추가될 레이어** (계획):
 
-#### ComputeBackend Abstraction (C99)
+#### ComputeBackend Abstraction (C11)
 
 ```c
 typedef struct {
@@ -295,7 +295,7 @@ typedef struct {
 } ComputeBackend;
 ```
 
-#### nanoarrow Executor (C99, 선택)
+#### nanoarrow Executor (C11, 선택)
 
 - Sort-merge join on columnar data
 - Semi-naive delta propagation
@@ -312,13 +312,13 @@ typedef struct {
 
 ### Phase 0: 기초 (Weeks 1-4) - 모든 환경 DD 기반
 
-**목표**: C99 파서/최적화 + DD 변환기로 동작하는 초기 버전
+**목표**: C11 파서/최적화 + DD 변환기로 동작하는 초기 버전
 
 **구현 항목**:
-- ✅ C99 파서 (Datalog → AST, hand-written RDP)
+- ✅ C11 파서 (Datalog → AST, hand-written RDP)
 - ✅ 파서 테스트 (91/91 passing)
 - ✅ FlowLog-compatible grammar 구현
-- ✅ 빌드 시스템 (Meson, C99)
+- ✅ 빌드 시스템 (Meson, C11)
 - 🔄 IR 표현 정의 (backend-agnostic)
 - 🔄 Stratification & SCC 감지
 - 🔄 IR → DD operator graph 변환기
@@ -395,7 +395,7 @@ typedef struct {
 
 | 계층 | 선택 | 상태 | 근거 |
 |------|------|------|------|
-| **언어** | C99 | ✅ 확정 | 최소 의존성, 임베디드 친화, 호환성 |
+| **언어** | C11 | ✅ 확정 | 최소 의존성, 임베디드 친화, 호환성 |
 | **빌드** | Meson | ✅ 확정 | Cross-compile 우수, 경량 |
 | **Parser** | Hand-written RDP | ✅ 구현됨 | Zero deps, 91/91 tests passing |
 | **메모리** | nanoarrow (중기) | 계획 | Columnar, Arrow interop |

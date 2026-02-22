@@ -15,7 +15,7 @@
 2. **FPGA Acceleration Ready**: Lightweight design enabling future FPGA acceleration without heavy libraries
 3. **Strict Layering**: Layer separation for future optimization flexibility
 4. **nanoarrow Deferred**: Not needed initially; added during embedded optimization phase
-5. **C99 Foundation**: C99 instead of C11 for broader compatibility
+5. **C11 Foundation**: C11 for broad compatibility and modern features (_Static_assert, stdatomic)
 
 ---
 
@@ -25,7 +25,7 @@
 
 **Initial Phase (0-3): All DD-based**
 ```
-wirelog core (C99)
+wirelog core (C11)
 ├─ Parser (Datalog → IR)
 ├─ Optimizer (Logic Fusion, JPP, SIP, etc.)
 └─ DD Executor (Rust FFI)
@@ -43,12 +43,12 @@ wirelog core (C99)
 
 **Mid-term (Phase 4+): Selective Optimization**
 ```
-wirelog core (C99)
+wirelog core (C11)
     └─ Backend Abstraction (optional)
         │
         ├─ [Embedded Path]
         │   ├─ nanoarrow memory (columnar, optional)
-        │   ├─ Semi-naive executor (C99)
+        │   ├─ Semi-naive executor (C11)
         │   └─ 500KB-2MB standalone binary
         │
         ├─ [Enterprise Path]
@@ -99,7 +99,7 @@ wirelog core (C99)
 
 **Phase 0-3: DD-based Implementation**
 ```
-wirelog (C99 parser/optimizer)
+wirelog (C11 parser/optimizer)
     ↓ (IR → DD operator graph conversion)
 Differential Dataflow (Rust executor, standalone)
     ↓
@@ -109,14 +109,14 @@ Result
 **Advantages**:
 - Proven performance (Differential Dataflow's incremental computation)
 - Immediate access to DD's multi-worker, distributed processing
-- wirelog implements only parser/optimizer in C99
+- wirelog implements only parser/optimizer in C11
 - Embedded + enterprise start from the same foundation
 - Embedded can selectively migrate to nanoarrow later
 
 **Execution Path** (all environments):
 ```
 Initial (Phase 0-3, Months 1-5):
-  wirelog (C99 parser/optimizer)
+  wirelog (C11 parser/optimizer)
       ↓
   IR → DD operator graph (conversion)
       ↓
@@ -132,9 +132,9 @@ Initial (Phase 0-3, Months 1-5):
 **Selective Optimization Path** (Phase 4+):
 ```
 Embedded only (optional):
-  wirelog (C99 parser/optimizer)
+  wirelog (C11 parser/optimizer)
       ↓
-  nanoarrow executor (C99, fully standalone)
+  nanoarrow executor (C11, fully standalone)
       ↓
   Result (500KB-2MB binary)
 
@@ -142,7 +142,7 @@ Enterprise:
   (DD path retained, no changes)
 
 FPGA acceleration (future):
-  wirelog (C99 parser/optimizer)
+  wirelog (C11 parser/optimizer)
       ↓
   ComputeBackend abstraction
       ↓
@@ -165,7 +165,7 @@ FPGA acceleration (future):
 └──────────────────┬──────────────────────────────────┘
                    │
 ┌──────────────────▼──────────────────────────────────┐
-│ Logic Layer (wirelog core) - C99                    │
+│ Logic Layer (wirelog core) - C11                    │
 │ - Parser (hand-written RDP, Datalog → AST)         │
 │ - IR Representation (backend-agnostic structs)      │
 │ - Optimizer (Logic Fusion, JPP, SIP, Subplan)      │
@@ -173,7 +173,7 @@ FPGA acceleration (future):
 └──────────────────┬──────────────────────────────────┘
                    │
 ┌──────────────────▼──────────────────────────────────┐
-│ DD Translator (C99 ↔ Rust FFI)                      │
+│ DD Translator (C11 ↔ Rust FFI)                      │
 │ - IR → DD operator graph conversion                 │
 │ - Result collection from DD runtime                 │
 │ - Data marshalling                                  │
@@ -194,19 +194,19 @@ FPGA acceleration (future):
 ### 2.1b Layer Structure (Phase 3+: Selective Embedded Optimization)
 
 ```
-wirelog core (C99)
+wirelog core (C11)
     ├─ [Enterprise: DD retained]
     │   └─ Differential Dataflow (no changes)
     │
     └─ [Embedded: Selective migration]
         └─ ComputeBackend abstraction
-            ├─ nanoarrow executor (C99)
+            ├─ nanoarrow executor (C11)
             └─ (future) FPGA backend via Arrow IPC
 ```
 
 ### 2.2 Layer Responsibilities (Phase 0-3)
 
-#### Logic Layer (wirelog core, C99)
+#### Logic Layer (wirelog core, C11)
 
 **File Structure**:
 ```
@@ -231,14 +231,14 @@ wirelog/
 - DD-independent design
 
 **Phase 0 Implementation Status**:
-- ✅ Parser implemented (hand-written RDP, C99)
+- ✅ Parser implemented (hand-written RDP, C11)
 - ✅ Parser tests: 91/91 passing (47 lexer + 44 parser)
 - ✅ Grammar: FlowLog-compatible (declarations, rules, negation, aggregation, arithmetic, comparisons, booleans, .plan marker)
 - 🔄 IR representation definition (in progress)
 - 🔄 Stratification & SCC detection (planned)
 - 🔄 Optimization passes (planned)
 
-#### DD Translator (C99 ↔ Rust FFI)
+#### DD Translator (C11 ↔ Rust FFI)
 
 **Files** (planned):
 ```
@@ -282,7 +282,7 @@ src/
 
 **Layers to be added** (planned):
 
-#### ComputeBackend Abstraction (C99)
+#### ComputeBackend Abstraction (C11)
 
 ```c
 typedef struct {
@@ -295,7 +295,7 @@ typedef struct {
 } ComputeBackend;
 ```
 
-#### nanoarrow Executor (C99, optional)
+#### nanoarrow Executor (C11, optional)
 
 - Sort-merge join on columnar data
 - Semi-naive delta propagation
@@ -312,13 +312,13 @@ typedef struct {
 
 ### Phase 0: Foundation (Weeks 1-4) - All environments DD-based
 
-**Goal**: Initial version with C99 parser/optimizer + DD translator
+**Goal**: Initial version with C11 parser/optimizer + DD translator
 
 **Implementation Items**:
-- ✅ C99 parser (Datalog → AST, hand-written RDP)
+- ✅ C11 parser (Datalog → AST, hand-written RDP)
 - ✅ Parser tests (91/91 passing)
 - ✅ FlowLog-compatible grammar implementation
-- ✅ Build system (Meson, C99)
+- ✅ Build system (Meson, C11)
 - 🔄 IR representation definition (backend-agnostic)
 - 🔄 Stratification & SCC detection
 - 🔄 IR → DD operator graph translator
@@ -395,7 +395,7 @@ typedef struct {
 
 | Layer | Choice | Status | Rationale |
 |-------|--------|--------|-----------|
-| **Language** | C99 | ✅ Confirmed | Minimal dependencies, embedded-friendly, compatibility |
+| **Language** | C11 | ✅ Confirmed | Minimal dependencies, embedded-friendly, compatibility |
 | **Build** | Meson | ✅ Confirmed | Excellent cross-compile, lightweight |
 | **Parser** | Hand-written RDP | ✅ Implemented | Zero deps, 91/91 tests passing |
 | **Memory** | nanoarrow (mid-term) | Planned | Columnar, Arrow interop |

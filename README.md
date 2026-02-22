@@ -2,7 +2,7 @@
 
 **Embedded-to-Enterprise Datalog Engine**
 
-wirelog is a C99-based Datalog engine designed to work seamlessly across embedded systems and enterprise environments. It uses Differential Dataflow for execution and can optionally be optimized with nanoarrow columnar memory for embedded deployments.
+wirelog is a C11-based Datalog engine designed to work seamlessly across embedded systems and enterprise environments. It uses Differential Dataflow for execution and can optionally be optimized with nanoarrow columnar memory for embedded deployments.
 
 ## Features
 
@@ -11,7 +11,7 @@ wirelog is a C99-based Datalog engine designed to work seamlessly across embedde
 - **Datalog Optimization**: Logic Fusion, Join-Project-Plan, Subplan Sharing, Boolean Specialization
 - **Layered Architecture**: Clean separation of Logic, Execution, and I/O
 - **FPGA-Ready**: Designed for future hardware acceleration via Arrow IPC
-- **Minimal Dependencies**: C99 + Meson build system
+- **Minimal Dependencies**: C11 + Meson build system
 
 ## Status
 
@@ -26,7 +26,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for design details.
 git clone https://github.com/justinjoy/wirelog.git
 cd wirelog
 
-# Build (requires Meson + C99 compiler + Rust)
+# Build (requires Meson + C11 compiler + Rust)
 meson setup builddir
 cd builddir
 meson compile
@@ -56,7 +56,7 @@ wirelog/
 ### Phase 0-3: All Environments on Differential Dataflow
 
 ```
-wirelog (C99 parser/optimizer)
+wirelog (C11 parser/optimizer)
     ↓
 IR → DD operator graph
     ↓
@@ -71,7 +71,7 @@ Results (all environments)
 ### Phase 3+: Optional Embedded Optimization
 
 ```
-wirelog (C99 parser/optimizer)
+wirelog (C11 parser/optimizer)
     ├─ Enterprise: Differential Dataflow (unchanged)
     └─ Embedded: nanoarrow executor (optional)
 ```
@@ -80,7 +80,7 @@ For details, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Technology Stack
 
-- **Language**: C99
+- **Language**: C11
 - **Build**: Meson
 - **Execution** (Phase 0-3): Differential Dataflow (Rust)
 - **Memory** (Phase 3+): nanoarrow (optional)

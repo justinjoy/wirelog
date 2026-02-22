@@ -37,7 +37,7 @@ Enhancement suggestions are tracked as GitHub issues. When creating an enhanceme
 ### Pull Requests
 
 1. Fork the repo and create your branch from `main`.
-2. Ensure you have the `meson` build system installed, along with a C99 compiler and Rust (for Differential Dataflow).
+2. Ensure you have the `meson` build system installed, along with a C11 compiler and Rust (for Differential Dataflow).
 3. Build the project:
    ```bash
    meson setup builddir
@@ -53,7 +53,7 @@ Enhancement suggestions are tracked as GitHub issues. When creating an enhanceme
 
 ## Styleguides
 
-* Use C99 standard features for C code.
+* Use C11 standard features for C code.
 * Write clear, self-documenting code.
 * Add comments for complex logic or design decisions.
 * When adding documentation or updating existing texts, adhere to Markdown formatting.
