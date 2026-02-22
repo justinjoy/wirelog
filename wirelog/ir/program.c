@@ -422,3 +422,506 @@ wl_program_build_default_stratum(struct wirelog_program *program)
         }
     }
 }
+
+/* ======================================================================== */
+/* Pass 2: AST-to-IR Rule Conversion                                        */
+/* ======================================================================== */
+
+/* ---- Expression Conversion (AST expr -> IR expr) ---- */
+
+static wl_ir_expr_t*
+convert_expr(const wl_ast_node_t *node)
+{
+    if (!node) return NULL;
+
+    switch (node->type) {
+    case WL_NODE_VARIABLE: {
+        wl_ir_expr_t *e = wl_ir_expr_create(WL_IR_EXPR_VAR);
+        if (e) e->var_name = strdup_safe(node->name);
+        return e;
+    }
+    case WL_NODE_INTEGER: {
+        wl_ir_expr_t *e = wl_ir_expr_create(WL_IR_EXPR_CONST_INT);
+        if (e) e->int_value = node->int_value;
+        return e;
+    }
+    case WL_NODE_STRING: {
+        wl_ir_expr_t *e = wl_ir_expr_create(WL_IR_EXPR_CONST_STR);
+        if (e) e->str_value = strdup_safe(node->str_value);
+        return e;
+    }
+    case WL_NODE_BINARY_EXPR: {
+        wl_ir_expr_t *e = wl_ir_expr_create(WL_IR_EXPR_ARITH);
+        if (!e) return NULL;
+        e->arith_op = node->arith_op;
+        if (node->child_count >= 2) {
+            wl_ir_expr_add_child(e, convert_expr(node->children[0]));
+            wl_ir_expr_add_child(e, convert_expr(node->children[1]));
+        }
+        return e;
+    }
+    case WL_NODE_COMPARISON: {
+        wl_ir_expr_t *e = wl_ir_expr_create(WL_IR_EXPR_CMP);
+        if (!e) return NULL;
+        e->cmp_op = node->cmp_op;
+        if (node->child_count >= 2) {
+            wl_ir_expr_add_child(e, convert_expr(node->children[0]));
+            wl_ir_expr_add_child(e, convert_expr(node->children[1]));
+        }
+        return e;
+    }
+    case WL_NODE_AGGREGATE: {
+        wl_ir_expr_t *e = wl_ir_expr_create(WL_IR_EXPR_AGG);
+        if (!e) return NULL;
+        e->agg_fn = node->agg_fn;
+        if (node->child_count >= 1) {
+            wl_ir_expr_add_child(e, convert_expr(node->children[0]));
+        }
+        return e;
+    }
+    case WL_NODE_BOOLEAN: {
+        wl_ir_expr_t *e = wl_ir_expr_create(WL_IR_EXPR_BOOL);
+        if (e) e->bool_value = node->bool_value;
+        return e;
+    }
+    default:
+        return NULL;
+    }
+}
+
+/* ---- Variable Name Tracking Helpers ---- */
+
+static void
+free_var_names(char **names, uint32_t count)
+{
+    if (!names) return;
+    for (uint32_t i = 0; i < count; i++) {
+        free(names[i]);
+    }
+    free(names);
+}
+
+static char**
+merge_var_names(char **left, uint32_t left_count,
+                char **right, uint32_t right_count,
+                uint32_t *out_count)
+{
+    uint32_t max_count = left_count + right_count;
+    char **merged = (char **)calloc(max_count > 0 ? max_count : 1, sizeof(char *));
+    if (!merged) { *out_count = 0; return NULL; }
+
+    uint32_t count = 0;
+
+    for (uint32_t i = 0; i < left_count; i++) {
+        if (!left[i]) continue;
+        bool dup = false;
+        for (uint32_t j = 0; j < count; j++) {
+            if (merged[j] && strcmp(merged[j], left[i]) == 0) { dup = true; break; }
+        }
+        if (!dup) merged[count++] = strdup_safe(left[i]);
+    }
+
+    for (uint32_t i = 0; i < right_count; i++) {
+        if (!right[i]) continue;
+        bool dup = false;
+        for (uint32_t j = 0; j < count; j++) {
+            if (merged[j] && strcmp(merged[j], right[i]) == 0) { dup = true; break; }
+        }
+        if (!dup) merged[count++] = strdup_safe(right[i]);
+    }
+
+    *out_count = count;
+    return merged;
+}
+
+/* ---- Join Key Extraction ---- */
+
+static void
+setup_join_keys(char **left_vars, uint32_t left_count,
+                char **right_vars, uint32_t right_count,
+                wirelog_ir_node_t *join)
+{
+    /* Count shared variables (exclude NULL = wildcard/constant) */
+    uint32_t key_count = 0;
+    for (uint32_t i = 0; i < left_count; i++) {
+        if (!left_vars[i]) continue;
+        for (uint32_t j = 0; j < right_count; j++) {
+            if (!right_vars[j]) continue;
+            if (strcmp(left_vars[i], right_vars[j]) == 0) {
+                key_count++;
+                break;
+            }
+        }
+    }
+
+    if (key_count == 0) return;
+
+    join->join_left_keys = (char **)calloc(key_count, sizeof(char *));
+    join->join_right_keys = (char **)calloc(key_count, sizeof(char *));
+    if (!join->join_left_keys || !join->join_right_keys) return;
+    join->join_key_count = key_count;
+
+    uint32_t k = 0;
+    for (uint32_t i = 0; i < left_count; i++) {
+        if (!left_vars[i]) continue;
+        for (uint32_t j = 0; j < right_count; j++) {
+            if (!right_vars[j]) continue;
+            if (strcmp(left_vars[i], right_vars[j]) == 0) {
+                join->join_left_keys[k] = strdup_safe(left_vars[i]);
+                join->join_right_keys[k] = strdup_safe(right_vars[j]);
+                k++;
+                break;
+            }
+        }
+    }
+}
+
+/* ---- Scan Building with Intra-atom Filters ---- */
+
+static wirelog_ir_node_t*
+build_atom_scan(const wl_ast_node_t *atom,
+                char ***out_var_names, uint32_t *out_var_count)
+{
+    wirelog_ir_node_t *scan = wl_ir_node_create(WIRELOG_IR_SCAN);
+    if (!scan) return NULL;
+
+    wl_ir_node_set_relation(scan, atom->name);
+
+    uint32_t arg_count = atom->child_count;
+    scan->column_names = (char **)calloc(arg_count > 0 ? arg_count : 1, sizeof(char *));
+    scan->column_count = arg_count;
+
+    char **var_names = (char **)calloc(arg_count > 0 ? arg_count : 1, sizeof(char *));
+    if (!scan->column_names || !var_names) {
+        free(var_names);
+        wl_ir_node_free(scan);
+        return NULL;
+    }
+
+    /* Collect column names from atom arguments */
+    for (uint32_t i = 0; i < arg_count; i++) {
+        wl_ast_node_t *arg = atom->children[i];
+        if (arg->type == WL_NODE_VARIABLE) {
+            scan->column_names[i] = strdup_safe(arg->name);
+            var_names[i] = strdup_safe(arg->name);
+        } else {
+            /* Wildcard, integer, string -> NULL (anonymous position) */
+            scan->column_names[i] = NULL;
+            var_names[i] = NULL;
+        }
+    }
+
+    wirelog_ir_node_t *result = scan;
+
+    /* Step 1a: Intra-atom FILTER for duplicate variables */
+    for (uint32_t i = 0; i < arg_count; i++) {
+        if (!var_names[i]) continue;
+        for (uint32_t j = i + 1; j < arg_count; j++) {
+            if (!var_names[j]) continue;
+            if (strcmp(var_names[i], var_names[j]) == 0) {
+                wirelog_ir_node_t *f = wl_ir_node_create(WIRELOG_IR_FILTER);
+                if (!f) continue;
+
+                wl_ir_expr_t *cmp = wl_ir_expr_create(WL_IR_EXPR_CMP);
+                if (cmp) {
+                    cmp->cmp_op = WL_CMP_EQ;
+                    wl_ir_expr_t *lhs = wl_ir_expr_create(WL_IR_EXPR_VAR);
+                    if (lhs) lhs->var_name = strdup_safe(var_names[i]);
+                    wl_ir_expr_t *rhs = wl_ir_expr_create(WL_IR_EXPR_VAR);
+                    if (rhs) rhs->var_name = strdup_safe(var_names[j]);
+                    wl_ir_expr_add_child(cmp, lhs);
+                    wl_ir_expr_add_child(cmp, rhs);
+                }
+                f->filter_expr = cmp;
+                wl_ir_node_add_child(f, result);
+                result = f;
+            }
+        }
+    }
+
+    /* Step 1b: Intra-atom FILTER for constants */
+    for (uint32_t i = 0; i < arg_count; i++) {
+        wl_ast_node_t *arg = atom->children[i];
+        if (arg->type == WL_NODE_INTEGER) {
+            wirelog_ir_node_t *f = wl_ir_node_create(WIRELOG_IR_FILTER);
+            if (!f) continue;
+
+            wl_ir_expr_t *cmp = wl_ir_expr_create(WL_IR_EXPR_CMP);
+            if (cmp) {
+                cmp->cmp_op = WL_CMP_EQ;
+                wl_ir_expr_t *lhs = wl_ir_expr_create(WL_IR_EXPR_VAR);
+                if (lhs) {
+                    char col[32];
+                    snprintf(col, sizeof(col), "col%u", i);
+                    lhs->var_name = strdup_safe(col);
+                }
+                wl_ir_expr_t *rhs = wl_ir_expr_create(WL_IR_EXPR_CONST_INT);
+                if (rhs) rhs->int_value = arg->int_value;
+                wl_ir_expr_add_child(cmp, lhs);
+                wl_ir_expr_add_child(cmp, rhs);
+            }
+            f->filter_expr = cmp;
+            wl_ir_node_add_child(f, result);
+            result = f;
+        } else if (arg->type == WL_NODE_STRING) {
+            wirelog_ir_node_t *f = wl_ir_node_create(WIRELOG_IR_FILTER);
+            if (!f) continue;
+
+            wl_ir_expr_t *cmp = wl_ir_expr_create(WL_IR_EXPR_CMP);
+            if (cmp) {
+                cmp->cmp_op = WL_CMP_EQ;
+                wl_ir_expr_t *lhs = wl_ir_expr_create(WL_IR_EXPR_VAR);
+                if (lhs) {
+                    char col[32];
+                    snprintf(col, sizeof(col), "col%u", i);
+                    lhs->var_name = strdup_safe(col);
+                }
+                wl_ir_expr_t *rhs = wl_ir_expr_create(WL_IR_EXPR_CONST_STR);
+                if (rhs) rhs->str_value = strdup_safe(arg->str_value);
+                wl_ir_expr_add_child(cmp, lhs);
+                wl_ir_expr_add_child(cmp, rhs);
+            }
+            f->filter_expr = cmp;
+            wl_ir_node_add_child(f, result);
+            result = f;
+        }
+    }
+
+    *out_var_names = var_names;
+    *out_var_count = arg_count;
+    return result;
+}
+
+/* ---- Single Rule Conversion ---- */
+
+static wirelog_ir_node_t*
+convert_rule(const wl_ast_node_t *rule_node)
+{
+    if (!rule_node || rule_node->child_count < 1) return NULL;
+
+    wl_ast_node_t *head = rule_node->children[0];
+    if (head->type != WL_NODE_HEAD) return NULL;
+
+    uint32_t body_count = rule_node->child_count - 1;
+
+    /* ---- Step 1: Collect positive atoms -> SCANs ---- */
+
+    uint32_t scan_cap = body_count > 0 ? body_count : 1;
+    wirelog_ir_node_t **scans = (wirelog_ir_node_t **)calloc(
+        scan_cap, sizeof(wirelog_ir_node_t *));
+    char ***scan_vars = (char ***)calloc(scan_cap, sizeof(char **));
+    uint32_t *scan_vcounts = (uint32_t *)calloc(scan_cap, sizeof(uint32_t));
+    if (!scans || !scan_vars || !scan_vcounts) {
+        free(scans); free(scan_vars); free(scan_vcounts);
+        return NULL;
+    }
+
+    uint32_t scan_count = 0;
+    for (uint32_t i = 1; i < rule_node->child_count; i++) {
+        wl_ast_node_t *b = rule_node->children[i];
+        if (b->type == WL_NODE_ATOM) {
+            scans[scan_count] = build_atom_scan(b,
+                &scan_vars[scan_count], &scan_vcounts[scan_count]);
+            scan_count++;
+        }
+    }
+
+    /* ---- Step 2: JOIN across multiple scans ---- */
+
+    wirelog_ir_node_t *current = NULL;
+    char **cur_vars = NULL;
+    uint32_t cur_vcount = 0;
+    bool cur_vars_is_merged = false;
+
+    if (scan_count == 1) {
+        current = scans[0];
+        cur_vars = scan_vars[0];
+        cur_vcount = scan_vcounts[0];
+    } else if (scan_count > 1) {
+        current = scans[0];
+        cur_vars = scan_vars[0];
+        cur_vcount = scan_vcounts[0];
+
+        for (uint32_t i = 1; i < scan_count; i++) {
+            wirelog_ir_node_t *join = wl_ir_node_create(WIRELOG_IR_JOIN);
+            if (!join) break;
+
+            setup_join_keys(cur_vars, cur_vcount,
+                            scan_vars[i], scan_vcounts[i], join);
+
+            wl_ir_node_add_child(join, current);
+            wl_ir_node_add_child(join, scans[i]);
+
+            uint32_t merged_count;
+            char **merged = merge_var_names(cur_vars, cur_vcount,
+                                            scan_vars[i], scan_vcounts[i],
+                                            &merged_count);
+            if (cur_vars_is_merged) {
+                free_var_names(cur_vars, cur_vcount);
+            }
+
+            cur_vars = merged;
+            cur_vcount = merged_count;
+            cur_vars_is_merged = true;
+            current = join;
+        }
+    }
+
+    /* ---- Step 3: FILTER for explicit comparisons ---- */
+
+    for (uint32_t i = 1; i < rule_node->child_count; i++) {
+        wl_ast_node_t *b = rule_node->children[i];
+        if (b->type == WL_NODE_COMPARISON && current) {
+            wirelog_ir_node_t *f = wl_ir_node_create(WIRELOG_IR_FILTER);
+            if (!f) continue;
+            f->filter_expr = convert_expr(b);
+            wl_ir_node_add_child(f, current);
+            current = f;
+        } else if (b->type == WL_NODE_BOOLEAN) {
+            if (!b->bool_value && current) {
+                wirelog_ir_node_t *f = wl_ir_node_create(WIRELOG_IR_FILTER);
+                if (!f) continue;
+                wl_ir_expr_t *e = wl_ir_expr_create(WL_IR_EXPR_BOOL);
+                if (e) e->bool_value = false;
+                f->filter_expr = e;
+                wl_ir_node_add_child(f, current);
+                current = f;
+            }
+            /* Boolean True -> no-op */
+        }
+    }
+
+    /* ---- Step 4: ANTIJOIN for negations ---- */
+
+    for (uint32_t i = 1; i < rule_node->child_count; i++) {
+        wl_ast_node_t *b = rule_node->children[i];
+        if (b->type == WL_NODE_NEGATION && b->child_count >= 1 && current) {
+            wl_ast_node_t *neg_atom = b->children[0];
+            if (neg_atom->type != WL_NODE_ATOM) continue;
+
+            char **neg_vars = NULL;
+            uint32_t neg_vcount = 0;
+            wirelog_ir_node_t *neg_scan = build_atom_scan(neg_atom,
+                &neg_vars, &neg_vcount);
+
+            if (neg_scan) {
+                wirelog_ir_node_t *aj = wl_ir_node_create(WIRELOG_IR_ANTIJOIN);
+                if (aj) {
+                    setup_join_keys(cur_vars, cur_vcount,
+                                    neg_vars, neg_vcount, aj);
+                    wl_ir_node_add_child(aj, current);
+                    wl_ir_node_add_child(aj, neg_scan);
+                    current = aj;
+                } else {
+                    wl_ir_node_free(neg_scan);
+                }
+            }
+
+            free_var_names(neg_vars, neg_vcount);
+        }
+    }
+
+    /* ---- Step 5: PROJECT or AGGREGATE for head ---- */
+
+    bool has_agg = false;
+    wl_ast_node_t *agg_node = NULL;
+    uint32_t non_agg_count = 0;
+
+    for (uint32_t i = 0; i < head->child_count; i++) {
+        if (head->children[i]->type == WL_NODE_AGGREGATE) {
+            has_agg = true;
+            agg_node = head->children[i];
+        } else {
+            non_agg_count++;
+        }
+    }
+
+    wirelog_ir_node_t *root = NULL;
+
+    if (has_agg && agg_node) {
+        root = wl_ir_node_create(WIRELOG_IR_AGGREGATE);
+        if (root) {
+            wl_ir_node_set_relation(root, head->name);
+            root->agg_fn = agg_node->agg_fn;
+
+            if (agg_node->child_count >= 1) {
+                root->agg_expr = convert_expr(agg_node->children[0]);
+            }
+
+            root->group_by_count = non_agg_count;
+            if (non_agg_count > 0) {
+                root->group_by_indices = (uint32_t *)calloc(
+                    non_agg_count, sizeof(uint32_t));
+                uint32_t gi = 0;
+                for (uint32_t i = 0; i < head->child_count; i++) {
+                    if (head->children[i]->type != WL_NODE_AGGREGATE) {
+                        if (root->group_by_indices)
+                            root->group_by_indices[gi++] = i;
+                    }
+                }
+            }
+
+            if (current) wl_ir_node_add_child(root, current);
+        }
+    } else {
+        root = wl_ir_node_create(WIRELOG_IR_PROJECT);
+        if (root) {
+            wl_ir_node_set_relation(root, head->name);
+            root->project_count = head->child_count;
+
+            if (head->child_count > 0) {
+                root->project_exprs = (wl_ir_expr_t **)calloc(
+                    head->child_count, sizeof(wl_ir_expr_t *));
+                if (root->project_exprs) {
+                    for (uint32_t i = 0; i < head->child_count; i++) {
+                        root->project_exprs[i] = convert_expr(
+                            head->children[i]);
+                    }
+                }
+            }
+
+            if (current) wl_ir_node_add_child(root, current);
+        }
+    }
+
+    /* ---- Cleanup ---- */
+
+    for (uint32_t i = 0; i < scan_count; i++) {
+        free_var_names(scan_vars[i], scan_vcounts[i]);
+    }
+    if (cur_vars_is_merged) {
+        free_var_names(cur_vars, cur_vcount);
+    }
+
+    free(scans);
+    free(scan_vars);
+    free(scan_vcounts);
+
+    return root;
+}
+
+/* ---- Public Entry Point for Pass 2 ---- */
+
+int
+wl_program_convert_rules(struct wirelog_program *program,
+                         const wl_ast_node_t *ast)
+{
+    if (!program || !ast || ast->type != WL_NODE_PROGRAM) return -1;
+
+    uint32_t rule_idx = 0;
+
+    for (uint32_t i = 0; i < ast->child_count; i++) {
+        wl_ast_node_t *child = ast->children[i];
+        if (child->type != WL_NODE_RULE) continue;
+
+        if (rule_idx >= program->rule_count) return -1;
+
+        wirelog_ir_node_t *ir = convert_rule(child);
+        if (!ir) return -1;
+
+        program->rules[rule_idx].ir_root = ir;
+        rule_idx++;
+    }
+
+    return 0;
+}
