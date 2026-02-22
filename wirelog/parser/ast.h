@@ -25,6 +25,8 @@ extern "C" {
 #include <stdbool.h>
 #include <stddef.h>
 
+#include "../wirelog-types.h"
+
 /* ======================================================================== */
 /* AST Node Types                                                           */
 /* ======================================================================== */
@@ -61,43 +63,6 @@ typedef enum {
     WL_NODE_TYPED_PARAM,    /* name=attr_name, type_name=data_type */
     WL_NODE_INPUT_PARAM,    /* name=param_name, str_value=param_value */
 } wl_node_type_t;
-
-/* ======================================================================== */
-/* Comparison Operators                                                     */
-/* ======================================================================== */
-
-typedef enum {
-    WL_CMP_EQ,              /* = */
-    WL_CMP_NEQ,             /* != */
-    WL_CMP_LT,              /* < */
-    WL_CMP_GT,              /* > */
-    WL_CMP_LTE,             /* <= */
-    WL_CMP_GTE,             /* >= */
-} wl_cmp_op_t;
-
-/* ======================================================================== */
-/* Arithmetic Operators                                                     */
-/* ======================================================================== */
-
-typedef enum {
-    WL_ARITH_ADD,           /* + */
-    WL_ARITH_SUB,           /* - */
-    WL_ARITH_MUL,           /* * */
-    WL_ARITH_DIV,           /* / */
-    WL_ARITH_MOD,           /* % */
-} wl_arith_op_t;
-
-/* ======================================================================== */
-/* Aggregate Functions                                                      */
-/* ======================================================================== */
-
-typedef enum {
-    WL_AGG_COUNT,           /* count / COUNT */
-    WL_AGG_SUM,             /* sum / SUM */
-    WL_AGG_MIN,             /* min / MIN */
-    WL_AGG_MAX,             /* max / MAX */
-    WL_AGG_AVG,             /* average / AVG */
-} wl_agg_fn_t;
 
 /* ======================================================================== */
 /* AST Node                                                                 */
@@ -164,15 +129,6 @@ wl_ast_print(const wl_ast_node_t *node, int indent);
 
 const char*
 wl_node_type_str(wl_node_type_t type);
-
-const char*
-wl_cmp_op_str(wl_cmp_op_t op);
-
-const char*
-wl_arith_op_str(wl_arith_op_t op);
-
-const char*
-wl_agg_fn_str(wl_agg_fn_t fn);
 
 #ifdef __cplusplus
 }

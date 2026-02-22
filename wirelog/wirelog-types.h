@@ -32,6 +32,51 @@ extern "C" {
 #include <stddef.h>
 
 /* ======================================================================== */
+/* Comparison Operators                                                     */
+/* ======================================================================== */
+
+typedef enum {
+    WL_CMP_EQ,              /* = */
+    WL_CMP_NEQ,             /* != */
+    WL_CMP_LT,              /* < */
+    WL_CMP_GT,              /* > */
+    WL_CMP_LTE,             /* <= */
+    WL_CMP_GTE,             /* >= */
+} wl_cmp_op_t;
+
+/* ======================================================================== */
+/* Arithmetic Operators                                                     */
+/* ======================================================================== */
+
+typedef enum {
+    WL_ARITH_ADD,           /* + */
+    WL_ARITH_SUB,           /* - */
+    WL_ARITH_MUL,           /* * */
+    WL_ARITH_DIV,           /* / */
+    WL_ARITH_MOD,           /* % */
+} wl_arith_op_t;
+
+/* ======================================================================== */
+/* Aggregate Functions                                                      */
+/* ======================================================================== */
+
+typedef enum {
+    WL_AGG_COUNT,           /* count / COUNT */
+    WL_AGG_SUM,             /* sum / SUM */
+    WL_AGG_MIN,             /* min / MIN */
+    WL_AGG_MAX,             /* max / MAX */
+    WL_AGG_AVG,             /* average / AVG */
+} wl_agg_fn_t;
+
+/* ======================================================================== */
+/* Operator String Conversion                                               */
+/* ======================================================================== */
+
+const char* wl_cmp_op_str(wl_cmp_op_t op);
+const char* wl_arith_op_str(wl_arith_op_t op);
+const char* wl_agg_fn_str(wl_agg_fn_t fn);
+
+/* ======================================================================== */
 /* Basic Types                                                              */
 /* ======================================================================== */
 
@@ -79,26 +124,6 @@ typedef struct {
     wirelog_column_t *columns;
     uint32_t column_count;
 } wirelog_schema_t;
-
-/* ======================================================================== */
-/* IR Node Types                                                            */
-/* ======================================================================== */
-
-/**
- * wirelog_ir_op_type_t:
- *
- * Intermediate representation operator types
- */
-typedef enum {
-    WIRELOG_OP_SCAN = 0,         /* Scan a base relation */
-    WIRELOG_OP_PROJECT = 1,      /* Project columns */
-    WIRELOG_OP_FILTER = 2,       /* Apply predicate filter */
-    WIRELOG_OP_JOIN = 3,         /* Join two relations */
-    WIRELOG_OP_FLATMAP = 4,      /* Fused join+map+filter */
-    WIRELOG_OP_AGGREGATE = 5,    /* Aggregation */
-    WIRELOG_OP_ANTIJOIN = 6,     /* Antijoin (negation) */
-    WIRELOG_OP_UNION = 7,        /* Union (append) */
-} wirelog_ir_op_type_t;
 
 /* ======================================================================== */
 /* Stratification                                                           */
