@@ -1,7 +1,11 @@
 # wirelog
 
-[![CI](https://github.com/justinjoy/wirelog/actions/workflows/ci.yml/badge.svg)](https://github.com/justinjoy/wirelog/actions/workflows/ci.yml)
-[![Static Analysis](https://img.shields.io/github/actions/workflow/status/justinjoy/wirelog/static-analysis.yml?label=static%20analysis)](https://github.com/justinjoy/wirelog/actions/workflows/static-analysis.yml)
+[![Sanitizers](https://img.shields.io/github/actions/workflow/status/justinjoy/wirelog/ci.yml?branch=main&label=Sanitizers)](https://github.com/justinjoy/wirelog/actions/workflows/ci.yml)
+[![Linux GCC](https://img.shields.io/github/actions/workflow/status/justinjoy/wirelog/ci.yml?branch=main&label=Linux%20GCC)](https://github.com/justinjoy/wirelog/actions/workflows/ci.yml)
+[![Linux Clang](https://img.shields.io/github/actions/workflow/status/justinjoy/wirelog/ci.yml?branch=main&label=Linux%20Clang)](https://github.com/justinjoy/wirelog/actions/workflows/ci.yml)
+[![Linux Embedded](https://img.shields.io/github/actions/workflow/status/justinjoy/wirelog/ci.yml?branch=main&label=Linux%20Embedded)](https://github.com/justinjoy/wirelog/actions/workflows/ci.yml)
+[![macOS](https://img.shields.io/github/actions/workflow/status/justinjoy/wirelog/ci.yml?branch=main&label=macOS)](https://github.com/justinjoy/wirelog/actions/workflows/ci.yml)
+[![Windows MSVC](https://img.shields.io/github/actions/workflow/status/justinjoy/wirelog/ci.yml?branch=main&label=Windows%20MSVC)](https://github.com/justinjoy/wirelog/actions/workflows/ci.yml)
 
 **Embedded-to-Enterprise Datalog Engine**
 
