@@ -11,10 +11,10 @@
 
 ## 핵심 요구사항
 
-1. **멀티 타겟 (동일 시작)**: 임베디드 + 엔터프라이즈 **모두 DD와 연결한 상태에서 시작**
+1. **멀티 타겟 (동일 시작)**: 임베디드 + 엔터프라이즈 **모두 DD와 연결된 상태에서 시작**
 2. **FPGA 가속 준비**: 무거운 라이브러리 없이 미래에 FPGA 가속으로 연산 오프로드 가능
 3. **철저한 레이어링**: 계층 분리로 향후 최적화 유연성 확보
-4. **nanoarrow 후순위**: 초기에는 불필요, 임베디드 최적화 단계에서 추가
+4. **nanoarrow 후순위**: 초기에는 불필요하며, 임베디드 최적화 단계에서 추가
 5. **C11 기반**: C11 사용 (넓은 호환성 + _Static_assert, stdatomic 등 현대적 기능)
 
 ---
@@ -65,7 +65,7 @@ wirelog 코어 (C11)
 **무거운 라이브러리를 피하는 이유**:
 - LLVM (30M LOC) → FFI 비용 증가, FPGA 연동 복잡
 - CUDA/OpenCL → 특정 하드웨어 종속성
-- MPI → 분산 처리는 DD에게 위임
+- MPI → 분산 처리는 DD에 위임
 
 **대신 경량 설계**:
 - 추상화된 연산 인터페이스 (ComputeBackend)
@@ -110,8 +110,8 @@ Result
 - 입증된 성능 (Differential Dataflow의 증분 처리)
 - DD의 멀티 워커, 분산 처리 즉시 활용
 - wirelog는 파서/최적화만 C11로 구현
-- 임베디드 + 엔터프라이즈 동일 기반에서 시작
-- 나중에 임베디드만 선택적으로 nanoarrow로 마이그레이션 가능
+- 임베디드 및 엔터프라이즈가 동일한 기반에서 시작
+- 추후 임베디드만 선택적으로 nanoarrow로 마이그레이션 가능
 
 **실행 경로** (모든 환경):
 ```
@@ -188,7 +188,7 @@ FPGA 가속 (미래):
 └──────────────────────────────────────────────────────┘
 
 [I/O Layer]
-  CSV, JSON, Arrow IPC (나중에)
+  CSV, JSON, Arrow IPC (추후)
 ```
 
 ### 2.1b 계층 구조 (Phase 3+: 선택적 임베디드 최적화)
@@ -274,13 +274,13 @@ src/
 **책임**:
 - CSV 파일 읽기 → Datalog 사실(facts)
 - 프로그램 실행 후 결과 출력
-- (나중에 Arrow IPC 추가)
+- (추후 Arrow IPC 추가)
 
 ---
 
 ### 2.3 향후 계층 구조 (Phase 3+: 선택적 임베디드 최적화)
 
-**이 때 추가될 레이어** (계획):
+**이때 추가되는 레이어** (계획):
 
 #### ComputeBackend Abstraction (C11)
 
@@ -387,7 +387,7 @@ typedef struct {
 - [ ] 작업 스케줄링 & 오프로드
 - [ ] 결과 수집
 
-**추정**: TBD (FPGA 하드웨어 가용성 의존)
+**추정**: TBD (FPGA 하드웨어 가용성에 따라 결정)
 
 ---
 
@@ -399,7 +399,7 @@ typedef struct {
 | **빌드** | Meson | ✅ 확정 | Cross-compile 우수, 경량 |
 | **Parser** | Hand-written RDP | ✅ 구현됨 | Zero deps, 91/91 tests passing |
 | **메모리** | nanoarrow (중기) | 계획 | Columnar, Arrow interop |
-| **Allocator** | Arena + malloc | 계획 | 상세 설계 필요 |
+| **Allocator** | Region/Arena + system malloc | 계획 (Phase 2) | jemalloc 검토 후 보류; §4.1 ADR 참조 |
 | **Threading** | Optional pthreads | 계획 | Single-threaded 기본 |
 | **I/O** | CSV + Arrow IPC | 계획 | 표준 포맷 |
 
@@ -419,9 +419,11 @@ typedef struct {
 - [ ] Join ordering search space 크기 제한
 
 ### Memory 관리
-- [ ] Arena allocator 세밀 설계
+- [ ] Region/Arena allocator 설계 (Phase 1 후반 ~ Phase 2, 할당 패턴 안정화 후)
+- [ ] 할당 카테고리 분리: `WL_ALLOC_INTERNAL` (AST/IR) vs `WL_ALLOC_FFI_TRANSFER` (DD 경계)
 - [ ] 동적 할당 vs 고정 할당
 - [ ] 메모리 누수 감지 전략
+- [ ] jemalloc 재검토 조건: Phase 2 벤치마크에서 시스템 malloc이 엔터프라이즈 경로의 병목으로 확인될 경우
 
 ### Backend 추상화
 - [ ] RelationBuffer와 Arrow schema의 관계
@@ -440,6 +442,57 @@ typedef struct {
 
 ---
 
+### 4.1 Allocator 결정 기록 (ADR): jemalloc 검토
+
+**날짜**: 2026-02-23
+**상태**: 결정됨 — Phase 0-1에서 jemalloc 비도입
+**참여자**: Planner, Architect, Critic (합의 기반 계획)
+
+**배경**:
+wirelog는 임베디드(ARM/RISC-V, <256MB)와 엔터프라이즈(x86-64, GB 규모) 환경을 모두 지원합니다.
+현재 C11 코드베이스는 5개 파일(parser, AST, IR, program)에서 약 35회의 할당 호출(malloc/calloc/realloc)을 수행합니다.
+메모리 집약적 실행은 FFI를 통해 Differential Dataflow(Rust)에 위임됩니다.
+
+**결정**: Phase 0-1에서 jemalloc을 도입하지 않습니다. Phase 2 벤치마크 이후 Region/Arena allocator를 설계합니다.
+
+**근거**:
+
+1. **C11 측은 쿼리 규모 할당만 담당**: wirelog C11은 파서/옵티마이저 메모리만 관리합니다.
+   데이터 규모(GB)의 메모리는 DD의 Rust allocator가 관리하므로, jemalloc은 C11 레이어에서
+   실질적 이점이 없습니다.
+
+2. **임베디드 타겟과 충돌**: jemalloc의 ~2MB 메타데이터 오버헤드는 임베디드 배포의
+   500KB-2MB 독립 바이너리 목표와 직접 충돌합니다.
+
+3. **Arena/Region이 더 적합**: AST와 IR은 명확한 "생성 → 사용 → 일괄 해제" 생애주기를
+   따릅니다(파싱, IR 변환, 프로그램 메타데이터의 3단계). 이 패턴은 범용 allocator 교체가
+   아닌 Region 기반 할당에 이상적입니다.
+
+4. **시기상조 최적화**: Phase 0의 35회 할당 호출은 병목이 아닙니다. 옵티마이저 패스(Phase 1)가
+   새로운 할당 패턴을 도입할 것이며, allocator 설계 전에 이 패턴이 안정화되어야 합니다.
+
+**검토된 대안**:
+
+| 대안 | 판정 | 이유 |
+|------|------|------|
+| jemalloc | 보류 | ~2MB 오버헤드, 쿼리 규모 할당에 이점 없음 |
+| mimalloc | 보류 | jemalloc보다 작지만 근본적 부적합은 동일 |
+| 자체 Arena 구현 | **선호** (Phase 2) | AST/IR 생애주기에 부합; 에러 경로 정리 단순화 |
+| Region 기반 allocator | **선호** (Phase 2) | 계층적 Region이 파싱/IR/프로그램 단계에 대응 |
+| 시스템 malloc (현재) | **유지** (Phase 0-1) | 현재 규모에 충분; 병목 증거 없음 |
+| `wl_allocator_t` 인터페이스 | Phase 1 후반 | 옵티마이저 할당 패턴 안정화 후 정의 |
+| Meson 빌드 시점 선택 | Phase 2+ | 기존 `embedded`/`threads` 옵션 패턴을 따르는 `option('allocator', ...)` |
+
+**재검토 조건**: Phase 2 벤치마크에서 시스템 malloc이 엔터프라이즈 경로에서 측정 가능한
+병목으로 확인되면, 해당 타겟에 한해 jemalloc 또는 mimalloc을 재검토합니다.
+
+**이번 리뷰에서 도출된 미결 항목**:
+- DD FFI 메모리 소유권(copy vs transfer vs shared buffer)이 allocator 카테고리 설계에 영향
+- `strdup_safe`가 3곳에 독립적으로 정의되어 있음 — 공유 내부 유틸리티로 통합 필요
+- `WIRELOG_EMBEDDED` 빌드 매크로가 정의되어 있으나 C 소스의 `#ifdef` 가드에서 아직 미사용
+
+---
+
 ## 6. 참고 자료
 
 **wirelog 프로젝트 문서**:
@@ -450,8 +503,8 @@ typedef struct {
 
 **외부 프로젝트**:
 - Differential Dataflow: https://github.com/TimelyDataflow/differential-dataflow
-- nanoarrow: https://github.com/apache/arrow-nanoarrow (나중에 사용)
-- Arrow format: https://arrow.apache.org/docs/format/ (나중에 사용)
+- nanoarrow: https://github.com/apache/arrow-nanoarrow (추후 사용)
+- Arrow format: https://arrow.apache.org/docs/format/ (추후 사용)
 
 ---
 
@@ -461,6 +514,7 @@ typedef struct {
 |------|------|------|
 | 2026-02-22 | 0.1 | 초안 작성, 레이어링 정의 |
 | 2026-02-22 | 0.2 | Phase 0 parser 구현 상태 업데이트 (91/91 tests passing) |
+| 2026-02-23 | 0.3 | Allocator 결정 기록(§4.1 ADR) 추가: jemalloc 검토 후 보류 결정 |
 
 ---
 
