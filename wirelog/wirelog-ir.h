@@ -75,7 +75,7 @@ wirelog_ir_node_get_type(const wirelog_ir_node_t *node);
  *
  * Returns: (transfer none): Relation name string
  */
-const char*
+const char *
 wirelog_ir_node_get_relation_name(const wirelog_ir_node_t *node);
 
 /**
@@ -98,7 +98,7 @@ wirelog_ir_node_get_child_count(const wirelog_ir_node_t *node);
  *
  * Returns: (transfer none): Child node, or NULL if invalid index
  */
-const wirelog_ir_node_t*
+const wirelog_ir_node_t *
 wirelog_ir_node_get_child(const wirelog_ir_node_t *node, uint32_t index);
 
 /* ======================================================================== */
@@ -123,7 +123,7 @@ wirelog_ir_node_print(const wirelog_ir_node_t *node, uint32_t indent);
  *
  * Returns: (transfer full): String representation (must be freed)
  */
-char*
+char *
 wirelog_ir_node_to_string(const wirelog_ir_node_t *node);
 
 #ifdef __cplusplus

@@ -23,22 +23,22 @@ static int tests_run = 0;
 static int tests_passed = 0;
 static int tests_failed = 0;
 
-#define TEST(name) \
-    do { \
-        tests_run++; \
+#define TEST(name)                      \
+    do {                                \
+        tests_run++;                    \
         printf("  [TEST] %-55s", name); \
-        fflush(stdout); \
+        fflush(stdout);                 \
     } while (0)
 
-#define PASS() \
-    do { \
-        tests_passed++; \
+#define PASS()             \
+    do {                   \
+        tests_passed++;    \
         printf(" PASS\n"); \
     } while (0)
 
-#define FAIL(msg) \
-    do { \
-        tests_failed++; \
+#define FAIL(msg)                   \
+    do {                            \
+        tests_failed++;             \
         printf(" FAIL: %s\n", msg); \
     } while (0)
 
@@ -52,7 +52,10 @@ test_create_scan_node(void)
     TEST("Create SCAN node with relation name");
 
     wirelog_ir_node_t *node = wl_ir_node_create(WIRELOG_IR_SCAN);
-    if (!node) { FAIL("node is NULL"); return; }
+    if (!node) {
+        FAIL("node is NULL");
+        return;
+    }
 
     wl_ir_node_set_relation(node, "Arc");
 
@@ -144,7 +147,8 @@ test_create_join_node(void)
         return;
     }
 
-    if (!right || strcmp(wirelog_ir_node_get_relation_name(right), "Arc") != 0) {
+    if (!right
+        || strcmp(wirelog_ir_node_get_relation_name(right), "Arc") != 0) {
         wl_ir_node_free(join);
         FAIL("right child should be Arc");
         return;
@@ -342,26 +346,74 @@ test_create_expression_tree(void)
     wl_ir_expr_add_child(cmp, var_y);
 
     /* Verify structure */
-    if (cmp->type != WL_IR_EXPR_CMP) { FAIL("root should be CMP"); wl_ir_expr_free(cmp); return; }
-    if (cmp->cmp_op != WL_CMP_LT) { FAIL("cmp_op should be LT"); wl_ir_expr_free(cmp); return; }
-    if (cmp->child_count != 2) { FAIL("cmp should have 2 children"); wl_ir_expr_free(cmp); return; }
+    if (cmp->type != WL_IR_EXPR_CMP) {
+        FAIL("root should be CMP");
+        wl_ir_expr_free(cmp);
+        return;
+    }
+    if (cmp->cmp_op != WL_CMP_LT) {
+        FAIL("cmp_op should be LT");
+        wl_ir_expr_free(cmp);
+        return;
+    }
+    if (cmp->child_count != 2) {
+        FAIL("cmp should have 2 children");
+        wl_ir_expr_free(cmp);
+        return;
+    }
 
     wl_ir_expr_t *left = cmp->children[0];
-    if (left->type != WL_IR_EXPR_ARITH) { FAIL("left should be ARITH"); wl_ir_expr_free(cmp); return; }
-    if (left->arith_op != WL_ARITH_ADD) { FAIL("arith_op should be ADD"); wl_ir_expr_free(cmp); return; }
-    if (left->child_count != 2) { FAIL("arith should have 2 children"); wl_ir_expr_free(cmp); return; }
+    if (left->type != WL_IR_EXPR_ARITH) {
+        FAIL("left should be ARITH");
+        wl_ir_expr_free(cmp);
+        return;
+    }
+    if (left->arith_op != WL_ARITH_ADD) {
+        FAIL("arith_op should be ADD");
+        wl_ir_expr_free(cmp);
+        return;
+    }
+    if (left->child_count != 2) {
+        FAIL("arith should have 2 children");
+        wl_ir_expr_free(cmp);
+        return;
+    }
 
     wl_ir_expr_t *x = left->children[0];
-    if (x->type != WL_IR_EXPR_VAR) { FAIL("should be VAR"); wl_ir_expr_free(cmp); return; }
-    if (strcmp(x->var_name, "x") != 0) { FAIL("var_name should be x"); wl_ir_expr_free(cmp); return; }
+    if (x->type != WL_IR_EXPR_VAR) {
+        FAIL("should be VAR");
+        wl_ir_expr_free(cmp);
+        return;
+    }
+    if (strcmp(x->var_name, "x") != 0) {
+        FAIL("var_name should be x");
+        wl_ir_expr_free(cmp);
+        return;
+    }
 
     wl_ir_expr_t *one = left->children[1];
-    if (one->type != WL_IR_EXPR_CONST_INT) { FAIL("should be CONST_INT"); wl_ir_expr_free(cmp); return; }
-    if (one->int_value != 1) { FAIL("int_value should be 1"); wl_ir_expr_free(cmp); return; }
+    if (one->type != WL_IR_EXPR_CONST_INT) {
+        FAIL("should be CONST_INT");
+        wl_ir_expr_free(cmp);
+        return;
+    }
+    if (one->int_value != 1) {
+        FAIL("int_value should be 1");
+        wl_ir_expr_free(cmp);
+        return;
+    }
 
     wl_ir_expr_t *y = cmp->children[1];
-    if (y->type != WL_IR_EXPR_VAR) { FAIL("should be VAR"); wl_ir_expr_free(cmp); return; }
-    if (strcmp(y->var_name, "y") != 0) { FAIL("var_name should be y"); wl_ir_expr_free(cmp); return; }
+    if (y->type != WL_IR_EXPR_VAR) {
+        FAIL("should be VAR");
+        wl_ir_expr_free(cmp);
+        return;
+    }
+    if (strcmp(y->var_name, "y") != 0) {
+        FAIL("var_name should be y");
+        wl_ir_expr_free(cmp);
+        return;
+    }
 
     wl_ir_expr_free(cmp);
     PASS();
@@ -375,8 +427,16 @@ test_expr_string_constant(void)
     wl_ir_expr_t *str = wl_ir_expr_create(WL_IR_EXPR_CONST_STR);
     str->str_value = strdup_safe("hello");
 
-    if (str->type != WL_IR_EXPR_CONST_STR) { FAIL("type mismatch"); wl_ir_expr_free(str); return; }
-    if (strcmp(str->str_value, "hello") != 0) { FAIL("str_value mismatch"); wl_ir_expr_free(str); return; }
+    if (str->type != WL_IR_EXPR_CONST_STR) {
+        FAIL("type mismatch");
+        wl_ir_expr_free(str);
+        return;
+    }
+    if (strcmp(str->str_value, "hello") != 0) {
+        FAIL("str_value mismatch");
+        wl_ir_expr_free(str);
+        return;
+    }
 
     wl_ir_expr_free(str);
     PASS();
@@ -390,8 +450,16 @@ test_expr_bool(void)
     wl_ir_expr_t *b = wl_ir_expr_create(WL_IR_EXPR_BOOL);
     b->bool_value = true;
 
-    if (b->type != WL_IR_EXPR_BOOL) { FAIL("type mismatch"); wl_ir_expr_free(b); return; }
-    if (!b->bool_value) { FAIL("bool_value should be true"); wl_ir_expr_free(b); return; }
+    if (b->type != WL_IR_EXPR_BOOL) {
+        FAIL("type mismatch");
+        wl_ir_expr_free(b);
+        return;
+    }
+    if (!b->bool_value) {
+        FAIL("bool_value should be true");
+        wl_ir_expr_free(b);
+        return;
+    }
 
     wl_ir_expr_free(b);
     PASS();
@@ -409,9 +477,21 @@ test_expr_aggregate(void)
     agg->agg_fn = WL_AGG_MIN;
     wl_ir_expr_add_child(agg, inner);
 
-    if (agg->type != WL_IR_EXPR_AGG) { FAIL("type mismatch"); wl_ir_expr_free(agg); return; }
-    if (agg->agg_fn != WL_AGG_MIN) { FAIL("agg_fn should be MIN"); wl_ir_expr_free(agg); return; }
-    if (agg->child_count != 1) { FAIL("should have 1 child"); wl_ir_expr_free(agg); return; }
+    if (agg->type != WL_IR_EXPR_AGG) {
+        FAIL("type mismatch");
+        wl_ir_expr_free(agg);
+        return;
+    }
+    if (agg->agg_fn != WL_AGG_MIN) {
+        FAIL("agg_fn should be MIN");
+        wl_ir_expr_free(agg);
+        return;
+    }
+    if (agg->child_count != 1) {
+        FAIL("should have 1 child");
+        wl_ir_expr_free(agg);
+        return;
+    }
 
     wl_ir_expr_free(agg);
     PASS();
@@ -559,15 +639,17 @@ test_ir_node_get_type_all(void)
 {
     TEST("All 8 IR node types are distinct");
 
-    wirelog_ir_node_type_t types[] = {
-        WIRELOG_IR_SCAN, WIRELOG_IR_PROJECT, WIRELOG_IR_FILTER,
-        WIRELOG_IR_JOIN, WIRELOG_IR_FLATMAP, WIRELOG_IR_AGGREGATE,
-        WIRELOG_IR_ANTIJOIN, WIRELOG_IR_UNION
-    };
+    wirelog_ir_node_type_t types[]
+        = { WIRELOG_IR_SCAN,     WIRELOG_IR_PROJECT, WIRELOG_IR_FILTER,
+            WIRELOG_IR_JOIN,     WIRELOG_IR_FLATMAP, WIRELOG_IR_AGGREGATE,
+            WIRELOG_IR_ANTIJOIN, WIRELOG_IR_UNION };
 
     for (int i = 0; i < 8; i++) {
         wirelog_ir_node_t *node = wl_ir_node_create(types[i]);
-        if (!node) { FAIL("create failed"); return; }
+        if (!node) {
+            FAIL("create failed");
+            return;
+        }
         if (wirelog_ir_node_get_type(node) != types[i]) {
             wl_ir_node_free(node);
             FAIL("type mismatch for node type");

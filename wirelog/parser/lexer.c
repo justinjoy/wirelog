@@ -37,7 +37,8 @@ peek(const wl_lexer_t *lexer)
 static char
 peek_next(const wl_lexer_t *lexer)
 {
-    if (is_at_end(lexer)) return '\0';
+    if (is_at_end(lexer))
+        return '\0';
     return lexer->current[1];
 }
 
@@ -57,8 +58,10 @@ advance(wl_lexer_t *lexer)
 static bool
 match(wl_lexer_t *lexer, char expected)
 {
-    if (is_at_end(lexer)) return false;
-    if (*lexer->current != expected) return false;
+    if (is_at_end(lexer))
+        return false;
+    if (*lexer->current != expected)
+        return false;
     advance(lexer);
     return true;
 }
@@ -166,11 +169,10 @@ scan_integer(wl_lexer_t *lexer)
 }
 
 static bool
-check_keyword(const char *start, uint32_t length,
-              const char *keyword, size_t kw_len)
+check_keyword(const char *start, uint32_t length, const char *keyword,
+              size_t kw_len)
 {
-    return length == (uint32_t)kw_len &&
-           memcmp(start, keyword, kw_len) == 0;
+    return length == (uint32_t)kw_len && memcmp(start, keyword, kw_len) == 0;
 }
 
 #define IS_KW(s) check_keyword(start, length, s, sizeof(s) - 1)
@@ -179,27 +181,42 @@ static wl_token_type_t
 identifier_type(const char *start, uint32_t length)
 {
     /* Boolean literals */
-    if (IS_KW("True"))    return WL_TOK_TRUE;
-    if (IS_KW("False"))   return WL_TOK_FALSE;
+    if (IS_KW("True"))
+        return WL_TOK_TRUE;
+    if (IS_KW("False"))
+        return WL_TOK_FALSE;
 
     /* Aggregate keywords (lowercase) */
-    if (IS_KW("count"))   return WL_TOK_COUNT;
-    if (IS_KW("sum"))     return WL_TOK_SUM;
-    if (IS_KW("min"))     return WL_TOK_MIN;
-    if (IS_KW("max"))     return WL_TOK_MAX;
-    if (IS_KW("average")) return WL_TOK_AVG;
+    if (IS_KW("count"))
+        return WL_TOK_COUNT;
+    if (IS_KW("sum"))
+        return WL_TOK_SUM;
+    if (IS_KW("min"))
+        return WL_TOK_MIN;
+    if (IS_KW("max"))
+        return WL_TOK_MAX;
+    if (IS_KW("average"))
+        return WL_TOK_AVG;
 
     /* Aggregate keywords (uppercase) */
-    if (IS_KW("COUNT"))   return WL_TOK_COUNT;
-    if (IS_KW("SUM"))     return WL_TOK_SUM;
-    if (IS_KW("MIN"))     return WL_TOK_MIN;
-    if (IS_KW("MAX"))     return WL_TOK_MAX;
-    if (IS_KW("AVG"))     return WL_TOK_AVG;
+    if (IS_KW("COUNT"))
+        return WL_TOK_COUNT;
+    if (IS_KW("SUM"))
+        return WL_TOK_SUM;
+    if (IS_KW("MIN"))
+        return WL_TOK_MIN;
+    if (IS_KW("MAX"))
+        return WL_TOK_MAX;
+    if (IS_KW("AVG"))
+        return WL_TOK_AVG;
 
     /* Type keywords */
-    if (IS_KW("int32"))   return WL_TOK_INT32;
-    if (IS_KW("int64"))   return WL_TOK_INT64;
-    if (IS_KW("string"))  return WL_TOK_STRING_TYPE;
+    if (IS_KW("int32"))
+        return WL_TOK_INT32;
+    if (IS_KW("int64"))
+        return WL_TOK_INT64;
+    if (IS_KW("string"))
+        return WL_TOK_STRING_TYPE;
 
     return WL_TOK_IDENT;
 }
@@ -210,9 +227,8 @@ static wl_token_t
 scan_identifier(wl_lexer_t *lexer)
 {
     /* First char already consumed (alpha or _alpha) */
-    while (!is_at_end(lexer) &&
-           (isalnum((unsigned char)peek(lexer)) ||
-            peek(lexer) == '_')) {
+    while (!is_at_end(lexer)
+           && (isalnum((unsigned char)peek(lexer)) || peek(lexer) == '_')) {
         advance(lexer);
     }
 
@@ -228,8 +244,7 @@ scan_directive(wl_lexer_t *lexer)
 {
     /* The '.' has been consumed, and we see an alpha char next.
      * Read the directive word. */
-    while (!is_at_end(lexer) &&
-           isalpha((unsigned char)peek(lexer))) {
+    while (!is_at_end(lexer) && isalpha((unsigned char)peek(lexer))) {
         advance(lexer);
     }
 
@@ -309,9 +324,12 @@ scan_token(wl_lexer_t *lexer)
 
     /* Punctuation */
     switch (c) {
-    case '(':  return make_token(lexer, WL_TOK_LPAREN);
-    case ')':  return make_token(lexer, WL_TOK_RPAREN);
-    case ',':  return make_token(lexer, WL_TOK_COMMA);
+    case '(':
+        return make_token(lexer, WL_TOK_LPAREN);
+    case ')':
+        return make_token(lexer, WL_TOK_RPAREN);
+    case ',':
+        return make_token(lexer, WL_TOK_COMMA);
 
     case ':':
         if (match(lexer, '-'))
@@ -336,11 +354,16 @@ scan_token(wl_lexer_t *lexer)
             return make_token(lexer, WL_TOK_GTE);
         return make_token(lexer, WL_TOK_GT);
 
-    case '+':  return make_token(lexer, WL_TOK_PLUS);
-    case '-':  return make_token(lexer, WL_TOK_MINUS);
-    case '*':  return make_token(lexer, WL_TOK_STAR);
-    case '/':  return make_token(lexer, WL_TOK_SLASH);
-    case '%':  return make_token(lexer, WL_TOK_PERCENT);
+    case '+':
+        return make_token(lexer, WL_TOK_PLUS);
+    case '-':
+        return make_token(lexer, WL_TOK_MINUS);
+    case '*':
+        return make_token(lexer, WL_TOK_STAR);
+    case '/':
+        return make_token(lexer, WL_TOK_SLASH);
+    case '%':
+        return make_token(lexer, WL_TOK_PERCENT);
     }
 
     return make_error(lexer, "unexpected character");
@@ -393,54 +416,93 @@ wl_lexer_peek_token(wl_lexer_t *lexer)
     return token;
 }
 
-const char*
+const char *
 wl_token_type_str(wl_token_type_t type)
 {
     switch (type) {
-    case WL_TOK_IDENT:       return "IDENT";
-    case WL_TOK_INTEGER:     return "INTEGER";
-    case WL_TOK_STRING:      return "STRING";
-    case WL_TOK_TRUE:        return "TRUE";
-    case WL_TOK_FALSE:       return "FALSE";
-    case WL_TOK_UNDERSCORE:  return "UNDERSCORE";
-    case WL_TOK_COUNT:       return "COUNT";
-    case WL_TOK_SUM:         return "SUM";
-    case WL_TOK_MIN:         return "MIN";
-    case WL_TOK_MAX:         return "MAX";
-    case WL_TOK_AVG:         return "AVG";
-    case WL_TOK_INT32:       return "INT32";
-    case WL_TOK_INT64:       return "INT64";
-    case WL_TOK_STRING_TYPE: return "STRING_TYPE";
-    case WL_TOK_LPAREN:      return "LPAREN";
-    case WL_TOK_RPAREN:      return "RPAREN";
-    case WL_TOK_COMMA:       return "COMMA";
-    case WL_TOK_DOT:         return "DOT";
-    case WL_TOK_COLON:       return "COLON";
-    case WL_TOK_BANG:        return "BANG";
-    case WL_TOK_HORN:        return "HORN";
-    case WL_TOK_EQ:          return "EQ";
-    case WL_TOK_NEQ:         return "NEQ";
-    case WL_TOK_LT:          return "LT";
-    case WL_TOK_GT:          return "GT";
-    case WL_TOK_LTE:         return "LTE";
-    case WL_TOK_GTE:         return "GTE";
-    case WL_TOK_PLUS:        return "PLUS";
-    case WL_TOK_MINUS:       return "MINUS";
-    case WL_TOK_STAR:        return "STAR";
-    case WL_TOK_SLASH:       return "SLASH";
-    case WL_TOK_PERCENT:     return "PERCENT";
-    case WL_TOK_DECL:        return "DECL";
-    case WL_TOK_INPUT:       return "INPUT";
-    case WL_TOK_OUTPUT:      return "OUTPUT";
-    case WL_TOK_PRINTSIZE:   return "PRINTSIZE";
-    case WL_TOK_PLAN:        return "PLAN";
-    case WL_TOK_EOF:         return "EOF";
-    case WL_TOK_ERROR:       return "ERROR";
+    case WL_TOK_IDENT:
+        return "IDENT";
+    case WL_TOK_INTEGER:
+        return "INTEGER";
+    case WL_TOK_STRING:
+        return "STRING";
+    case WL_TOK_TRUE:
+        return "TRUE";
+    case WL_TOK_FALSE:
+        return "FALSE";
+    case WL_TOK_UNDERSCORE:
+        return "UNDERSCORE";
+    case WL_TOK_COUNT:
+        return "COUNT";
+    case WL_TOK_SUM:
+        return "SUM";
+    case WL_TOK_MIN:
+        return "MIN";
+    case WL_TOK_MAX:
+        return "MAX";
+    case WL_TOK_AVG:
+        return "AVG";
+    case WL_TOK_INT32:
+        return "INT32";
+    case WL_TOK_INT64:
+        return "INT64";
+    case WL_TOK_STRING_TYPE:
+        return "STRING_TYPE";
+    case WL_TOK_LPAREN:
+        return "LPAREN";
+    case WL_TOK_RPAREN:
+        return "RPAREN";
+    case WL_TOK_COMMA:
+        return "COMMA";
+    case WL_TOK_DOT:
+        return "DOT";
+    case WL_TOK_COLON:
+        return "COLON";
+    case WL_TOK_BANG:
+        return "BANG";
+    case WL_TOK_HORN:
+        return "HORN";
+    case WL_TOK_EQ:
+        return "EQ";
+    case WL_TOK_NEQ:
+        return "NEQ";
+    case WL_TOK_LT:
+        return "LT";
+    case WL_TOK_GT:
+        return "GT";
+    case WL_TOK_LTE:
+        return "LTE";
+    case WL_TOK_GTE:
+        return "GTE";
+    case WL_TOK_PLUS:
+        return "PLUS";
+    case WL_TOK_MINUS:
+        return "MINUS";
+    case WL_TOK_STAR:
+        return "STAR";
+    case WL_TOK_SLASH:
+        return "SLASH";
+    case WL_TOK_PERCENT:
+        return "PERCENT";
+    case WL_TOK_DECL:
+        return "DECL";
+    case WL_TOK_INPUT:
+        return "INPUT";
+    case WL_TOK_OUTPUT:
+        return "OUTPUT";
+    case WL_TOK_PRINTSIZE:
+        return "PRINTSIZE";
+    case WL_TOK_PLAN:
+        return "PLAN";
+    case WL_TOK_EOF:
+        return "EOF";
+    case WL_TOK_ERROR:
+        return "ERROR";
     }
     return "UNKNOWN";
 }
 
-char*
+char *
 wl_token_to_string(const wl_token_t *token)
 {
     if (token->type == WL_TOK_STRING) {

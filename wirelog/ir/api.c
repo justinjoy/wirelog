@@ -27,25 +27,28 @@
 /* Parsing                                                                  */
 /* ======================================================================== */
 
-wirelog_program_t*
+wirelog_program_t *
 wirelog_parse_string(const char *program_text, wirelog_error_t *error)
 {
     if (!program_text) {
-        if (error) *error = WIRELOG_ERR_PARSE;
+        if (error)
+            *error = WIRELOG_ERR_PARSE;
         return NULL;
     }
 
-    char errbuf[512] = {0};
+    char errbuf[512] = { 0 };
     wl_ast_node_t *ast = wl_parse_string(program_text, errbuf, sizeof(errbuf));
     if (!ast) {
-        if (error) *error = WIRELOG_ERR_PARSE;
+        if (error)
+            *error = WIRELOG_ERR_PARSE;
         return NULL;
     }
 
     struct wirelog_program *prog = wl_program_create();
     if (!prog) {
         wl_ast_node_free(ast);
-        if (error) *error = WIRELOG_ERR_MEMORY;
+        if (error)
+            *error = WIRELOG_ERR_MEMORY;
         return NULL;
     }
 
@@ -53,38 +56,43 @@ wirelog_parse_string(const char *program_text, wirelog_error_t *error)
 
     if (wl_program_collect_metadata(prog, ast) != 0) {
         wl_program_free(prog);
-        if (error) *error = WIRELOG_ERR_PARSE;
+        if (error)
+            *error = WIRELOG_ERR_PARSE;
         return NULL;
     }
 
     if (wl_program_convert_rules(prog, ast) != 0) {
         wl_program_free(prog);
-        if (error) *error = WIRELOG_ERR_PARSE;
+        if (error)
+            *error = WIRELOG_ERR_PARSE;
         return NULL;
     }
 
     if (wl_program_merge_unions(prog) != 0) {
         wl_program_free(prog);
-        if (error) *error = WIRELOG_ERR_MEMORY;
+        if (error)
+            *error = WIRELOG_ERR_MEMORY;
         return NULL;
     }
 
     wl_program_build_schemas(prog);
     wl_program_build_default_stratum(prog);
 
-    if (error) *error = WIRELOG_OK;
+    if (error)
+        *error = WIRELOG_OK;
     return prog;
 }
 
-wirelog_program_t*
+wirelog_program_t *
 wirelog_parse(const char *filename, wirelog_error_t *error)
 {
     (void)filename;
-    if (error) *error = WIRELOG_ERR_IO;
+    if (error)
+        *error = WIRELOG_ERR_IO;
     return NULL;
 }
 
-wirelog_program_t*
+wirelog_program_t *
 wirelog_parse_with_error_info(const char *filename,
                               wirelog_parse_error_t *error_info)
 {
@@ -106,19 +114,21 @@ wirelog_parse_with_error_info(const char *filename,
 uint32_t
 wirelog_program_get_rule_count(const wirelog_program_t *program)
 {
-    if (!program) return 0;
+    if (!program)
+        return 0;
     return program->rule_count;
 }
 
-const wirelog_schema_t*
+const wirelog_schema_t *
 wirelog_program_get_schema(const wirelog_program_t *program,
                            const char *relation_name)
 {
-    if (!program || !relation_name || !program->schemas) return NULL;
+    if (!program || !relation_name || !program->schemas)
+        return NULL;
 
     for (uint32_t i = 0; i < program->relation_count; i++) {
-        if (program->schemas[i].relation_name &&
-            strcmp(program->schemas[i].relation_name, relation_name) == 0) {
+        if (program->schemas[i].relation_name
+            && strcmp(program->schemas[i].relation_name, relation_name) == 0) {
             return &program->schemas[i];
         }
     }
@@ -128,23 +138,26 @@ wirelog_program_get_schema(const wirelog_program_t *program,
 uint32_t
 wirelog_program_get_stratum_count(const wirelog_program_t *program)
 {
-    if (!program) return 0;
+    if (!program)
+        return 0;
     return program->stratum_count;
 }
 
-const wirelog_stratum_t*
+const wirelog_stratum_t *
 wirelog_program_get_stratum(const wirelog_program_t *program,
                             uint32_t stratum_id)
 {
-    if (!program || stratum_id >= program->stratum_count) return NULL;
+    if (!program || stratum_id >= program->stratum_count)
+        return NULL;
     return &program->strata[stratum_id];
 }
 
 bool
 wirelog_program_is_stratified(const wirelog_program_t *program)
 {
-    if (!program) return false;
-    return true;  /* Stub: always true until stratification is implemented */
+    if (!program)
+        return false;
+    return true; /* Stub: always true until stratification is implemented */
 }
 
 /* ======================================================================== */

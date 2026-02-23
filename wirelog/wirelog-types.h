@@ -36,12 +36,12 @@ extern "C" {
 /* ======================================================================== */
 
 typedef enum {
-    WL_CMP_EQ,              /* = */
-    WL_CMP_NEQ,             /* != */
-    WL_CMP_LT,              /* < */
-    WL_CMP_GT,              /* > */
-    WL_CMP_LTE,             /* <= */
-    WL_CMP_GTE,             /* >= */
+    WL_CMP_EQ,  /* = */
+    WL_CMP_NEQ, /* != */
+    WL_CMP_LT,  /* < */
+    WL_CMP_GT,  /* > */
+    WL_CMP_LTE, /* <= */
+    WL_CMP_GTE, /* >= */
 } wl_cmp_op_t;
 
 /* ======================================================================== */
@@ -49,11 +49,11 @@ typedef enum {
 /* ======================================================================== */
 
 typedef enum {
-    WL_ARITH_ADD,           /* + */
-    WL_ARITH_SUB,           /* - */
-    WL_ARITH_MUL,           /* * */
-    WL_ARITH_DIV,           /* / */
-    WL_ARITH_MOD,           /* % */
+    WL_ARITH_ADD, /* + */
+    WL_ARITH_SUB, /* - */
+    WL_ARITH_MUL, /* * */
+    WL_ARITH_DIV, /* / */
+    WL_ARITH_MOD, /* % */
 } wl_arith_op_t;
 
 /* ======================================================================== */
@@ -61,20 +61,23 @@ typedef enum {
 /* ======================================================================== */
 
 typedef enum {
-    WL_AGG_COUNT,           /* count / COUNT */
-    WL_AGG_SUM,             /* sum / SUM */
-    WL_AGG_MIN,             /* min / MIN */
-    WL_AGG_MAX,             /* max / MAX */
-    WL_AGG_AVG,             /* average / AVG */
+    WL_AGG_COUNT, /* count / COUNT */
+    WL_AGG_SUM,   /* sum / SUM */
+    WL_AGG_MIN,   /* min / MIN */
+    WL_AGG_MAX,   /* max / MAX */
+    WL_AGG_AVG,   /* average / AVG */
 } wl_agg_fn_t;
 
 /* ======================================================================== */
 /* Operator String Conversion                                               */
 /* ======================================================================== */
 
-const char* wl_cmp_op_str(wl_cmp_op_t op);
-const char* wl_arith_op_str(wl_arith_op_t op);
-const char* wl_agg_fn_str(wl_agg_fn_t fn);
+const char *
+wl_cmp_op_str(wl_cmp_op_t op);
+const char *
+wl_arith_op_str(wl_arith_op_t op);
+const char *
+wl_agg_fn_str(wl_agg_fn_t fn);
 
 /* ======================================================================== */
 /* Basic Types                                                              */
@@ -95,13 +98,13 @@ typedef bool wirelog_bool_t;
  * Column data types supported by wirelog
  */
 typedef enum {
-    WIRELOG_TYPE_INT32 = 0,      /* 32-bit signed integer */
-    WIRELOG_TYPE_INT64 = 1,      /* 64-bit signed integer */
-    WIRELOG_TYPE_UINT32 = 2,     /* 32-bit unsigned integer */
-    WIRELOG_TYPE_UINT64 = 3,     /* 64-bit unsigned integer */
-    WIRELOG_TYPE_FLOAT = 4,      /* 64-bit floating point */
-    WIRELOG_TYPE_STRING = 5,     /* UTF-8 string */
-    WIRELOG_TYPE_BOOL = 6,       /* Boolean */
+    WIRELOG_TYPE_INT32 = 0,  /* 32-bit signed integer */
+    WIRELOG_TYPE_INT64 = 1,  /* 64-bit signed integer */
+    WIRELOG_TYPE_UINT32 = 2, /* 32-bit unsigned integer */
+    WIRELOG_TYPE_UINT64 = 3, /* 64-bit unsigned integer */
+    WIRELOG_TYPE_FLOAT = 4,  /* 64-bit floating point */
+    WIRELOG_TYPE_STRING = 5, /* UTF-8 string */
+    WIRELOG_TYPE_BOOL = 6,   /* Boolean */
 } wirelog_column_type_t;
 
 /**

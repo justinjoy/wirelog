@@ -21,10 +21,11 @@
 /* Utility                                                                  */
 /* ======================================================================== */
 
-char*
+char *
 strdup_safe(const char *s)
 {
-    if (!s) return NULL;
+    if (!s)
+        return NULL;
     size_t len = strlen(s);
     char *dup = (char *)malloc(len + 1);
     if (dup) {
@@ -37,11 +38,12 @@ strdup_safe(const char *s)
 /* Expression API                                                           */
 /* ======================================================================== */
 
-wl_ir_expr_t*
+wl_ir_expr_t *
 wl_ir_expr_create(wl_ir_expr_type_t type)
 {
     wl_ir_expr_t *expr = (wl_ir_expr_t *)calloc(1, sizeof(wl_ir_expr_t));
-    if (!expr) return NULL;
+    if (!expr)
+        return NULL;
     expr->type = type;
     return expr;
 }
@@ -49,15 +51,17 @@ wl_ir_expr_create(wl_ir_expr_type_t type)
 void
 wl_ir_expr_add_child(wl_ir_expr_t *parent, wl_ir_expr_t *child)
 {
-    if (!parent || !child) return;
+    if (!parent || !child)
+        return;
 
     if (parent->child_count >= parent->child_capacity) {
         uint32_t new_cap = parent->child_capacity == 0
-            ? INITIAL_CHILD_CAPACITY
-            : parent->child_capacity * 2;
+                               ? INITIAL_CHILD_CAPACITY
+                               : parent->child_capacity * 2;
         wl_ir_expr_t **new_children = (wl_ir_expr_t **)realloc(
             parent->children, new_cap * sizeof(wl_ir_expr_t *));
-        if (!new_children) return;
+        if (!new_children)
+            return;
         parent->children = new_children;
         parent->child_capacity = new_cap;
     }
@@ -68,7 +72,8 @@ wl_ir_expr_add_child(wl_ir_expr_t *parent, wl_ir_expr_t *child)
 void
 wl_ir_expr_free(wl_ir_expr_t *expr)
 {
-    if (!expr) return;
+    if (!expr)
+        return;
 
     for (uint32_t i = 0; i < expr->child_count; i++) {
         wl_ir_expr_free(expr->children[i]);
@@ -83,11 +88,13 @@ wl_ir_expr_free(wl_ir_expr_t *expr)
 /* IR Node Construction                                                     */
 /* ======================================================================== */
 
-wirelog_ir_node_t*
+wirelog_ir_node_t *
 wl_ir_node_create(wirelog_ir_node_type_t type)
 {
-    wirelog_ir_node_t *node = (wirelog_ir_node_t *)calloc(1, sizeof(wirelog_ir_node_t));
-    if (!node) return NULL;
+    wirelog_ir_node_t *node
+        = (wirelog_ir_node_t *)calloc(1, sizeof(wirelog_ir_node_t));
+    if (!node)
+        return NULL;
     node->type = type;
     return node;
 }
@@ -95,7 +102,8 @@ wl_ir_node_create(wirelog_ir_node_type_t type)
 void
 wl_ir_node_set_relation(wirelog_ir_node_t *node, const char *name)
 {
-    if (!node) return;
+    if (!node)
+        return;
     free(node->relation_name);
     node->relation_name = strdup_safe(name);
 }
@@ -103,15 +111,16 @@ wl_ir_node_set_relation(wirelog_ir_node_t *node, const char *name)
 void
 wl_ir_node_add_child(wirelog_ir_node_t *node, wirelog_ir_node_t *child)
 {
-    if (!node || !child) return;
+    if (!node || !child)
+        return;
 
     if (node->child_count >= node->child_capacity) {
-        uint32_t new_cap = node->child_capacity == 0
-            ? INITIAL_CHILD_CAPACITY
-            : node->child_capacity * 2;
+        uint32_t new_cap = node->child_capacity == 0 ? INITIAL_CHILD_CAPACITY
+                                                     : node->child_capacity * 2;
         wirelog_ir_node_t **new_children = (wirelog_ir_node_t **)realloc(
             node->children, new_cap * sizeof(wirelog_ir_node_t *));
-        if (!new_children) return;
+        if (!new_children)
+            return;
         node->children = new_children;
         node->child_capacity = new_cap;
     }
@@ -122,7 +131,8 @@ wl_ir_node_add_child(wirelog_ir_node_t *node, wirelog_ir_node_t *child)
 void
 wl_ir_node_free(wirelog_ir_node_t *node)
 {
-    if (!node) return;
+    if (!node)
+        return;
 
     /* Free children recursively */
     for (uint32_t i = 0; i < node->child_count; i++) {
@@ -136,7 +146,7 @@ wl_ir_node_free(wirelog_ir_node_t *node)
     /* Free SCAN column names */
     if (node->column_names) {
         for (uint32_t i = 0; i < node->column_count; i++) {
-            free(node->column_names[i]);  /* NULL-safe: free(NULL) is no-op */
+            free(node->column_names[i]); /* NULL-safe: free(NULL) is no-op */
         }
         free(node->column_names);
     }
@@ -181,28 +191,32 @@ wl_ir_node_free(wirelog_ir_node_t *node)
 wirelog_ir_node_type_t
 wirelog_ir_node_get_type(const wirelog_ir_node_t *node)
 {
-    if (!node) return WIRELOG_IR_SCAN;
+    if (!node)
+        return WIRELOG_IR_SCAN;
     return node->type;
 }
 
-const char*
+const char *
 wirelog_ir_node_get_relation_name(const wirelog_ir_node_t *node)
 {
-    if (!node) return NULL;
+    if (!node)
+        return NULL;
     return node->relation_name;
 }
 
 uint32_t
 wirelog_ir_node_get_child_count(const wirelog_ir_node_t *node)
 {
-    if (!node) return 0;
+    if (!node)
+        return 0;
     return node->child_count;
 }
 
-const wirelog_ir_node_t*
+const wirelog_ir_node_t *
 wirelog_ir_node_get_child(const wirelog_ir_node_t *node, uint32_t index)
 {
-    if (!node || index >= node->child_count) return NULL;
+    if (!node || index >= node->child_count)
+        return NULL;
     return node->children[index];
 }
 
@@ -210,18 +224,26 @@ wirelog_ir_node_get_child(const wirelog_ir_node_t *node, uint32_t index)
 /* IR Printing / Debugging                                                  */
 /* ======================================================================== */
 
-static const char*
+static const char *
 ir_node_type_str(wirelog_ir_node_type_t type)
 {
     switch (type) {
-    case WIRELOG_IR_SCAN:      return "SCAN";
-    case WIRELOG_IR_PROJECT:   return "PROJECT";
-    case WIRELOG_IR_FILTER:    return "FILTER";
-    case WIRELOG_IR_JOIN:      return "JOIN";
-    case WIRELOG_IR_FLATMAP:   return "FLATMAP";
-    case WIRELOG_IR_AGGREGATE: return "AGGREGATE";
-    case WIRELOG_IR_ANTIJOIN:  return "ANTIJOIN";
-    case WIRELOG_IR_UNION:     return "UNION";
+    case WIRELOG_IR_SCAN:
+        return "SCAN";
+    case WIRELOG_IR_PROJECT:
+        return "PROJECT";
+    case WIRELOG_IR_FILTER:
+        return "FILTER";
+    case WIRELOG_IR_JOIN:
+        return "JOIN";
+    case WIRELOG_IR_FLATMAP:
+        return "FLATMAP";
+    case WIRELOG_IR_AGGREGATE:
+        return "AGGREGATE";
+    case WIRELOG_IR_ANTIJOIN:
+        return "ANTIJOIN";
+    case WIRELOG_IR_UNION:
+        return "UNION";
     }
     return "UNKNOWN";
 }
@@ -229,27 +251,28 @@ ir_node_type_str(wirelog_ir_node_type_t type)
 static void
 ir_expr_to_buf(const wl_ir_expr_t *expr, char *buf, size_t bufsize, size_t *pos)
 {
-    if (!expr || *pos >= bufsize - 1) return;
+    if (!expr || *pos >= bufsize - 1)
+        return;
 
     switch (expr->type) {
     case WL_IR_EXPR_VAR:
         *pos += (size_t)snprintf(buf + *pos, bufsize - *pos, "%s",
-                                  expr->var_name ? expr->var_name : "?");
+                                 expr->var_name ? expr->var_name : "?");
         break;
     case WL_IR_EXPR_CONST_INT:
         *pos += (size_t)snprintf(buf + *pos, bufsize - *pos, "%lld",
-                                  (long long)expr->int_value);
+                                 (long long)expr->int_value);
         break;
     case WL_IR_EXPR_CONST_STR:
         *pos += (size_t)snprintf(buf + *pos, bufsize - *pos, "\"%s\"",
-                                  expr->str_value ? expr->str_value : "");
+                                 expr->str_value ? expr->str_value : "");
         break;
     case WL_IR_EXPR_ARITH:
         if (expr->child_count >= 2) {
             *pos += (size_t)snprintf(buf + *pos, bufsize - *pos, "(");
             ir_expr_to_buf(expr->children[0], buf, bufsize, pos);
             *pos += (size_t)snprintf(buf + *pos, bufsize - *pos, " %s ",
-                                      wl_arith_op_str(expr->arith_op));
+                                     wl_arith_op_str(expr->arith_op));
             ir_expr_to_buf(expr->children[1], buf, bufsize, pos);
             *pos += (size_t)snprintf(buf + *pos, bufsize - *pos, ")");
         }
@@ -258,13 +281,13 @@ ir_expr_to_buf(const wl_ir_expr_t *expr, char *buf, size_t bufsize, size_t *pos)
         if (expr->child_count >= 2) {
             ir_expr_to_buf(expr->children[0], buf, bufsize, pos);
             *pos += (size_t)snprintf(buf + *pos, bufsize - *pos, " %s ",
-                                      wl_cmp_op_str(expr->cmp_op));
+                                     wl_cmp_op_str(expr->cmp_op));
             ir_expr_to_buf(expr->children[1], buf, bufsize, pos);
         }
         break;
     case WL_IR_EXPR_AGG:
         *pos += (size_t)snprintf(buf + *pos, bufsize - *pos, "%s(",
-                                  wl_agg_fn_str(expr->agg_fn));
+                                 wl_agg_fn_str(expr->agg_fn));
         if (expr->child_count >= 1) {
             ir_expr_to_buf(expr->children[0], buf, bufsize, pos);
         }
@@ -272,7 +295,7 @@ ir_expr_to_buf(const wl_ir_expr_t *expr, char *buf, size_t bufsize, size_t *pos)
         break;
     case WL_IR_EXPR_BOOL:
         *pos += (size_t)snprintf(buf + *pos, bufsize - *pos, "%s",
-                                  expr->bool_value ? "true" : "false");
+                                 expr->bool_value ? "true" : "false");
         break;
     }
 }
@@ -281,7 +304,8 @@ static void
 ir_node_to_buf(const wirelog_ir_node_t *node, char *buf, size_t bufsize,
                size_t *pos, uint32_t indent)
 {
-    if (!node || *pos >= bufsize - 1) return;
+    if (!node || *pos >= bufsize - 1)
+        return;
 
     /* Indentation */
     for (uint32_t i = 0; i < indent; i++) {
@@ -290,22 +314,23 @@ ir_node_to_buf(const wirelog_ir_node_t *node, char *buf, size_t bufsize,
 
     /* Node type */
     *pos += (size_t)snprintf(buf + *pos, bufsize - *pos, "%s",
-                              ir_node_type_str(node->type));
+                             ir_node_type_str(node->type));
 
     /* Relation name */
     if (node->relation_name) {
         *pos += (size_t)snprintf(buf + *pos, bufsize - *pos, " \"%s\"",
-                                  node->relation_name);
+                                 node->relation_name);
     }
 
     /* SCAN columns */
     if (node->type == WIRELOG_IR_SCAN && node->column_names) {
         *pos += (size_t)snprintf(buf + *pos, bufsize - *pos, " [");
         for (uint32_t i = 0; i < node->column_count; i++) {
-            if (i > 0) *pos += (size_t)snprintf(buf + *pos, bufsize - *pos, ", ");
+            if (i > 0)
+                *pos += (size_t)snprintf(buf + *pos, bufsize - *pos, ", ");
             if (node->column_names[i]) {
                 *pos += (size_t)snprintf(buf + *pos, bufsize - *pos, "%s",
-                                          node->column_names[i]);
+                                         node->column_names[i]);
             } else {
                 *pos += (size_t)snprintf(buf + *pos, bufsize - *pos, "_");
             }
@@ -318,7 +343,7 @@ ir_node_to_buf(const wirelog_ir_node_t *node, char *buf, size_t bufsize,
         *pos += (size_t)snprintf(buf + *pos, bufsize - *pos, " (key:");
         for (uint32_t i = 0; i < node->join_key_count; i++) {
             *pos += (size_t)snprintf(buf + *pos, bufsize - *pos, " %s",
-                                      node->join_left_keys[i]);
+                                     node->join_left_keys[i]);
         }
         *pos += (size_t)snprintf(buf + *pos, bufsize - *pos, ")");
     }
@@ -347,7 +372,8 @@ ir_node_to_buf(const wirelog_ir_node_t *node, char *buf, size_t bufsize,
 void
 wirelog_ir_node_print(const wirelog_ir_node_t *node, uint32_t indent)
 {
-    if (!node) return;
+    if (!node)
+        return;
 
     char buf[4096];
     size_t pos = 0;
@@ -355,13 +381,15 @@ wirelog_ir_node_print(const wirelog_ir_node_t *node, uint32_t indent)
     fprintf(stderr, "%s", buf);
 }
 
-char*
+char *
 wirelog_ir_node_to_string(const wirelog_ir_node_t *node)
 {
-    if (!node) return NULL;
+    if (!node)
+        return NULL;
 
     char *buf = (char *)malloc(4096);
-    if (!buf) return NULL;
+    if (!buf)
+        return NULL;
 
     size_t pos = 0;
     ir_node_to_buf(node, buf, 4096, &pos, 0);

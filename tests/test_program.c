@@ -24,32 +24,33 @@ static int tests_run = 0;
 static int tests_passed = 0;
 static int tests_failed = 0;
 
-#define TEST(name) \
-    do { \
-        tests_run++; \
+#define TEST(name)                      \
+    do {                                \
+        tests_run++;                    \
         printf("  [TEST] %-55s", name); \
-        fflush(stdout); \
+        fflush(stdout);                 \
     } while (0)
 
-#define PASS() \
-    do { \
-        tests_passed++; \
+#define PASS()             \
+    do {                   \
+        tests_passed++;    \
         printf(" PASS\n"); \
     } while (0)
 
-#define FAIL(msg) \
-    do { \
-        tests_failed++; \
+#define FAIL(msg)                   \
+    do {                            \
+        tests_failed++;             \
         printf(" FAIL: %s\n", msg); \
     } while (0)
 
 /* Helper: parse string and build program */
-static struct wirelog_program*
+static struct wirelog_program *
 make_program(const char *source)
 {
-    char errbuf[512] = {0};
+    char errbuf[512] = { 0 };
     wl_ast_node_t *ast = wl_parse_string(source, errbuf, sizeof(errbuf));
-    if (!ast) return NULL;
+    if (!ast)
+        return NULL;
 
     struct wirelog_program *prog = wl_program_create();
     if (!prog) {
@@ -75,15 +76,18 @@ test_decl_single_relation(void)
 {
     TEST("Parse .decl with 2 columns");
 
-    struct wirelog_program *prog = make_program(
-        ".decl Arc(x: int32, y: int32)\n"
-    );
+    struct wirelog_program *prog
+        = make_program(".decl Arc(x: int32, y: int32)\n");
 
-    if (!prog) { FAIL("program is NULL"); return; }
+    if (!prog) {
+        FAIL("program is NULL");
+        return;
+    }
 
     if (prog->relation_count != 1) {
         char buf[100];
-        snprintf(buf, sizeof(buf), "expected 1 relation, got %u", prog->relation_count);
+        snprintf(buf, sizeof(buf), "expected 1 relation, got %u",
+                 prog->relation_count);
         wl_program_free(prog);
         FAIL(buf);
         return;
@@ -118,10 +122,12 @@ test_input_directive(void)
 
     struct wirelog_program *prog = make_program(
         ".decl Arc(x: int32, y: int32)\n"
-        ".input Arc(filename=\"data.csv\", delimiter=\"\\t\")\n"
-    );
+        ".input Arc(filename=\"data.csv\", delimiter=\"\\t\")\n");
 
-    if (!prog) { FAIL("program is NULL"); return; }
+    if (!prog) {
+        FAIL("program is NULL");
+        return;
+    }
 
     if (!prog->relations[0].has_input) {
         wl_program_free(prog);
@@ -144,12 +150,14 @@ test_output_directive(void)
 {
     TEST("Parse .output marks relation has_output");
 
-    struct wirelog_program *prog = make_program(
-        ".decl Reach(x: int32, y: int32)\n"
-        ".output Reach\n"
-    );
+    struct wirelog_program *prog
+        = make_program(".decl Reach(x: int32, y: int32)\n"
+                       ".output Reach\n");
 
-    if (!prog) { FAIL("program is NULL"); return; }
+    if (!prog) {
+        FAIL("program is NULL");
+        return;
+    }
 
     if (!prog->relations[0].has_output) {
         wl_program_free(prog);
@@ -166,12 +174,13 @@ test_printsize_directive(void)
 {
     TEST("Parse .printsize marks relation has_printsize");
 
-    struct wirelog_program *prog = make_program(
-        ".decl Tc(x: int32, y: int32)\n"
-        ".printsize Tc\n"
-    );
+    struct wirelog_program *prog = make_program(".decl Tc(x: int32, y: int32)\n"
+                                                ".printsize Tc\n");
 
-    if (!prog) { FAIL("program is NULL"); return; }
+    if (!prog) {
+        FAIL("program is NULL");
+        return;
+    }
 
     if (!prog->relations[0].has_printsize) {
         wl_program_free(prog);
@@ -188,20 +197,23 @@ test_full_tc_metadata(void)
 {
     TEST("Full TC program: 2 relations with correct metadata");
 
-    struct wirelog_program *prog = make_program(
-        ".decl Arc(x: int32, y: int32)\n"
-        ".decl Tc(x: int32, y: int32)\n"
-        ".input Arc(filename=\"arc.csv\")\n"
-        ".output Tc\n"
-        "Tc(x, y) :- Arc(x, y).\n"
-        "Tc(x, y) :- Tc(x, z), Arc(z, y).\n"
-    );
+    struct wirelog_program *prog
+        = make_program(".decl Arc(x: int32, y: int32)\n"
+                       ".decl Tc(x: int32, y: int32)\n"
+                       ".input Arc(filename=\"arc.csv\")\n"
+                       ".output Tc\n"
+                       "Tc(x, y) :- Arc(x, y).\n"
+                       "Tc(x, y) :- Tc(x, z), Arc(z, y).\n");
 
-    if (!prog) { FAIL("program is NULL"); return; }
+    if (!prog) {
+        FAIL("program is NULL");
+        return;
+    }
 
     if (prog->relation_count != 2) {
         char buf[100];
-        snprintf(buf, sizeof(buf), "expected 2 relations, got %u", prog->relation_count);
+        snprintf(buf, sizeof(buf), "expected 2 relations, got %u",
+                 prog->relation_count);
         wl_program_free(prog);
         FAIL(buf);
         return;
@@ -210,8 +222,10 @@ test_full_tc_metadata(void)
     /* Find Arc and Tc */
     int arc_idx = -1, tc_idx = -1;
     for (uint32_t i = 0; i < prog->relation_count; i++) {
-        if (strcmp(prog->relations[i].name, "Arc") == 0) arc_idx = (int)i;
-        if (strcmp(prog->relations[i].name, "Tc") == 0) tc_idx = (int)i;
+        if (strcmp(prog->relations[i].name, "Arc") == 0)
+            arc_idx = (int)i;
+        if (strcmp(prog->relations[i].name, "Tc") == 0)
+            tc_idx = (int)i;
     }
 
     if (arc_idx < 0 || tc_idx < 0) {
@@ -234,7 +248,8 @@ test_full_tc_metadata(void)
 
     if (prog->rule_count != 2) {
         char buf[100];
-        snprintf(buf, sizeof(buf), "expected 2 rules, got %u", prog->rule_count);
+        snprintf(buf, sizeof(buf), "expected 2 rules, got %u",
+                 prog->rule_count);
         wl_program_free(prog);
         FAIL(buf);
         return;
@@ -249,12 +264,14 @@ test_no_rules_program(void)
 {
     TEST("Program with no rules has 0 rule_count");
 
-    struct wirelog_program *prog = make_program(
-        ".decl Arc(x: int32, y: int32)\n"
-        ".input Arc(filename=\"data.csv\")\n"
-    );
+    struct wirelog_program *prog
+        = make_program(".decl Arc(x: int32, y: int32)\n"
+                       ".input Arc(filename=\"data.csv\")\n");
 
-    if (!prog) { FAIL("program is NULL"); return; }
+    if (!prog) {
+        FAIL("program is NULL");
+        return;
+    }
 
     if (prog->rule_count != 0) {
         wl_program_free(prog);
@@ -271,11 +288,13 @@ test_schema_synthesis(void)
 {
     TEST("Schema synthesis from relation metadata");
 
-    struct wirelog_program *prog = make_program(
-        ".decl Arc(x: int32, y: int32)\n"
-    );
+    struct wirelog_program *prog
+        = make_program(".decl Arc(x: int32, y: int32)\n");
 
-    if (!prog) { FAIL("program is NULL"); return; }
+    if (!prog) {
+        FAIL("program is NULL");
+        return;
+    }
 
     wl_program_build_schemas(prog);
 
@@ -312,14 +331,16 @@ test_default_stratum(void)
 {
     TEST("Default stratum contains all rule head names");
 
-    struct wirelog_program *prog = make_program(
-        ".decl Arc(x: int32, y: int32)\n"
-        ".decl Tc(x: int32, y: int32)\n"
-        "Tc(x, y) :- Arc(x, y).\n"
-        "Tc(x, y) :- Tc(x, z), Arc(z, y).\n"
-    );
+    struct wirelog_program *prog
+        = make_program(".decl Arc(x: int32, y: int32)\n"
+                       ".decl Tc(x: int32, y: int32)\n"
+                       "Tc(x, y) :- Arc(x, y).\n"
+                       "Tc(x, y) :- Tc(x, z), Arc(z, y).\n");
 
-    if (!prog) { FAIL("program is NULL"); return; }
+    if (!prog) {
+        FAIL("program is NULL");
+        return;
+    }
 
     wl_program_build_default_stratum(prog);
 
@@ -337,7 +358,8 @@ test_default_stratum(void)
 
     if (prog->strata[0].rule_count != 2) {
         char buf[100];
-        snprintf(buf, sizeof(buf), "expected 2 rule names, got %u", prog->strata[0].rule_count);
+        snprintf(buf, sizeof(buf), "expected 2 rule names, got %u",
+                 prog->strata[0].rule_count);
         wl_program_free(prog);
         FAIL(buf);
         return;
@@ -358,11 +380,12 @@ test_program_free_null(void)
 }
 
 /* Helper: parse string, build program, and convert rules */
-static struct wirelog_program*
+static struct wirelog_program *
 make_program_with_rules(const char *source)
 {
     struct wirelog_program *prog = make_program(source);
-    if (!prog) return NULL;
+    if (!prog)
+        return NULL;
 
     if (wl_program_convert_rules(prog, prog->ast) != 0) {
         wl_program_free(prog);
@@ -381,13 +404,14 @@ test_simple_rule(void)
 {
     TEST("Simple rule r(x) :- a(x). -> PROJECT over SCAN");
 
-    struct wirelog_program *prog = make_program_with_rules(
-        ".decl a(x: int32)\n"
-        ".decl r(x: int32)\n"
-        "r(x) :- a(x).\n"
-    );
+    struct wirelog_program *prog = make_program_with_rules(".decl a(x: int32)\n"
+                                                           ".decl r(x: int32)\n"
+                                                           "r(x) :- a(x).\n");
 
-    if (!prog) { FAIL("program is NULL"); return; }
+    if (!prog) {
+        FAIL("program is NULL");
+        return;
+    }
     if (prog->rule_count != 1 || !prog->rules[0].ir_root) {
         wl_program_free(prog);
         FAIL("should have 1 rule with IR");
@@ -422,13 +446,15 @@ test_two_body_join(void)
 {
     TEST("Two-body join: PROJECT over JOIN(SCAN, SCAN)");
 
-    struct wirelog_program *prog = make_program_with_rules(
-        ".decl Tc(x: int32, y: int32)\n"
-        ".decl Arc(x: int32, y: int32)\n"
-        "Tc(x, y) :- Tc(x, z), Arc(z, y).\n"
-    );
+    struct wirelog_program *prog
+        = make_program_with_rules(".decl Tc(x: int32, y: int32)\n"
+                                  ".decl Arc(x: int32, y: int32)\n"
+                                  "Tc(x, y) :- Tc(x, z), Arc(z, y).\n");
 
-    if (!prog) { FAIL("program is NULL"); return; }
+    if (!prog) {
+        FAIL("program is NULL");
+        return;
+    }
 
     wirelog_ir_node_t *root = prog->rules[0].ir_root;
     if (root->type != WIRELOG_IR_PROJECT) {
@@ -450,8 +476,8 @@ test_two_body_join(void)
         return;
     }
 
-    if (join->children[0]->type != WIRELOG_IR_SCAN ||
-        join->children[1]->type != WIRELOG_IR_SCAN) {
+    if (join->children[0]->type != WIRELOG_IR_SCAN
+        || join->children[1]->type != WIRELOG_IR_SCAN) {
         wl_program_free(prog);
         FAIL("JOIN children should be SCANs");
         return;
@@ -460,7 +486,8 @@ test_two_body_join(void)
     /* Verify join key is z */
     if (join->join_key_count != 1) {
         char buf[100];
-        snprintf(buf, sizeof(buf), "expected 1 join key, got %u", join->join_key_count);
+        snprintf(buf, sizeof(buf), "expected 1 join key, got %u",
+                 join->join_key_count);
         wl_program_free(prog);
         FAIL(buf);
         return;
@@ -484,10 +511,12 @@ test_comparison_filter(void)
     struct wirelog_program *prog = make_program_with_rules(
         ".decl edge(x: int32, y: int32)\n"
         ".decl sg(x: int32, y: int32)\n"
-        "sg(x, y) :- edge(z, x), edge(z, y), x != y.\n"
-    );
+        "sg(x, y) :- edge(z, x), edge(z, y), x != y.\n");
 
-    if (!prog) { FAIL("program is NULL"); return; }
+    if (!prog) {
+        FAIL("program is NULL");
+        return;
+    }
 
     wirelog_ir_node_t *root = prog->rules[0].ir_root;
     if (root->type != WIRELOG_IR_PROJECT) {
@@ -531,14 +560,16 @@ test_negation_antijoin(void)
 {
     TEST("Negation: PROJECT over ANTIJOIN(SCAN, SCAN)");
 
-    struct wirelog_program *prog = make_program_with_rules(
-        ".decl node(x: int32)\n"
-        ".decl edge(x: int32, y: int32)\n"
-        ".decl isolated(x: int32)\n"
-        "isolated(x) :- node(x), !edge(x, _).\n"
-    );
+    struct wirelog_program *prog
+        = make_program_with_rules(".decl node(x: int32)\n"
+                                  ".decl edge(x: int32, y: int32)\n"
+                                  ".decl isolated(x: int32)\n"
+                                  "isolated(x) :- node(x), !edge(x, _).\n");
 
-    if (!prog) { FAIL("program is NULL"); return; }
+    if (!prog) {
+        FAIL("program is NULL");
+        return;
+    }
 
     wirelog_ir_node_t *root = prog->rules[0].ir_root;
     if (root->type != WIRELOG_IR_PROJECT) {
@@ -550,7 +581,8 @@ test_negation_antijoin(void)
     wirelog_ir_node_t *antijoin = root->children[0];
     if (antijoin->type != WIRELOG_IR_ANTIJOIN) {
         char buf[100];
-        snprintf(buf, sizeof(buf), "expected ANTIJOIN, got type %d", antijoin->type);
+        snprintf(buf, sizeof(buf), "expected ANTIJOIN, got type %d",
+                 antijoin->type);
         wl_program_free(prog);
         FAIL(buf);
         return;
@@ -571,13 +603,15 @@ test_aggregation_simple(void)
 {
     TEST("Aggregation: AGGREGATE over SCAN");
 
-    struct wirelog_program *prog = make_program_with_rules(
-        ".decl sssp2(x: int32, d: int32)\n"
-        ".decl sssp(x: int32, d: int32)\n"
-        "sssp(x, min(d)) :- sssp2(x, d).\n"
-    );
+    struct wirelog_program *prog
+        = make_program_with_rules(".decl sssp2(x: int32, d: int32)\n"
+                                  ".decl sssp(x: int32, d: int32)\n"
+                                  "sssp(x, min(d)) :- sssp2(x, d).\n");
 
-    if (!prog) { FAIL("program is NULL"); return; }
+    if (!prog) {
+        FAIL("program is NULL");
+        return;
+    }
 
     wirelog_ir_node_t *root = prog->rules[0].ir_root;
     if (root->type != WIRELOG_IR_AGGREGATE) {
@@ -610,10 +644,12 @@ test_aggregation_with_join(void)
     struct wirelog_program *prog = make_program_with_rules(
         ".decl sssp2(x: int32, d: int32)\n"
         ".decl arc(x: int32, y: int32, d: int32)\n"
-        "sssp2(y, min(d1 + d2)) :- sssp2(x, d1), arc(x, y, d2).\n"
-    );
+        "sssp2(y, min(d1 + d2)) :- sssp2(x, d1), arc(x, y, d2).\n");
 
-    if (!prog) { FAIL("program is NULL"); return; }
+    if (!prog) {
+        FAIL("program is NULL");
+        return;
+    }
 
     wirelog_ir_node_t *root = prog->rules[0].ir_root;
     if (root->type != WIRELOG_IR_AGGREGATE) {
@@ -651,13 +687,15 @@ test_aggregation_constant(void)
 {
     TEST("Aggregation with constant: min(0)");
 
-    struct wirelog_program *prog = make_program_with_rules(
-        ".decl id(x: int32)\n"
-        ".decl r(x: int32, d: int32)\n"
-        "r(x, min(0)) :- id(x).\n"
-    );
+    struct wirelog_program *prog
+        = make_program_with_rules(".decl id(x: int32)\n"
+                                  ".decl r(x: int32, d: int32)\n"
+                                  "r(x, min(0)) :- id(x).\n");
 
-    if (!prog) { FAIL("program is NULL"); return; }
+    if (!prog) {
+        FAIL("program is NULL");
+        return;
+    }
 
     wirelog_ir_node_t *root = prog->rules[0].ir_root;
     if (root->type != WIRELOG_IR_AGGREGATE) {
@@ -687,15 +725,17 @@ test_three_body_join(void)
 {
     TEST("Three-body join: left-deep JOIN tree");
 
-    struct wirelog_program *prog = make_program_with_rules(
-        ".decl a(x: int32, y: int32)\n"
-        ".decl b(y: int32, z: int32)\n"
-        ".decl c(z: int32)\n"
-        ".decl r(x: int32)\n"
-        "r(x) :- a(x, y), b(y, z), c(z).\n"
-    );
+    struct wirelog_program *prog
+        = make_program_with_rules(".decl a(x: int32, y: int32)\n"
+                                  ".decl b(y: int32, z: int32)\n"
+                                  ".decl c(z: int32)\n"
+                                  ".decl r(x: int32)\n"
+                                  "r(x) :- a(x, y), b(y, z), c(z).\n");
 
-    if (!prog) { FAIL("program is NULL"); return; }
+    if (!prog) {
+        FAIL("program is NULL");
+        return;
+    }
 
     wirelog_ir_node_t *root = prog->rules[0].ir_root;
     if (root->type != WIRELOG_IR_PROJECT) {
@@ -740,13 +780,15 @@ test_duplicate_variable(void)
 {
     TEST("Duplicate variable a(x,x) -> FILTER(col0=col1)");
 
-    struct wirelog_program *prog = make_program_with_rules(
-        ".decl a(x: int32, y: int32)\n"
-        ".decl r(x: int32)\n"
-        "r(x) :- a(x, x).\n"
-    );
+    struct wirelog_program *prog
+        = make_program_with_rules(".decl a(x: int32, y: int32)\n"
+                                  ".decl r(x: int32)\n"
+                                  "r(x) :- a(x, x).\n");
 
-    if (!prog) { FAIL("program is NULL"); return; }
+    if (!prog) {
+        FAIL("program is NULL");
+        return;
+    }
 
     wirelog_ir_node_t *root = prog->rules[0].ir_root;
     if (root->type != WIRELOG_IR_PROJECT) {
@@ -759,7 +801,8 @@ test_duplicate_variable(void)
     wirelog_ir_node_t *filter = root->children[0];
     if (filter->type != WIRELOG_IR_FILTER) {
         char buf[100];
-        snprintf(buf, sizeof(buf), "expected FILTER, got type %d", filter->type);
+        snprintf(buf, sizeof(buf), "expected FILTER, got type %d",
+                 filter->type);
         wl_program_free(prog);
         FAIL(buf);
         return;
@@ -792,13 +835,15 @@ test_constant_in_atom(void)
 {
     TEST("Constant in atom a(x, 42) -> FILTER(col1=42)");
 
-    struct wirelog_program *prog = make_program_with_rules(
-        ".decl a(x: int32, y: int32)\n"
-        ".decl r(x: int32)\n"
-        "r(x) :- a(x, 42).\n"
-    );
+    struct wirelog_program *prog
+        = make_program_with_rules(".decl a(x: int32, y: int32)\n"
+                                  ".decl r(x: int32)\n"
+                                  "r(x) :- a(x, 42).\n");
 
-    if (!prog) { FAIL("program is NULL"); return; }
+    if (!prog) {
+        FAIL("program is NULL");
+        return;
+    }
 
     wirelog_ir_node_t *root = prog->rules[0].ir_root;
     if (root->type != WIRELOG_IR_PROJECT) {
@@ -810,7 +855,8 @@ test_constant_in_atom(void)
     wirelog_ir_node_t *filter = root->children[0];
     if (filter->type != WIRELOG_IR_FILTER) {
         char buf[100];
-        snprintf(buf, sizeof(buf), "expected FILTER, got type %d", filter->type);
+        snprintf(buf, sizeof(buf), "expected FILTER, got type %d",
+                 filter->type);
         wl_program_free(prog);
         FAIL(buf);
         return;
@@ -827,8 +873,8 @@ test_constant_in_atom(void)
     wl_ir_expr_t *expr = filter->filter_expr;
     bool found_42 = false;
     for (uint32_t i = 0; i < expr->child_count; i++) {
-        if (expr->children[i]->type == WL_IR_EXPR_CONST_INT &&
-            expr->children[i]->int_value == 42) {
+        if (expr->children[i]->type == WL_IR_EXPR_CONST_INT
+            && expr->children[i]->int_value == 42) {
             found_42 = true;
         }
     }
@@ -848,21 +894,24 @@ test_wildcard_not_join_key(void)
 {
     TEST("Wildcard _ excluded from join keys");
 
-    struct wirelog_program *prog = make_program_with_rules(
-        ".decl a(x: int32, y: int32)\n"
-        ".decl b(z: int32, w: int32)\n"
-        ".decl r(x: int32)\n"
-        "r(x) :- a(x, _), b(_, x).\n"
-    );
+    struct wirelog_program *prog
+        = make_program_with_rules(".decl a(x: int32, y: int32)\n"
+                                  ".decl b(z: int32, w: int32)\n"
+                                  ".decl r(x: int32)\n"
+                                  "r(x) :- a(x, _), b(_, x).\n");
 
-    if (!prog) { FAIL("program is NULL"); return; }
+    if (!prog) {
+        FAIL("program is NULL");
+        return;
+    }
 
     wirelog_ir_node_t *root = prog->rules[0].ir_root;
     /* Should be PROJECT -> JOIN with key x only */
     wirelog_ir_node_t *join_node = root->children[0];
 
     /* May have filters wrapping, find the JOIN */
-    while (join_node && join_node->type != WIRELOG_IR_JOIN && join_node->child_count > 0) {
+    while (join_node && join_node->type != WIRELOG_IR_JOIN
+           && join_node->child_count > 0) {
         join_node = join_node->children[0];
     }
 
@@ -875,7 +924,8 @@ test_wildcard_not_join_key(void)
     /* Join key should be x, not _ */
     if (join_node->join_key_count != 1) {
         char buf[100];
-        snprintf(buf, sizeof(buf), "expected 1 join key, got %u", join_node->join_key_count);
+        snprintf(buf, sizeof(buf), "expected 1 join key, got %u",
+                 join_node->join_key_count);
         wl_program_free(prog);
         FAIL(buf);
         return;
@@ -883,7 +933,8 @@ test_wildcard_not_join_key(void)
 
     if (strcmp(join_node->join_left_keys[0], "x") != 0) {
         char buf[100];
-        snprintf(buf, sizeof(buf), "join key should be x, got %s", join_node->join_left_keys[0]);
+        snprintf(buf, sizeof(buf), "join key should be x, got %s",
+                 join_node->join_left_keys[0]);
         wl_program_free(prog);
         FAIL(buf);
         return;
@@ -898,13 +949,15 @@ test_wildcard_in_scan(void)
 {
     TEST("Wildcard in SCAN stored as NULL column");
 
-    struct wirelog_program *prog = make_program_with_rules(
-        ".decl a(x: int32, y: int32, z: int32)\n"
-        ".decl r(x: int32)\n"
-        "r(x) :- a(x, _, _).\n"
-    );
+    struct wirelog_program *prog
+        = make_program_with_rules(".decl a(x: int32, y: int32, z: int32)\n"
+                                  ".decl r(x: int32)\n"
+                                  "r(x) :- a(x, _, _).\n");
 
-    if (!prog) { FAIL("program is NULL"); return; }
+    if (!prog) {
+        FAIL("program is NULL");
+        return;
+    }
 
     /* Find the SCAN node */
     wirelog_ir_node_t *root = prog->rules[0].ir_root;
@@ -953,13 +1006,15 @@ test_boolean_true_noop(void)
 {
     TEST("Boolean True in body -> no FILTER added");
 
-    struct wirelog_program *prog = make_program_with_rules(
-        ".decl a(x: int32)\n"
-        ".decl r(x: int32)\n"
-        "r(x) :- a(x), True.\n"
-    );
+    struct wirelog_program *prog
+        = make_program_with_rules(".decl a(x: int32)\n"
+                                  ".decl r(x: int32)\n"
+                                  "r(x) :- a(x), True.\n");
 
-    if (!prog) { FAIL("program is NULL"); return; }
+    if (!prog) {
+        FAIL("program is NULL");
+        return;
+    }
 
     wirelog_ir_node_t *root = prog->rules[0].ir_root;
     /* Should be PROJECT -> SCAN (no FILTER for True) */
@@ -971,7 +1026,9 @@ test_boolean_true_noop(void)
 
     if (root->children[0]->type != WIRELOG_IR_SCAN) {
         char buf[100];
-        snprintf(buf, sizeof(buf), "expected SCAN, got type %d (True should be no-op)", root->children[0]->type);
+        snprintf(buf, sizeof(buf),
+                 "expected SCAN, got type %d (True should be no-op)",
+                 root->children[0]->type);
         wl_program_free(prog);
         FAIL(buf);
         return;
@@ -986,13 +1043,15 @@ test_boolean_false_filter(void)
 {
     TEST("Boolean False in body -> FILTER(false) added");
 
-    struct wirelog_program *prog = make_program_with_rules(
-        ".decl a(x: int32)\n"
-        ".decl r(x: int32)\n"
-        "r(x) :- a(x), False.\n"
-    );
+    struct wirelog_program *prog
+        = make_program_with_rules(".decl a(x: int32)\n"
+                                  ".decl r(x: int32)\n"
+                                  "r(x) :- a(x), False.\n");
 
-    if (!prog) { FAIL("program is NULL"); return; }
+    if (!prog) {
+        FAIL("program is NULL");
+        return;
+    }
 
     wirelog_ir_node_t *root = prog->rules[0].ir_root;
     if (root->type != WIRELOG_IR_PROJECT) {
@@ -1025,11 +1084,12 @@ test_boolean_false_filter(void)
 }
 
 /* Helper: full pipeline (parse + metadata + convert + merge + schemas + strata) */
-static struct wirelog_program*
+static struct wirelog_program *
 make_full_program(const char *source)
 {
     struct wirelog_program *prog = make_program_with_rules(source);
-    if (!prog) return NULL;
+    if (!prog)
+        return NULL;
 
     if (wl_program_merge_unions(prog) != 0) {
         wl_program_free(prog);
@@ -1051,14 +1111,16 @@ test_union_merge_tc(void)
 {
     TEST("TC 2 rules same head -> UNION with 2 children");
 
-    struct wirelog_program *prog = make_full_program(
-        ".decl Arc(x: int32, y: int32)\n"
-        ".decl Tc(x: int32, y: int32)\n"
-        "Tc(x, y) :- Arc(x, y).\n"
-        "Tc(x, y) :- Tc(x, z), Arc(z, y).\n"
-    );
+    struct wirelog_program *prog
+        = make_full_program(".decl Arc(x: int32, y: int32)\n"
+                            ".decl Tc(x: int32, y: int32)\n"
+                            "Tc(x, y) :- Arc(x, y).\n"
+                            "Tc(x, y) :- Tc(x, z), Arc(z, y).\n");
 
-    if (!prog) { FAIL("program is NULL"); return; }
+    if (!prog) {
+        FAIL("program is NULL");
+        return;
+    }
 
     /* Find Tc relation index */
     int tc_idx = -1;
@@ -1100,13 +1162,14 @@ test_union_single_rule(void)
 {
     TEST("Single-rule relation -> no UNION wrapping");
 
-    struct wirelog_program *prog = make_full_program(
-        ".decl a(x: int32)\n"
-        ".decl r(x: int32)\n"
-        "r(x) :- a(x).\n"
-    );
+    struct wirelog_program *prog = make_full_program(".decl a(x: int32)\n"
+                                                     ".decl r(x: int32)\n"
+                                                     "r(x) :- a(x).\n");
 
-    if (!prog) { FAIL("program is NULL"); return; }
+    if (!prog) {
+        FAIL("program is NULL");
+        return;
+    }
 
     /* Find r relation index */
     int r_idx = -1;
@@ -1157,16 +1220,22 @@ test_api_parse_string(void)
     TEST("wirelog_parse_string returns valid program");
 
     wirelog_error_t err = WIRELOG_ERR_UNKNOWN;
-    wirelog_program_t *prog = wirelog_parse_string(
-        ".decl Arc(x: int32, y: int32)\n"
-        ".decl Tc(x: int32, y: int32)\n"
-        "Tc(x, y) :- Arc(x, y).\n"
-        "Tc(x, y) :- Tc(x, z), Arc(z, y).\n",
-        &err
-    );
+    wirelog_program_t *prog
+        = wirelog_parse_string(".decl Arc(x: int32, y: int32)\n"
+                               ".decl Tc(x: int32, y: int32)\n"
+                               "Tc(x, y) :- Arc(x, y).\n"
+                               "Tc(x, y) :- Tc(x, z), Arc(z, y).\n",
+                               &err);
 
-    if (!prog) { FAIL("program is NULL"); return; }
-    if (err != WIRELOG_OK) { wirelog_program_free(prog); FAIL("error should be OK"); return; }
+    if (!prog) {
+        FAIL("program is NULL");
+        return;
+    }
+    if (err != WIRELOG_OK) {
+        wirelog_program_free(prog);
+        FAIL("error should be OK");
+        return;
+    }
 
     wirelog_program_free(prog);
     PASS();
@@ -1178,10 +1247,8 @@ test_api_parse_string_error(void)
     TEST("wirelog_parse_string returns NULL for invalid input");
 
     wirelog_error_t err = WIRELOG_OK;
-    wirelog_program_t *prog = wirelog_parse_string(
-        "this is not valid datalog {{{}}}",
-        &err
-    );
+    wirelog_program_t *prog
+        = wirelog_parse_string("this is not valid datalog {{{}}}", &err);
 
     if (prog != NULL) {
         wirelog_program_free(prog);
@@ -1202,15 +1269,17 @@ test_api_get_rule_count(void)
 {
     TEST("wirelog_program_get_rule_count returns correct count");
 
-    wirelog_program_t *prog = wirelog_parse_string(
-        ".decl Arc(x: int32, y: int32)\n"
-        ".decl Tc(x: int32, y: int32)\n"
-        "Tc(x, y) :- Arc(x, y).\n"
-        "Tc(x, y) :- Tc(x, z), Arc(z, y).\n",
-        NULL
-    );
+    wirelog_program_t *prog
+        = wirelog_parse_string(".decl Arc(x: int32, y: int32)\n"
+                               ".decl Tc(x: int32, y: int32)\n"
+                               "Tc(x, y) :- Arc(x, y).\n"
+                               "Tc(x, y) :- Tc(x, z), Arc(z, y).\n",
+                               NULL);
 
-    if (!prog) { FAIL("program is NULL"); return; }
+    if (!prog) {
+        FAIL("program is NULL");
+        return;
+    }
 
     uint32_t count = wirelog_program_get_rule_count(prog);
     if (count != 2) {
@@ -1230,12 +1299,13 @@ test_api_get_schema(void)
 {
     TEST("wirelog_program_get_schema returns correct info");
 
-    wirelog_program_t *prog = wirelog_parse_string(
-        ".decl Arc(x: int32, y: int32)\n",
-        NULL
-    );
+    wirelog_program_t *prog
+        = wirelog_parse_string(".decl Arc(x: int32, y: int32)\n", NULL);
 
-    if (!prog) { FAIL("program is NULL"); return; }
+    if (!prog) {
+        FAIL("program is NULL");
+        return;
+    }
 
     const wirelog_schema_t *schema = wirelog_program_get_schema(prog, "Arc");
     if (!schema) {
@@ -1271,14 +1341,16 @@ test_api_get_schema_null(void)
 {
     TEST("wirelog_program_get_schema(nonexistent) returns NULL");
 
-    wirelog_program_t *prog = wirelog_parse_string(
-        ".decl Arc(x: int32, y: int32)\n",
-        NULL
-    );
+    wirelog_program_t *prog
+        = wirelog_parse_string(".decl Arc(x: int32, y: int32)\n", NULL);
 
-    if (!prog) { FAIL("program is NULL"); return; }
+    if (!prog) {
+        FAIL("program is NULL");
+        return;
+    }
 
-    const wirelog_schema_t *schema = wirelog_program_get_schema(prog, "nonexistent");
+    const wirelog_schema_t *schema
+        = wirelog_program_get_schema(prog, "nonexistent");
     if (schema != NULL) {
         wirelog_program_free(prog);
         FAIL("should return NULL for nonexistent relation");
@@ -1294,14 +1366,16 @@ test_api_get_stratum_count(void)
 {
     TEST("wirelog_program_get_stratum_count returns 1");
 
-    wirelog_program_t *prog = wirelog_parse_string(
-        ".decl Arc(x: int32, y: int32)\n"
-        ".decl Tc(x: int32, y: int32)\n"
-        "Tc(x, y) :- Arc(x, y).\n",
-        NULL
-    );
+    wirelog_program_t *prog
+        = wirelog_parse_string(".decl Arc(x: int32, y: int32)\n"
+                               ".decl Tc(x: int32, y: int32)\n"
+                               "Tc(x, y) :- Arc(x, y).\n",
+                               NULL);
 
-    if (!prog) { FAIL("program is NULL"); return; }
+    if (!prog) {
+        FAIL("program is NULL");
+        return;
+    }
 
     uint32_t count = wirelog_program_get_stratum_count(prog);
     if (count != 1) {
@@ -1321,15 +1395,17 @@ test_api_get_stratum(void)
 {
     TEST("wirelog_program_get_stratum(0) returns valid stratum");
 
-    wirelog_program_t *prog = wirelog_parse_string(
-        ".decl Arc(x: int32, y: int32)\n"
-        ".decl Tc(x: int32, y: int32)\n"
-        "Tc(x, y) :- Arc(x, y).\n"
-        "Tc(x, y) :- Tc(x, z), Arc(z, y).\n",
-        NULL
-    );
+    wirelog_program_t *prog
+        = wirelog_parse_string(".decl Arc(x: int32, y: int32)\n"
+                               ".decl Tc(x: int32, y: int32)\n"
+                               "Tc(x, y) :- Arc(x, y).\n"
+                               "Tc(x, y) :- Tc(x, z), Arc(z, y).\n",
+                               NULL);
 
-    if (!prog) { FAIL("program is NULL"); return; }
+    if (!prog) {
+        FAIL("program is NULL");
+        return;
+    }
 
     const wirelog_stratum_t *stratum = wirelog_program_get_stratum(prog, 0);
     if (!stratum) {
@@ -1340,7 +1416,8 @@ test_api_get_stratum(void)
 
     if (stratum->rule_count != 2) {
         char buf[100];
-        snprintf(buf, sizeof(buf), "expected 2 rules, got %u", stratum->rule_count);
+        snprintf(buf, sizeof(buf), "expected 2 rules, got %u",
+                 stratum->rule_count);
         wirelog_program_free(prog);
         FAIL(buf);
         return;
@@ -1355,12 +1432,13 @@ test_api_get_stratum_oob(void)
 {
     TEST("wirelog_program_get_stratum(99) returns NULL");
 
-    wirelog_program_t *prog = wirelog_parse_string(
-        ".decl Arc(x: int32, y: int32)\n",
-        NULL
-    );
+    wirelog_program_t *prog
+        = wirelog_parse_string(".decl Arc(x: int32, y: int32)\n", NULL);
 
-    if (!prog) { FAIL("program is NULL"); return; }
+    if (!prog) {
+        FAIL("program is NULL");
+        return;
+    }
 
     const wirelog_stratum_t *stratum = wirelog_program_get_stratum(prog, 99);
     if (stratum != NULL) {
@@ -1378,12 +1456,13 @@ test_api_is_stratified(void)
 {
     TEST("wirelog_program_is_stratified returns true (stub)");
 
-    wirelog_program_t *prog = wirelog_parse_string(
-        ".decl Arc(x: int32, y: int32)\n",
-        NULL
-    );
+    wirelog_program_t *prog
+        = wirelog_parse_string(".decl Arc(x: int32, y: int32)\n", NULL);
 
-    if (!prog) { FAIL("program is NULL"); return; }
+    if (!prog) {
+        FAIL("program is NULL");
+        return;
+    }
 
     if (!wirelog_program_is_stratified(prog)) {
         wirelog_program_free(prog);
@@ -1425,7 +1504,8 @@ test_api_parse_with_error_stub(void)
     wirelog_parse_error_t info;
     memset(&info, 0, sizeof(info));
 
-    wirelog_program_t *prog = wirelog_parse_with_error_info("nonexistent.dl", &info);
+    wirelog_program_t *prog
+        = wirelog_parse_with_error_info("nonexistent.dl", &info);
 
     if (prog != NULL) {
         wirelog_program_free(prog);
@@ -1447,17 +1527,19 @@ test_api_end_to_end(void)
     TEST("End-to-end: parse -> inspect IR -> schema -> free");
 
     wirelog_error_t err;
-    wirelog_program_t *prog = wirelog_parse_string(
-        ".decl Arc(x: int32, y: int32)\n"
-        ".decl Tc(x: int32, y: int32)\n"
-        ".input Arc(filename=\"arc.csv\")\n"
-        ".output Tc\n"
-        "Tc(x, y) :- Arc(x, y).\n"
-        "Tc(x, y) :- Tc(x, z), Arc(z, y).\n",
-        &err
-    );
+    wirelog_program_t *prog
+        = wirelog_parse_string(".decl Arc(x: int32, y: int32)\n"
+                               ".decl Tc(x: int32, y: int32)\n"
+                               ".input Arc(filename=\"arc.csv\")\n"
+                               ".output Tc\n"
+                               "Tc(x, y) :- Arc(x, y).\n"
+                               "Tc(x, y) :- Tc(x, z), Arc(z, y).\n",
+                               &err);
 
-    if (!prog || err != WIRELOG_OK) { FAIL("parse failed"); return; }
+    if (!prog || err != WIRELOG_OK) {
+        FAIL("parse failed");
+        return;
+    }
 
     /* Check rule count */
     if (wirelog_program_get_rule_count(prog) != 2) {
@@ -1467,7 +1549,8 @@ test_api_end_to_end(void)
     }
 
     /* Check schema */
-    const wirelog_schema_t *arc_schema = wirelog_program_get_schema(prog, "Arc");
+    const wirelog_schema_t *arc_schema
+        = wirelog_program_get_schema(prog, "Arc");
     if (!arc_schema || arc_schema->column_count != 2) {
         wirelog_program_free(prog);
         FAIL("Arc schema incorrect");

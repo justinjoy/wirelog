@@ -33,35 +33,35 @@ extern "C" {
 
 typedef enum {
     /* Top-level */
-    WL_NODE_PROGRAM,        /* children = declarations + rules */
+    WL_NODE_PROGRAM, /* children = declarations + rules */
 
     /* Declarations */
-    WL_NODE_DECL,           /* .decl name(params): children = typed_params */
-    WL_NODE_INPUT,          /* .input name(params): children = input_params */
-    WL_NODE_OUTPUT,         /* .output name */
-    WL_NODE_PRINTSIZE,      /* .printsize name */
+    WL_NODE_DECL,      /* .decl name(params): children = typed_params */
+    WL_NODE_INPUT,     /* .input name(params): children = input_params */
+    WL_NODE_OUTPUT,    /* .output name */
+    WL_NODE_PRINTSIZE, /* .printsize name */
 
     /* Rule structure */
-    WL_NODE_RULE,           /* children[0]=head, children[1..]=body; is_planning */
-    WL_NODE_HEAD,           /* name=relation, children=head_args */
-    WL_NODE_ATOM,           /* name=relation, children=atom_args */
-    WL_NODE_NEGATION,       /* !atom: children[0]=atom */
-    WL_NODE_COMPARISON,     /* cmp_op: children[0]=left, children[1]=right */
-    WL_NODE_BOOLEAN,        /* bool_value (True/False predicate) */
+    WL_NODE_RULE,       /* children[0]=head, children[1..]=body; is_planning */
+    WL_NODE_HEAD,       /* name=relation, children=head_args */
+    WL_NODE_ATOM,       /* name=relation, children=atom_args */
+    WL_NODE_NEGATION,   /* !atom: children[0]=atom */
+    WL_NODE_COMPARISON, /* cmp_op: children[0]=left, children[1]=right */
+    WL_NODE_BOOLEAN,    /* bool_value (True/False predicate) */
 
     /* Terms / Arguments */
-    WL_NODE_VARIABLE,       /* name = variable name */
-    WL_NODE_INTEGER,        /* int_value = integer constant */
-    WL_NODE_STRING,         /* str_value = string constant */
-    WL_NODE_WILDCARD,       /* _ placeholder */
-    WL_NODE_AGGREGATE,      /* agg_fn, children[0] = arithmetic expr */
+    WL_NODE_VARIABLE,  /* name = variable name */
+    WL_NODE_INTEGER,   /* int_value = integer constant */
+    WL_NODE_STRING,    /* str_value = string constant */
+    WL_NODE_WILDCARD,  /* _ placeholder */
+    WL_NODE_AGGREGATE, /* agg_fn, children[0] = arithmetic expr */
 
     /* Expressions */
-    WL_NODE_BINARY_EXPR,    /* arith_op, children[0]=left, children[1]=right */
+    WL_NODE_BINARY_EXPR, /* arith_op, children[0]=left, children[1]=right */
 
     /* Declaration parts */
-    WL_NODE_TYPED_PARAM,    /* name=attr_name, type_name=data_type */
-    WL_NODE_INPUT_PARAM,    /* name=param_name, str_value=param_value */
+    WL_NODE_TYPED_PARAM, /* name=attr_name, type_name=data_type */
+    WL_NODE_INPUT_PARAM, /* name=param_name, str_value=param_value */
 } wl_node_type_t;
 
 /* ======================================================================== */
@@ -78,11 +78,11 @@ struct wl_ast_node {
     uint32_t col;
 
     /* Node data (usage depends on type) */
-    char *name;             /* Relation/variable/attribute name */
-    int64_t int_value;      /* Integer constant value */
-    char *str_value;        /* String constant or param value */
-    bool bool_value;        /* Boolean predicate value */
-    bool is_planning;       /* .plan optimization marker (rules only) */
+    char *name;        /* Relation/variable/attribute name */
+    int64_t int_value; /* Integer constant value */
+    char *str_value;   /* String constant or param value */
+    bool bool_value;   /* Boolean predicate value */
+    bool is_planning;  /* .plan optimization marker (rules only) */
 
     /* Operator (for comparisons, arithmetic, aggregates) */
     wl_cmp_op_t cmp_op;
@@ -102,7 +102,7 @@ struct wl_ast_node {
 /* AST Construction API                                                     */
 /* ======================================================================== */
 
-wl_ast_node_t*
+wl_ast_node_t *
 wl_ast_node_create(wl_node_type_t type, uint32_t line, uint32_t col);
 
 void
@@ -127,7 +127,7 @@ wl_ast_node_free(wl_ast_node_t *node);
 void
 wl_ast_print(const wl_ast_node_t *node, int indent);
 
-const char*
+const char *
 wl_node_type_str(wl_node_type_t type);
 
 #ifdef __cplusplus

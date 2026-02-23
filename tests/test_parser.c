@@ -23,51 +23,52 @@ static int tests_run = 0;
 static int tests_passed = 0;
 static int tests_failed = 0;
 
-#define TEST(name) \
-    do { \
-        tests_run++; \
+#define TEST(name)                      \
+    do {                                \
+        tests_run++;                    \
         printf("  [TEST] %-55s", name); \
-        fflush(stdout); \
+        fflush(stdout);                 \
     } while (0)
 
-#define PASS() \
-    do { \
-        tests_passed++; \
+#define PASS()             \
+    do {                   \
+        tests_passed++;    \
         printf(" PASS\n"); \
     } while (0)
 
-#define FAIL(msg) \
-    do { \
-        tests_failed++; \
+#define FAIL(msg)                   \
+    do {                            \
+        tests_failed++;             \
         printf(" FAIL: %s\n", msg); \
     } while (0)
 
-#define PARSE(src) \
-    char errbuf[512] = {0}; \
+#define PARSE(src)            \
+    char errbuf[512] = { 0 }; \
     wl_ast_node_t *program = wl_parse_string(src, errbuf, sizeof(errbuf))
 
-#define ASSERT_PARSED() \
-    do { \
-        if (!program) { \
-            char buf[600]; \
+#define ASSERT_PARSED()                                             \
+    do {                                                            \
+        if (!program) {                                             \
+            char buf[600];                                          \
             snprintf(buf, sizeof(buf), "parse failed: %s", errbuf); \
-            FAIL(buf); \
-            return; \
-        } \
-        if (program->type != WL_NODE_PROGRAM) { \
-            wl_ast_node_free(program); \
-            FAIL("root is not PROGRAM"); \
-            return; \
-        } \
+            FAIL(buf);                                              \
+            return;                                                 \
+        }                                                           \
+        if (program->type != WL_NODE_PROGRAM) {                     \
+            wl_ast_node_free(program);                              \
+            FAIL("root is not PROGRAM");                            \
+            return;                                                 \
+        }                                                           \
     } while (0)
 
 #define CLEANUP() wl_ast_node_free(program)
 
 /* Helper to get nth child */
-static const wl_ast_node_t*
+static const wl_ast_node_t *
 child(const wl_ast_node_t *node, uint32_t index)
 {
-    if (!node || index >= node->child_count) return NULL;
+    if (!node || index >= node->child_count)
+        return NULL;
     return node->children[index];
 }
 
@@ -75,7 +76,9 @@ child(const wl_ast_node_t *node, uint32_t index)
 /* Parser: Empty and Minimal Programs                                       */
 /* ======================================================================== */
 
-static void test_parse_empty(void) {
+static void
+test_parse_empty(void)
+{
     TEST("empty program");
     PARSE("");
     ASSERT_PARSED();
@@ -88,7 +91,9 @@ static void test_parse_empty(void) {
     PASS();
 }
 
-static void test_parse_comments_only(void) {
+static void
+test_parse_comments_only(void)
+{
     TEST("comments-only program");
     PARSE("# comment line 1\n// comment line 2\n");
     ASSERT_PARSED();
@@ -105,7 +110,9 @@ static void test_parse_comments_only(void) {
 /* Parser: Declarations                                                     */
 /* ======================================================================== */
 
-static void test_parse_simple_decl(void) {
+static void
+test_parse_simple_decl(void)
+{
     TEST("simple .decl with two attributes");
     PARSE(".decl Arc(x: int32, y: int32)");
     ASSERT_PARSED();
@@ -131,17 +138,15 @@ static void test_parse_simple_decl(void) {
         return;
     }
     const wl_ast_node_t *p0 = child(decl, 0);
-    if (p0->type != WL_NODE_TYPED_PARAM ||
-        strcmp(p0->name, "x") != 0 ||
-        strcmp(p0->type_name, "int32") != 0) {
+    if (p0->type != WL_NODE_TYPED_PARAM || strcmp(p0->name, "x") != 0
+        || strcmp(p0->type_name, "int32") != 0) {
         CLEANUP();
         FAIL("first param should be x: int32");
         return;
     }
     const wl_ast_node_t *p1 = child(decl, 1);
-    if (p1->type != WL_NODE_TYPED_PARAM ||
-        strcmp(p1->name, "y") != 0 ||
-        strcmp(p1->type_name, "int32") != 0) {
+    if (p1->type != WL_NODE_TYPED_PARAM || strcmp(p1->name, "y") != 0
+        || strcmp(p1->type_name, "int32") != 0) {
         CLEANUP();
         FAIL("second param should be y: int32");
         return;
@@ -150,7 +155,9 @@ static void test_parse_simple_decl(void) {
     PASS();
 }
 
-static void test_parse_decl_int64(void) {
+static void
+test_parse_decl_int64(void)
+{
     TEST(".decl with int64 type");
     PARSE(".decl BigNum(val: int64)");
     ASSERT_PARSED();
@@ -165,14 +172,16 @@ static void test_parse_decl_int64(void) {
     PASS();
 }
 
-static void test_parse_decl_string_type(void) {
+static void
+test_parse_decl_string_type(void)
+{
     TEST(".decl with string type");
     PARSE(".decl Name(id: int32, label: string)");
     ASSERT_PARSED();
     const wl_ast_node_t *decl = child(program, 0);
     const wl_ast_node_t *p1 = child(decl, 1);
-    if (strcmp(p1->name, "label") != 0 ||
-        strcmp(p1->type_name, "string") != 0) {
+    if (strcmp(p1->name, "label") != 0
+        || strcmp(p1->type_name, "string") != 0) {
         CLEANUP();
         FAIL("expected label: string");
         return;
@@ -181,7 +190,9 @@ static void test_parse_decl_string_type(void) {
     PASS();
 }
 
-static void test_parse_decl_empty_params(void) {
+static void
+test_parse_decl_empty_params(void)
+{
     TEST(".decl with empty params");
     PARSE(".decl Empty()");
     ASSERT_PARSED();
@@ -195,7 +206,9 @@ static void test_parse_decl_empty_params(void) {
     PASS();
 }
 
-static void test_parse_decl_three_attrs(void) {
+static void
+test_parse_decl_three_attrs(void)
+{
     TEST(".decl with three attributes");
     PARSE(".decl Arc(src: int32, dest: int32, weight: int32)");
     ASSERT_PARSED();
@@ -213,7 +226,9 @@ static void test_parse_decl_three_attrs(void) {
 /* Parser: Input/Output/PrintSize Directives                                */
 /* ======================================================================== */
 
-static void test_parse_input_directive(void) {
+static void
+test_parse_input_directive(void)
+{
     TEST(".input with parameters");
     PARSE(".input Arc(IO=\"file\", filename=\"Arc.csv\", delimiter=\",\")");
     ASSERT_PARSED();
@@ -237,9 +252,8 @@ static void test_parse_input_directive(void) {
         return;
     }
     const wl_ast_node_t *p0 = child(inp, 0);
-    if (p0->type != WL_NODE_INPUT_PARAM ||
-        strcmp(p0->name, "IO") != 0 ||
-        strcmp(p0->str_value, "file") != 0) {
+    if (p0->type != WL_NODE_INPUT_PARAM || strcmp(p0->name, "IO") != 0
+        || strcmp(p0->str_value, "file") != 0) {
         CLEANUP();
         FAIL("first param should be IO=\"file\"");
         return;
@@ -248,13 +262,14 @@ static void test_parse_input_directive(void) {
     PASS();
 }
 
-static void test_parse_output_directive(void) {
+static void
+test_parse_output_directive(void)
+{
     TEST(".output directive");
     PARSE(".output Reach");
     ASSERT_PARSED();
     const wl_ast_node_t *out = child(program, 0);
-    if (out->type != WL_NODE_OUTPUT ||
-        strcmp(out->name, "Reach") != 0) {
+    if (out->type != WL_NODE_OUTPUT || strcmp(out->name, "Reach") != 0) {
         CLEANUP();
         FAIL("expected OUTPUT 'Reach'");
         return;
@@ -263,13 +278,14 @@ static void test_parse_output_directive(void) {
     PASS();
 }
 
-static void test_parse_printsize_directive(void) {
+static void
+test_parse_printsize_directive(void)
+{
     TEST(".printsize directive");
     PARSE(".printsize Tc");
     ASSERT_PARSED();
     const wl_ast_node_t *ps = child(program, 0);
-    if (ps->type != WL_NODE_PRINTSIZE ||
-        strcmp(ps->name, "Tc") != 0) {
+    if (ps->type != WL_NODE_PRINTSIZE || strcmp(ps->name, "Tc") != 0) {
         CLEANUP();
         FAIL("expected PRINTSIZE 'Tc'");
         return;
@@ -282,7 +298,9 @@ static void test_parse_printsize_directive(void) {
 /* Parser: Simple Rules                                                     */
 /* ======================================================================== */
 
-static void test_parse_simple_rule(void) {
+static void
+test_parse_simple_rule(void)
+{
     TEST("simple rule: Tc(x,y) :- Arc(x,y).");
     PARSE("Tc(x, y) :- Arc(x, y).");
     ASSERT_PARSED();
@@ -294,8 +312,7 @@ static void test_parse_simple_rule(void) {
     }
     /* head is first child */
     const wl_ast_node_t *head = child(rule, 0);
-    if (head->type != WL_NODE_HEAD ||
-        strcmp(head->name, "Tc") != 0) {
+    if (head->type != WL_NODE_HEAD || strcmp(head->name, "Tc") != 0) {
         CLEANUP();
         FAIL("expected HEAD 'Tc'");
         return;
@@ -307,8 +324,8 @@ static void test_parse_simple_rule(void) {
     }
     /* body atom is second child */
     const wl_ast_node_t *body_atom = child(rule, 1);
-    if (body_atom->type != WL_NODE_ATOM ||
-        strcmp(body_atom->name, "Arc") != 0) {
+    if (body_atom->type != WL_NODE_ATOM
+        || strcmp(body_atom->name, "Arc") != 0) {
         CLEANUP();
         FAIL("expected body ATOM 'Arc'");
         return;
@@ -317,7 +334,9 @@ static void test_parse_simple_rule(void) {
     PASS();
 }
 
-static void test_parse_recursive_rule(void) {
+static void
+test_parse_recursive_rule(void)
+{
     TEST("recursive rule: Tc(x,y) :- Tc(x,z), Arc(z,y).");
     PARSE("Tc(x, y) :- Tc(x, z), Arc(z, y).");
     ASSERT_PARSED();
@@ -342,7 +361,9 @@ static void test_parse_recursive_rule(void) {
     PASS();
 }
 
-static void test_parse_rule_with_constants(void) {
+static void
+test_parse_rule_with_constants(void)
+{
     TEST("rule with integer constant");
     PARSE("r(x) :- a(x, 42).");
     ASSERT_PARSED();
@@ -358,15 +379,16 @@ static void test_parse_rule_with_constants(void) {
     PASS();
 }
 
-static void test_parse_rule_with_string_constant(void) {
+static void
+test_parse_rule_with_string_constant(void)
+{
     TEST("rule with string constant");
     PARSE("r(x) :- name(x, \"hello\").");
     ASSERT_PARSED();
     const wl_ast_node_t *rule = child(program, 0);
     const wl_ast_node_t *body = child(rule, 1);
     const wl_ast_node_t *arg1 = child(body, 1);
-    if (arg1->type != WL_NODE_STRING ||
-        strcmp(arg1->str_value, "hello") != 0) {
+    if (arg1->type != WL_NODE_STRING || strcmp(arg1->str_value, "hello") != 0) {
         CLEANUP();
         FAIL("expected string constant 'hello'");
         return;
@@ -375,7 +397,9 @@ static void test_parse_rule_with_string_constant(void) {
     PASS();
 }
 
-static void test_parse_rule_with_wildcard(void) {
+static void
+test_parse_rule_with_wildcard(void)
+{
     TEST("rule with wildcard");
     PARSE("r(x) :- edge(x, _).");
     ASSERT_PARSED();
@@ -395,7 +419,9 @@ static void test_parse_rule_with_wildcard(void) {
 /* Parser: Negation                                                         */
 /* ======================================================================== */
 
-static void test_parse_negation(void) {
+static void
+test_parse_negation(void)
+{
     TEST("negated atom in body");
     PARSE("r(x) :- a(x), !b(x).");
     ASSERT_PARSED();
@@ -407,8 +433,7 @@ static void test_parse_negation(void) {
         return;
     }
     const wl_ast_node_t *inner = child(neg, 0);
-    if (inner->type != WL_NODE_ATOM ||
-        strcmp(inner->name, "b") != 0) {
+    if (inner->type != WL_NODE_ATOM || strcmp(inner->name, "b") != 0) {
         CLEANUP();
         FAIL("negation should wrap atom 'b'");
         return;
@@ -421,7 +446,9 @@ static void test_parse_negation(void) {
 /* Parser: Comparisons                                                      */
 /* ======================================================================== */
 
-static void test_parse_equality_constraint(void) {
+static void
+test_parse_equality_constraint(void)
+{
     TEST("equality constraint x = y");
     PARSE("r(x) :- a(x, y), x = y.");
     ASSERT_PARSED();
@@ -436,7 +463,9 @@ static void test_parse_equality_constraint(void) {
     PASS();
 }
 
-static void test_parse_inequality_constraint(void) {
+static void
+test_parse_inequality_constraint(void)
+{
     TEST("inequality constraint x != y");
     PARSE("r(x) :- a(x, y), x != y.");
     ASSERT_PARSED();
@@ -451,7 +480,9 @@ static void test_parse_inequality_constraint(void) {
     PASS();
 }
 
-static void test_parse_less_than(void) {
+static void
+test_parse_less_than(void)
+{
     TEST("less than constraint x < 10");
     PARSE("r(x) :- a(x), x < 10.");
     ASSERT_PARSED();
@@ -466,7 +497,9 @@ static void test_parse_less_than(void) {
     PASS();
 }
 
-static void test_parse_greater_equal(void) {
+static void
+test_parse_greater_equal(void)
+{
     TEST("greater-equal constraint x >= y");
     PARSE("r(x) :- a(x, y), x >= y.");
     ASSERT_PARSED();
@@ -485,7 +518,9 @@ static void test_parse_greater_equal(void) {
 /* Parser: Arithmetic in Comparisons                                        */
 /* ======================================================================== */
 
-static void test_parse_arithmetic_comparison(void) {
+static void
+test_parse_arithmetic_comparison(void)
+{
     TEST("arithmetic in comparison: x + 1 < y");
     PARSE("r(x) :- a(x, y), x + 1 < y.");
     ASSERT_PARSED();
@@ -498,8 +533,7 @@ static void test_parse_arithmetic_comparison(void) {
     }
     /* Left side should be binary expr (x + 1) */
     const wl_ast_node_t *left = child(cmp, 0);
-    if (left->type != WL_NODE_BINARY_EXPR ||
-        left->arith_op != WL_ARITH_ADD) {
+    if (left->type != WL_NODE_BINARY_EXPR || left->arith_op != WL_ARITH_ADD) {
         CLEANUP();
         FAIL("left should be binary ADD");
         return;
@@ -512,7 +546,9 @@ static void test_parse_arithmetic_comparison(void) {
 /* Parser: Aggregation                                                      */
 /* ======================================================================== */
 
-static void test_parse_min_aggregate(void) {
+static void
+test_parse_min_aggregate(void)
+{
     TEST("min aggregate in head");
     PARSE("sssp(x, min(d)) :- sssp2(x, d).");
     ASSERT_PARSED();
@@ -529,7 +565,9 @@ static void test_parse_min_aggregate(void) {
     PASS();
 }
 
-static void test_parse_count_aggregate(void) {
+static void
+test_parse_count_aggregate(void)
+{
     TEST("count aggregate in head");
     PARSE("cnt(count(x)) :- node(x).");
     ASSERT_PARSED();
@@ -545,7 +583,9 @@ static void test_parse_count_aggregate(void) {
     PASS();
 }
 
-static void test_parse_sum_aggregate(void) {
+static void
+test_parse_sum_aggregate(void)
+{
     TEST("SUM aggregate (uppercase)");
     PARSE("total(SUM(w)) :- edge(_, _, w).");
     ASSERT_PARSED();
@@ -561,7 +601,9 @@ static void test_parse_sum_aggregate(void) {
     PASS();
 }
 
-static void test_parse_max_aggregate(void) {
+static void
+test_parse_max_aggregate(void)
+{
     TEST("max aggregate");
     PARSE("biggest(max(v)) :- data(v).");
     ASSERT_PARSED();
@@ -577,7 +619,9 @@ static void test_parse_max_aggregate(void) {
     PASS();
 }
 
-static void test_parse_avg_aggregate(void) {
+static void
+test_parse_avg_aggregate(void)
+{
     TEST("AVG aggregate");
     PARSE("avg_val(AVG(v)) :- data(v).");
     ASSERT_PARSED();
@@ -593,7 +637,9 @@ static void test_parse_avg_aggregate(void) {
     PASS();
 }
 
-static void test_parse_aggregate_with_arithmetic(void) {
+static void
+test_parse_aggregate_with_arithmetic(void)
+{
     TEST("aggregate with arithmetic: min(d1 + d2)");
     PARSE("r(y, min(d1 + d2)) :- s(x, d1), a(x, y, d2).");
     ASSERT_PARSED();
@@ -606,8 +652,7 @@ static void test_parse_aggregate_with_arithmetic(void) {
         return;
     }
     const wl_ast_node_t *expr = child(agg, 0);
-    if (expr->type != WL_NODE_BINARY_EXPR ||
-        expr->arith_op != WL_ARITH_ADD) {
+    if (expr->type != WL_NODE_BINARY_EXPR || expr->arith_op != WL_ARITH_ADD) {
         CLEANUP();
         FAIL("aggregate body should be ADD");
         return;
@@ -616,7 +661,9 @@ static void test_parse_aggregate_with_arithmetic(void) {
     PASS();
 }
 
-static void test_parse_aggregate_with_constant(void) {
+static void
+test_parse_aggregate_with_constant(void)
+{
     TEST("aggregate with constant: min(0)");
     PARSE("r(x, min(0)) :- id(x).");
     ASSERT_PARSED();
@@ -642,7 +689,9 @@ static void test_parse_aggregate_with_constant(void) {
 /* Parser: Boolean Predicates                                               */
 /* ======================================================================== */
 
-static void test_parse_boolean_true(void) {
+static void
+test_parse_boolean_true(void)
+{
     TEST("boolean True predicate in body");
     PARSE("r(x) :- a(x), True.");
     ASSERT_PARSED();
@@ -657,7 +706,9 @@ static void test_parse_boolean_true(void) {
     PASS();
 }
 
-static void test_parse_boolean_false(void) {
+static void
+test_parse_boolean_false(void)
+{
     TEST("boolean False predicate in body");
     PARSE("r(x) :- a(x), False.");
     ASSERT_PARSED();
@@ -676,15 +727,16 @@ static void test_parse_boolean_false(void) {
 /* Parser: Arithmetic in Head                                               */
 /* ======================================================================== */
 
-static void test_parse_arithmetic_head(void) {
+static void
+test_parse_arithmetic_head(void)
+{
     TEST("arithmetic expression in head");
     PARSE("r(x + 1) :- a(x).");
     ASSERT_PARSED();
     const wl_ast_node_t *rule = child(program, 0);
     const wl_ast_node_t *head = child(rule, 0);
     const wl_ast_node_t *arg0 = child(head, 0);
-    if (arg0->type != WL_NODE_BINARY_EXPR ||
-        arg0->arith_op != WL_ARITH_ADD) {
+    if (arg0->type != WL_NODE_BINARY_EXPR || arg0->arith_op != WL_ARITH_ADD) {
         CLEANUP();
         FAIL("head arg should be ADD expression");
         return;
@@ -697,7 +749,9 @@ static void test_parse_arithmetic_head(void) {
 /* Parser: .plan Optimization Marker                                        */
 /* ======================================================================== */
 
-static void test_parse_plan_marker(void) {
+static void
+test_parse_plan_marker(void)
+{
     TEST(".plan optimization marker on rule");
     PARSE("r(x) :- a(x). .plan");
     ASSERT_PARSED();
@@ -711,7 +765,9 @@ static void test_parse_plan_marker(void) {
     PASS();
 }
 
-static void test_parse_rule_without_plan(void) {
+static void
+test_parse_rule_without_plan(void)
+{
     TEST("rule without .plan has is_planning=false");
     PARSE("r(x) :- a(x).");
     ASSERT_PARSED();
@@ -729,19 +785,19 @@ static void test_parse_rule_without_plan(void) {
 /* Parser: Complete Programs (Real FlowLog Examples)                        */
 /* ======================================================================== */
 
-static void test_parse_transitive_closure(void) {
+static void
+test_parse_transitive_closure(void)
+{
     TEST("transitive closure program");
-    PARSE(
-        ".decl Arc(x: int32, y: int32)\n"
-        ".input Arc(IO=\"file\", filename=\"Arc.csv\", delimiter=\",\")\n"
-        "\n"
-        ".decl Tc(x: int32, y: int32)\n"
-        "\n"
-        "Tc(x, y) :- Arc(x, y).\n"
-        "Tc(x, y) :- Tc(x, z), Arc(z, y).\n"
-        "\n"
-        ".printsize Tc\n"
-    );
+    PARSE(".decl Arc(x: int32, y: int32)\n"
+          ".input Arc(IO=\"file\", filename=\"Arc.csv\", delimiter=\",\")\n"
+          "\n"
+          ".decl Tc(x: int32, y: int32)\n"
+          "\n"
+          "Tc(x, y) :- Arc(x, y).\n"
+          "Tc(x, y) :- Tc(x, z), Arc(z, y).\n"
+          "\n"
+          ".printsize Tc\n");
     ASSERT_PARSED();
     /* Expected: .decl Arc, .input Arc, .decl Tc, rule1, rule2, .printsize */
     if (program->child_count != 6) {
@@ -754,28 +810,42 @@ static void test_parse_transitive_closure(void) {
     }
     /* Check structure */
     if (child(program, 0)->type != WL_NODE_DECL) {
-        CLEANUP(); FAIL("child 0 should be DECL"); return;
+        CLEANUP();
+        FAIL("child 0 should be DECL");
+        return;
     }
     if (child(program, 1)->type != WL_NODE_INPUT) {
-        CLEANUP(); FAIL("child 1 should be INPUT"); return;
+        CLEANUP();
+        FAIL("child 1 should be INPUT");
+        return;
     }
     if (child(program, 2)->type != WL_NODE_DECL) {
-        CLEANUP(); FAIL("child 2 should be DECL"); return;
+        CLEANUP();
+        FAIL("child 2 should be DECL");
+        return;
     }
     if (child(program, 3)->type != WL_NODE_RULE) {
-        CLEANUP(); FAIL("child 3 should be RULE"); return;
+        CLEANUP();
+        FAIL("child 3 should be RULE");
+        return;
     }
     if (child(program, 4)->type != WL_NODE_RULE) {
-        CLEANUP(); FAIL("child 4 should be RULE"); return;
+        CLEANUP();
+        FAIL("child 4 should be RULE");
+        return;
     }
     if (child(program, 5)->type != WL_NODE_PRINTSIZE) {
-        CLEANUP(); FAIL("child 5 should be PRINTSIZE"); return;
+        CLEANUP();
+        FAIL("child 5 should be PRINTSIZE");
+        return;
     }
     CLEANUP();
     PASS();
 }
 
-static void test_parse_reachability(void) {
+static void
+test_parse_reachability(void)
+{
     TEST("reachability program");
     PARSE(
         ".decl Source(id: int32)\n"
@@ -788,8 +858,7 @@ static void test_parse_reachability(void) {
         "Reach(y) :- Source(y).\n"
         "Reach(y) :- Reach(x), Arc(x, y).\n"
         "\n"
-        ".printsize Reach\n"
-    );
+        ".printsize Reach\n");
     ASSERT_PARSED();
     /* .decl Source, .input Source, .decl Arc, .input Arc,
        .decl Reach, rule1, rule2, .printsize Reach = 8 */
@@ -805,23 +874,23 @@ static void test_parse_reachability(void) {
     PASS();
 }
 
-static void test_parse_sssp(void) {
+static void
+test_parse_sssp(void)
+{
     TEST("SSSP program with aggregation");
-    PARSE(
-        ".decl arc(src: int32, dest: int32, weight: int32)\n"
-        ".decl id(src: int32)\n"
-        ".decl sssp2(x: int32, y: int32)\n"
-        ".decl sssp(x: int32, y: int32)\n"
-        "\n"
-        ".input arc(IO=\"file\", filename=\"Arc.csv\", delimiter=\",\")\n"
-        ".input id(IO=\"file\", filename=\"Id.csv\", delimiter=\",\")\n"
-        "\n"
-        "sssp2(x, min(0)) :- id(x).\n"
-        "sssp2(y, min(d1 + d2)) :- sssp2(x, d1), arc(x, y, d2).\n"
-        "sssp(x, min(d)) :- sssp2(x, d).\n"
-        "\n"
-        ".printsize sssp\n"
-    );
+    PARSE(".decl arc(src: int32, dest: int32, weight: int32)\n"
+          ".decl id(src: int32)\n"
+          ".decl sssp2(x: int32, y: int32)\n"
+          ".decl sssp(x: int32, y: int32)\n"
+          "\n"
+          ".input arc(IO=\"file\", filename=\"Arc.csv\", delimiter=\",\")\n"
+          ".input id(IO=\"file\", filename=\"Id.csv\", delimiter=\",\")\n"
+          "\n"
+          "sssp2(x, min(0)) :- id(x).\n"
+          "sssp2(y, min(d1 + d2)) :- sssp2(x, d1), arc(x, y, d2).\n"
+          "sssp(x, min(d)) :- sssp2(x, d).\n"
+          "\n"
+          ".printsize sssp\n");
     ASSERT_PARSED();
     /* 4 decls + 2 inputs + 3 rules + 1 printsize = 10 */
     if (program->child_count != 10) {
@@ -847,8 +916,7 @@ static void test_parse_sssp(void) {
         return;
     }
     const wl_ast_node_t *arith = child(agg, 0);
-    if (arith->type != WL_NODE_BINARY_EXPR ||
-        arith->arith_op != WL_ARITH_ADD) {
+    if (arith->type != WL_NODE_BINARY_EXPR || arith->arith_op != WL_ARITH_ADD) {
         CLEANUP();
         FAIL("aggregate should contain d1 + d2");
         return;
@@ -857,17 +925,17 @@ static void test_parse_sssp(void) {
     PASS();
 }
 
-static void test_parse_negation_program(void) {
+static void
+test_parse_negation_program(void)
+{
     TEST("program with negation");
-    PARSE(
-        ".decl edge(x: int32, y: int32)\n"
-        ".decl node(x: int32)\n"
-        ".decl isolated(x: int32)\n"
-        "\n"
-        "isolated(x) :- node(x), !edge(x, _).\n"
-        "\n"
-        ".output isolated\n"
-    );
+    PARSE(".decl edge(x: int32, y: int32)\n"
+          ".decl node(x: int32)\n"
+          ".decl isolated(x: int32)\n"
+          "\n"
+          "isolated(x) :- node(x), !edge(x, _).\n"
+          "\n"
+          ".output isolated\n");
     ASSERT_PARSED();
     /* 3 decls + 1 rule + 1 output = 5 */
     if (program->child_count != 5) {
@@ -895,16 +963,16 @@ static void test_parse_negation_program(void) {
     PASS();
 }
 
-static void test_parse_comparison_program(void) {
+static void
+test_parse_comparison_program(void)
+{
     TEST("program with comparisons");
-    PARSE(
-        ".decl edge(x: int32, y: int32)\n"
-        ".decl sg(x: int32, y: int32)\n"
-        "\n"
-        "sg(x, y) :- edge(z, x), edge(z, y), x != y.\n"
-        "\n"
-        ".printsize sg\n"
-    );
+    PARSE(".decl edge(x: int32, y: int32)\n"
+          ".decl sg(x: int32, y: int32)\n"
+          "\n"
+          "sg(x, y) :- edge(z, x), edge(z, y), x != y.\n"
+          "\n"
+          ".printsize sg\n");
     ASSERT_PARSED();
     const wl_ast_node_t *rule = child(program, 2);
     if (rule->type != WL_NODE_RULE) {
@@ -932,7 +1000,9 @@ static void test_parse_comparison_program(void) {
 /* Parser: Error Cases                                                      */
 /* ======================================================================== */
 
-static void test_parse_error_missing_horn(void) {
+static void
+test_parse_error_missing_horn(void)
+{
     TEST("error: missing :- in rule");
     PARSE("r(x) a(x).");
     if (program != NULL) {
@@ -943,7 +1013,9 @@ static void test_parse_error_missing_horn(void) {
     PASS();
 }
 
-static void test_parse_error_missing_dot(void) {
+static void
+test_parse_error_missing_dot(void)
+{
     TEST("error: missing . at end of rule");
     PARSE("r(x) :- a(x)");
     if (program != NULL) {
@@ -954,7 +1026,9 @@ static void test_parse_error_missing_dot(void) {
     PASS();
 }
 
-static void test_parse_error_missing_rparen(void) {
+static void
+test_parse_error_missing_rparen(void)
+{
     TEST("error: missing ) in declaration");
     PARSE(".decl Arc(x: int32");
     if (program != NULL) {
@@ -965,7 +1039,9 @@ static void test_parse_error_missing_rparen(void) {
     PASS();
 }
 
-static void test_parse_error_invalid_type(void) {
+static void
+test_parse_error_invalid_type(void)
+{
     TEST("error: invalid type name");
     PARSE(".decl Foo(x: float32)");
     if (program != NULL) {
@@ -980,7 +1056,9 @@ static void test_parse_error_invalid_type(void) {
 /* Parser: Multiple Arithmetic Operators                                    */
 /* ======================================================================== */
 
-static void test_parse_chained_arithmetic(void) {
+static void
+test_parse_chained_arithmetic(void)
+{
     TEST("chained arithmetic: a + b * c");
     /* FlowLog arithmetic is left-associative flat: factor (op factor)* */
     PARSE("r(x + y + z) :- a(x, y, z).");
@@ -998,15 +1076,15 @@ static void test_parse_chained_arithmetic(void) {
     PASS();
 }
 
-static void test_parse_all_arithmetic_ops(void) {
+static void
+test_parse_all_arithmetic_ops(void)
+{
     TEST("all arithmetic operators in comparisons");
-    PARSE(
-        "r(x) :- a(x, y), x + y > 0.\n"
-        "r(x) :- a(x, y), x - y < 0.\n"
-        "r(x) :- a(x, y), x * y = 0.\n"
-        "r(x) :- a(x, y), x / y >= 1.\n"
-        "r(x) :- a(x, y), x % y <= 2.\n"
-    );
+    PARSE("r(x) :- a(x, y), x + y > 0.\n"
+          "r(x) :- a(x, y), x - y < 0.\n"
+          "r(x) :- a(x, y), x * y = 0.\n"
+          "r(x) :- a(x, y), x / y >= 1.\n"
+          "r(x) :- a(x, y), x % y <= 2.\n");
     ASSERT_PARSED();
     if (program->child_count != 5) {
         CLEANUP();
@@ -1021,7 +1099,9 @@ static void test_parse_all_arithmetic_ops(void) {
 /* Main                                                                     */
 /* ======================================================================== */
 
-int main(void) {
+int
+main(void)
+{
     printf("=== wirelog Parser Tests ===\n\n");
 
     printf("--- Empty/Minimal ---\n");

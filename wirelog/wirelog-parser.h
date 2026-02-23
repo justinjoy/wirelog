@@ -68,7 +68,7 @@ typedef struct {
  *
  * Returns: (transfer full): Parsed program, or NULL on error
  */
-wirelog_program_t*
+wirelog_program_t *
 wirelog_parse(const char *filename, wirelog_error_t *error);
 
 /**
@@ -80,7 +80,7 @@ wirelog_parse(const char *filename, wirelog_error_t *error);
  *
  * Returns: (transfer full): Parsed program, or NULL on error
  */
-wirelog_program_t*
+wirelog_program_t *
 wirelog_parse_string(const char *program_text, wirelog_error_t *error);
 
 /**
@@ -92,7 +92,7 @@ wirelog_parse_string(const char *program_text, wirelog_error_t *error);
  *
  * Returns: (transfer full): Parsed program, or NULL on error
  */
-wirelog_program_t*
+wirelog_program_t *
 wirelog_parse_with_error_info(const char *filename,
                               wirelog_parse_error_t *error_info);
 
@@ -120,7 +120,7 @@ wirelog_program_get_stratum_count(const wirelog_program_t *program);
  *
  * Returns: (transfer none): Stratum info, or NULL if invalid ID
  */
-const wirelog_stratum_t*
+const wirelog_stratum_t *
 wirelog_program_get_stratum(const wirelog_program_t *program,
                             uint32_t stratum_id);
 
@@ -144,7 +144,7 @@ wirelog_program_get_rule_count(const wirelog_program_t *program);
  *
  * Returns: (transfer none): Schema info, or NULL if not found
  */
-const wirelog_schema_t*
+const wirelog_schema_t *
 wirelog_program_get_schema(const wirelog_program_t *program,
                            const char *relation_name);
 

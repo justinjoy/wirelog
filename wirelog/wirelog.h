@@ -39,10 +39,9 @@ extern "C" {
 #define WIRELOG_VERSION_MINOR 1
 #define WIRELOG_VERSION_PATCH 0
 
-#define WIRELOG_VERSION \
-    (WIRELOG_VERSION_MAJOR * 10000 + \
-     WIRELOG_VERSION_MINOR * 100 + \
-     WIRELOG_VERSION_PATCH)
+#define WIRELOG_VERSION                                          \
+    (WIRELOG_VERSION_MAJOR * 10000 + WIRELOG_VERSION_MINOR * 100 \
+     + WIRELOG_VERSION_PATCH)
 
 /* ======================================================================== */
 /* Type Definitions                                                         */
@@ -88,10 +87,10 @@ typedef enum {
 /* Parser API                                                               */
 /* ======================================================================== */
 
-wirelog_program_t*
+wirelog_program_t *
 wirelog_parse(const char *filename, wirelog_error_t *error);
 
-wirelog_program_t*
+wirelog_program_t *
 wirelog_parse_string(const char *program_text, wirelog_error_t *error);
 
 void
@@ -111,7 +110,7 @@ wirelog_optimizer_debug(const wirelog_program_t *program);
 /* Executor API                                                             */
 /* ======================================================================== */
 
-wirelog_executor_t*
+wirelog_executor_t *
 wirelog_executor_create(wirelog_program_t *program, wirelog_error_t *error);
 
 void
@@ -119,18 +118,17 @@ wirelog_executor_free(wirelog_executor_t *executor);
 
 bool
 wirelog_load_facts_from_csv(wirelog_executor_t *executor,
-                            const char *relation_name,
-                            const char *csv_file,
+                            const char *relation_name, const char *csv_file,
                             wirelog_error_t *error);
 
-wirelog_result_t*
+wirelog_result_t *
 wirelog_evaluate(wirelog_executor_t *executor, wirelog_error_t *error);
 
 /* ======================================================================== */
 /* Result API                                                               */
 /* ======================================================================== */
 
-const void*
+const void *
 wirelog_result_get_relation(const wirelog_result_t *result,
                             const char *relation_name);
 
@@ -140,8 +138,7 @@ wirelog_result_relation_cardinality(const wirelog_result_t *result,
 
 bool
 wirelog_result_write_csv(const wirelog_result_t *result,
-                         const char *relation_name,
-                         const char *output_file,
+                         const char *relation_name, const char *output_file,
                          wirelog_error_t *error);
 
 void
@@ -151,10 +148,10 @@ wirelog_result_free(wirelog_result_t *result);
 /* Utility API                                                              */
 /* ======================================================================== */
 
-const char*
+const char *
 wirelog_version_string(void);
 
-const char*
+const char *
 wirelog_error_string(wirelog_error_t error);
 
 bool

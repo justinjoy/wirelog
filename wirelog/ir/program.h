@@ -78,18 +78,25 @@ struct wirelog_program {
 /* Program API (internal)                                                   */
 /* ======================================================================== */
 
-struct wirelog_program *wl_program_create(void);
-void wl_program_free(struct wirelog_program *program);
+struct wirelog_program *
+wl_program_create(void);
+void
+wl_program_free(struct wirelog_program *program);
 
-int wl_program_collect_metadata(struct wirelog_program *program,
-                                const wl_ast_node_t *ast);
+int
+wl_program_collect_metadata(struct wirelog_program *program,
+                            const wl_ast_node_t *ast);
 
-int wl_program_convert_rules(struct wirelog_program *program,
-                             const wl_ast_node_t *ast);
+int
+wl_program_convert_rules(struct wirelog_program *program,
+                         const wl_ast_node_t *ast);
 
-int wl_program_merge_unions(struct wirelog_program *program);
+int
+wl_program_merge_unions(struct wirelog_program *program);
 
-void wl_program_build_schemas(struct wirelog_program *program);
-void wl_program_build_default_stratum(struct wirelog_program *program);
+void
+wl_program_build_schemas(struct wirelog_program *program);
+void
+wl_program_build_default_stratum(struct wirelog_program *program);
 
 #endif /* WIRELOG_PROGRAM_INTERNAL_H */

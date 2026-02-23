@@ -31,7 +31,7 @@ BraceWrapping:
 AlwaysBreakAfterReturnType: All
 
 # Line width
-ColumnLimit: 100  # Avoids mass reflow; existing code is mostly under 80 but has exceptions
+ColumnLimit: 80
 
 # Pointer alignment
 PointerAlignment: Right  # char *ptr (matches variable declaration convention)

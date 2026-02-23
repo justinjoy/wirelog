@@ -102,34 +102,22 @@ The wirelog codebase enforces C-style `/* */` comments exclusively. However, cla
 - No blanket `// NOLINT` without specifying the check name
 - Suppressions should be reviewed periodically; avoid accumulation of permanent suppressions
 
-## Rollout Plan
+## CI Gate Enforcement
 
-### Phase 1: Report-Only (Current)
+All lint checks run as **blocking gates** in CI. The `lint.yml` workflow is a reusable workflow (`workflow_call`) that must pass before any downstream CI or static-analysis job runs.
 
-All lint checks run in CI but are **non-blocking**. Results are visible in GitHub Actions Step Summary. This phase allows the team to:
-1. Observe the volume and nature of findings
-2. Triage false positives
-3. Fix genuine issues incrementally
+**Dependency graph:**
+```
+lint (format-check + clang-tidy + editorconfig)
+ ├── ci.yml: sanitizers → build
+ └── static-analysis.yml: cppcheck, scan-build
+```
 
-### Phase 2: Blocking
+If any lint job fails, all downstream jobs are skipped.
 
-Transition to blocking lint requires ALL of these gates:
+### Future: readability-braces-around-statements
 
-| Gate | Criterion | Measurement |
-|------|-----------|-------------|
-| Gate 1 | Baseline formatting PR merged | `clang-format-18 --dry-run --Werror` exits 0 on `main` |
-| Gate 2 | clang-tidy stability | 0 new warnings for 5 consecutive PRs |
-| Gate 3 | CI performance | Lint workflow completes in < 3 minutes |
-| Gate 4 | Maintainer sign-off | Explicit sign-off via GitHub issue or PR approval |
-
-**Owner:** Project maintainer
-**Deadline:** 4 weeks after Phase 1 merge
-
-Phase 2 transition mechanism:
-1. Remove `|| true` from all three jobs (format-check, clang-tidy, editorconfig-check) in `lint.yml`
-2. Add `set -o pipefail` before piped commands
-3. Add lint jobs to branch protection required status checks
-4. Enable `readability-braces-around-statements` (requires dedicated braces-addition PR first)
+`readability-braces-around-statements` is deferred. Enabling it requires a dedicated braces-addition PR first, followed by adding the check to `.clang-tidy` and `.clang-tidy-expected-checks.txt`.
 
 ## Adding or Removing Checks
 
@@ -149,4 +137,4 @@ Phase 2 transition mechanism:
 
 2. **Test formatting divergence:** Test files use same-line function braces. The baseline formatting PR (Phase 2 prerequisite) will reformat them to match the project convention.
 
-3. **ColumnLimit 100:** Set to 100 (not 80) to avoid mass reflow. Most existing code is under 80 columns, but ~68 lines exceed this limit.
+3. **ColumnLimit 80:** Standard 80-column limit. All source files have been formatted to comply.

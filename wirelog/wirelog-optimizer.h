@@ -40,11 +40,12 @@ extern "C" {
  * Optimization pass identifiers
  */
 typedef enum {
-    WIRELOG_OPT_LOGIC_FUSION = 0,      /* Fuse Join+Map+Filter operations */
-    WIRELOG_OPT_JOIN_PROJECT_PLAN = 1, /* Optimize join ordering and projection */
-    WIRELOG_OPT_SEMIJOIN = 2,          /* Apply semijoin pre-filtering */
-    WIRELOG_OPT_SUBPLAN_SHARING = 3,   /* Share common subplans (CTEs) */
-    WIRELOG_OPT_BOOLEAN_SPEC = 4,      /* Specialize Boolean operations */
+    WIRELOG_OPT_LOGIC_FUSION = 0, /* Fuse Join+Map+Filter operations */
+    WIRELOG_OPT_JOIN_PROJECT_PLAN
+    = 1,                             /* Optimize join ordering and projection */
+    WIRELOG_OPT_SEMIJOIN = 2,        /* Apply semijoin pre-filtering */
+    WIRELOG_OPT_SUBPLAN_SHARING = 3, /* Share common subplans (CTEs) */
+    WIRELOG_OPT_BOOLEAN_SPEC = 4,    /* Specialize Boolean operations */
 } wirelog_opt_pass_t;
 
 /**
@@ -58,8 +59,8 @@ typedef struct {
     bool enable_semijoin;
     bool enable_subplan_sharing;
     bool enable_boolean_spec;
-    uint32_t max_join_search_space;  /* Limit join ordering search space */
-    bool debug_trace;                /* Enable debug output */
+    uint32_t max_join_search_space; /* Limit join ordering search space */
+    bool debug_trace;               /* Enable debug output */
 } wirelog_opt_config_t;
 
 /* ======================================================================== */
@@ -72,12 +73,12 @@ typedef struct {
  * Optimization statistics
  */
 typedef struct {
-    uint32_t original_node_count;    /* IR nodes before optimization */
-    uint32_t optimized_node_count;   /* IR nodes after optimization */
-    uint32_t passes_applied;         /* Number of optimization passes run */
-    uint32_t fusion_count;           /* Number of fusions performed */
-    uint32_t join_reorders;          /* Number of join reorderings */
-    double optimization_time_ms;     /* Time spent in optimization (ms) */
+    uint32_t original_node_count;  /* IR nodes before optimization */
+    uint32_t optimized_node_count; /* IR nodes after optimization */
+    uint32_t passes_applied;       /* Number of optimization passes run */
+    uint32_t fusion_count;         /* Number of fusions performed */
+    uint32_t join_reorders;        /* Number of join reorderings */
+    double optimization_time_ms;   /* Time spent in optimization (ms) */
 } wirelog_opt_stats_t;
 
 /* ======================================================================== */
@@ -124,9 +125,8 @@ wirelog_optimize(void *program, int *error);
  * Returns: true on success, false on error
  */
 bool
-wirelog_optimize_with_config(void *program,
-                            const wirelog_opt_config_t *config,
-                            int *error);
+wirelog_optimize_with_config(void *program, const wirelog_opt_config_t *config,
+                             int *error);
 
 /**
  * wirelog_optimize_apply_pass:
@@ -141,9 +141,7 @@ wirelog_optimize_with_config(void *program,
  * Returns: true on success, false on error
  */
 bool
-wirelog_optimize_apply_pass(void *program,
-                           wirelog_opt_pass_t pass,
-                           int *error);
+wirelog_optimize_apply_pass(void *program, wirelog_opt_pass_t pass, int *error);
 
 /* ======================================================================== */
 /* Optimization Analysis                                                    */

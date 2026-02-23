@@ -24,91 +24,89 @@ static int tests_run = 0;
 static int tests_passed = 0;
 static int tests_failed = 0;
 
-#define TEST(name) \
-    do { \
-        tests_run++; \
+#define TEST(name)                      \
+    do {                                \
+        tests_run++;                    \
         printf("  [TEST] %-50s", name); \
-        fflush(stdout); \
+        fflush(stdout);                 \
     } while (0)
 
-#define PASS() \
-    do { \
-        tests_passed++; \
+#define PASS()             \
+    do {                   \
+        tests_passed++;    \
         printf(" PASS\n"); \
     } while (0)
 
-#define FAIL(msg) \
-    do { \
-        tests_failed++; \
+#define FAIL(msg)                   \
+    do {                            \
+        tests_failed++;             \
         printf(" FAIL: %s\n", msg); \
     } while (0)
 
-#define ASSERT_TOK(lexer, expected_type) \
-    do { \
-        wl_token_t tok = wl_lexer_next_token(&(lexer)); \
-        if (tok.type != (expected_type)) { \
-            char buf[256]; \
-            snprintf(buf, sizeof(buf), \
-                "expected %s, got %s (line %u, col %u)", \
-                wl_token_type_str(expected_type), \
-                wl_token_type_str(tok.type), \
-                tok.line, tok.col); \
-            FAIL(buf); \
-            return; \
-        } \
+#define ASSERT_TOK(lexer, expected_type)                              \
+    do {                                                              \
+        wl_token_t tok = wl_lexer_next_token(&(lexer));               \
+        if (tok.type != (expected_type)) {                            \
+            char buf[256];                                            \
+            snprintf(buf, sizeof(buf),                                \
+                     "expected %s, got %s (line %u, col %u)",         \
+                     wl_token_type_str(expected_type),                \
+                     wl_token_type_str(tok.type), tok.line, tok.col); \
+            FAIL(buf);                                                \
+            return;                                                   \
+        }                                                             \
     } while (0)
 
-#define ASSERT_TOK_VAL(lexer, expected_type, expected_val) \
-    do { \
-        wl_token_t tok = wl_lexer_next_token(&(lexer)); \
-        if (tok.type != (expected_type)) { \
-            char buf[256]; \
-            snprintf(buf, sizeof(buf), \
-                "expected %s, got %s", \
-                wl_token_type_str(expected_type), \
-                wl_token_type_str(tok.type)); \
-            FAIL(buf); \
-            return; \
-        } \
-        if (tok.int_value != (expected_val)) { \
-            char buf[256]; \
-            snprintf(buf, sizeof(buf), \
-                "expected value %lld, got %lld", \
-                (long long)(expected_val), (long long)tok.int_value); \
-            FAIL(buf); \
-            return; \
-        } \
+#define ASSERT_TOK_VAL(lexer, expected_type, expected_val)                 \
+    do {                                                                   \
+        wl_token_t tok = wl_lexer_next_token(&(lexer));                    \
+        if (tok.type != (expected_type)) {                                 \
+            char buf[256];                                                 \
+            snprintf(buf, sizeof(buf), "expected %s, got %s",              \
+                     wl_token_type_str(expected_type),                     \
+                     wl_token_type_str(tok.type));                         \
+            FAIL(buf);                                                     \
+            return;                                                        \
+        }                                                                  \
+        if (tok.int_value != (expected_val)) {                             \
+            char buf[256];                                                 \
+            snprintf(buf, sizeof(buf), "expected value %lld, got %lld",    \
+                     (long long)(expected_val), (long long)tok.int_value); \
+            FAIL(buf);                                                     \
+            return;                                                        \
+        }                                                                  \
     } while (0)
 
-#define ASSERT_TOK_STR(lexer, expected_type, expected_str) \
-    do { \
-        wl_token_t tok = wl_lexer_next_token(&(lexer)); \
-        if (tok.type != (expected_type)) { \
-            char buf[256]; \
-            snprintf(buf, sizeof(buf), \
-                "expected %s, got %s", \
-                wl_token_type_str(expected_type), \
-                wl_token_type_str(tok.type)); \
-            FAIL(buf); \
-            return; \
-        } \
-        char *s = wl_token_to_string(&tok); \
-        if (strcmp(s, expected_str) != 0) { \
-            char buf[256]; \
-            snprintf(buf, sizeof(buf), \
-                "expected \"%s\", got \"%s\"", expected_str, s); \
-            free(s); \
-            FAIL(buf); \
-            return; \
-        } \
-        free(s); \
+#define ASSERT_TOK_STR(lexer, expected_type, expected_str)            \
+    do {                                                              \
+        wl_token_t tok = wl_lexer_next_token(&(lexer));               \
+        if (tok.type != (expected_type)) {                            \
+            char buf[256];                                            \
+            snprintf(buf, sizeof(buf), "expected %s, got %s",         \
+                     wl_token_type_str(expected_type),                \
+                     wl_token_type_str(tok.type));                    \
+            FAIL(buf);                                                \
+            return;                                                   \
+        }                                                             \
+        char *s = wl_token_to_string(&tok);                           \
+        if (strcmp(s, expected_str) != 0) {                           \
+            char buf[256];                                            \
+            snprintf(buf, sizeof(buf), "expected \"%s\", got \"%s\"", \
+                     expected_str, s);                                \
+            free(s);                                                  \
+            FAIL(buf);                                                \
+            return;                                                   \
+        }                                                             \
+        free(s);                                                      \
     } while (0)
 
 /* ======================================================================== */
 /* Lexer: Basic Token Tests                                                 */
 /* ======================================================================== */
 
-static void test_empty_input(void) {
+static void
+test_empty_input(void)
+{
     TEST("empty input yields EOF");
     wl_lexer_t lex;
     wl_lexer_init(&lex, "");
@@ -116,7 +114,9 @@ static void test_empty_input(void) {
     PASS();
 }
 
-static void test_whitespace_only(void) {
+static void
+test_whitespace_only(void)
+{
     TEST("whitespace-only yields EOF");
     wl_lexer_t lex;
     wl_lexer_init(&lex, "   \t\n  \n  ");
@@ -124,7 +124,9 @@ static void test_whitespace_only(void) {
     PASS();
 }
 
-static void test_identifier_simple(void) {
+static void
+test_identifier_simple(void)
+{
     TEST("simple identifier");
     wl_lexer_t lex;
     wl_lexer_init(&lex, "edge");
@@ -133,7 +135,9 @@ static void test_identifier_simple(void) {
     PASS();
 }
 
-static void test_identifier_with_underscore_prefix(void) {
+static void
+test_identifier_with_underscore_prefix(void)
+{
     TEST("identifier with underscore prefix");
     wl_lexer_t lex;
     wl_lexer_init(&lex, "_tmp");
@@ -142,7 +146,9 @@ static void test_identifier_with_underscore_prefix(void) {
     PASS();
 }
 
-static void test_identifier_with_digits(void) {
+static void
+test_identifier_with_digits(void)
+{
     TEST("identifier with digits");
     wl_lexer_t lex;
     wl_lexer_init(&lex, "node42");
@@ -151,7 +157,9 @@ static void test_identifier_with_digits(void) {
     PASS();
 }
 
-static void test_identifier_with_underscores(void) {
+static void
+test_identifier_with_underscores(void)
+{
     TEST("identifier with underscores");
     wl_lexer_t lex;
     wl_lexer_init(&lex, "var_points_to");
@@ -160,7 +168,9 @@ static void test_identifier_with_underscores(void) {
     PASS();
 }
 
-static void test_standalone_underscore(void) {
+static void
+test_standalone_underscore(void)
+{
     TEST("standalone underscore is wildcard");
     wl_lexer_t lex;
     wl_lexer_init(&lex, "_");
@@ -169,7 +179,9 @@ static void test_standalone_underscore(void) {
     PASS();
 }
 
-static void test_integer_literal(void) {
+static void
+test_integer_literal(void)
+{
     TEST("integer literal");
     wl_lexer_t lex;
     wl_lexer_init(&lex, "42");
@@ -178,7 +190,9 @@ static void test_integer_literal(void) {
     PASS();
 }
 
-static void test_integer_zero(void) {
+static void
+test_integer_zero(void)
+{
     TEST("integer zero");
     wl_lexer_t lex;
     wl_lexer_init(&lex, "0");
@@ -186,7 +200,9 @@ static void test_integer_zero(void) {
     PASS();
 }
 
-static void test_integer_large(void) {
+static void
+test_integer_large(void)
+{
     TEST("large integer");
     wl_lexer_t lex;
     wl_lexer_init(&lex, "2147483647");
@@ -194,7 +210,9 @@ static void test_integer_large(void) {
     PASS();
 }
 
-static void test_string_literal(void) {
+static void
+test_string_literal(void)
+{
     TEST("string literal");
     wl_lexer_t lex;
     wl_lexer_init(&lex, "\"hello world\"");
@@ -203,7 +221,9 @@ static void test_string_literal(void) {
     PASS();
 }
 
-static void test_string_empty(void) {
+static void
+test_string_empty(void)
+{
     TEST("empty string literal");
     wl_lexer_t lex;
     wl_lexer_init(&lex, "\"\"");
@@ -215,7 +235,9 @@ static void test_string_empty(void) {
 /* Lexer: Boolean Literals                                                  */
 /* ======================================================================== */
 
-static void test_true_literal(void) {
+static void
+test_true_literal(void)
+{
     TEST("True boolean literal");
     wl_lexer_t lex;
     wl_lexer_init(&lex, "True");
@@ -224,7 +246,9 @@ static void test_true_literal(void) {
     PASS();
 }
 
-static void test_false_literal(void) {
+static void
+test_false_literal(void)
+{
     TEST("False boolean literal");
     wl_lexer_t lex;
     wl_lexer_init(&lex, "False");
@@ -237,7 +261,9 @@ static void test_false_literal(void) {
 /* Lexer: Keywords                                                          */
 /* ======================================================================== */
 
-static void test_aggregate_keywords_lowercase(void) {
+static void
+test_aggregate_keywords_lowercase(void)
+{
     TEST("aggregate keywords (lowercase)");
     wl_lexer_t lex;
     wl_lexer_init(&lex, "count sum min max average");
@@ -250,7 +276,9 @@ static void test_aggregate_keywords_lowercase(void) {
     PASS();
 }
 
-static void test_aggregate_keywords_uppercase(void) {
+static void
+test_aggregate_keywords_uppercase(void)
+{
     TEST("aggregate keywords (uppercase)");
     wl_lexer_t lex;
     wl_lexer_init(&lex, "COUNT SUM MIN MAX AVG");
@@ -263,7 +291,9 @@ static void test_aggregate_keywords_uppercase(void) {
     PASS();
 }
 
-static void test_type_keywords(void) {
+static void
+test_type_keywords(void)
+{
     TEST("type keywords");
     wl_lexer_t lex;
     wl_lexer_init(&lex, "int32 int64 string");
@@ -274,7 +304,9 @@ static void test_type_keywords(void) {
     PASS();
 }
 
-static void test_keyword_like_identifiers(void) {
+static void
+test_keyword_like_identifiers(void)
+{
     TEST("keyword-like identifiers not confused");
     wl_lexer_t lex;
     /* "counter" starts with "count" but is a longer identifier */
@@ -291,7 +323,9 @@ static void test_keyword_like_identifiers(void) {
 /* Lexer: Punctuation                                                       */
 /* ======================================================================== */
 
-static void test_punctuation(void) {
+static void
+test_punctuation(void)
+{
     TEST("punctuation tokens");
     wl_lexer_t lex;
     wl_lexer_init(&lex, "( ) , : !");
@@ -304,7 +338,9 @@ static void test_punctuation(void) {
     PASS();
 }
 
-static void test_dot_standalone(void) {
+static void
+test_dot_standalone(void)
+{
     TEST("standalone dot");
     wl_lexer_t lex;
     wl_lexer_init(&lex, ".");
@@ -317,7 +353,9 @@ static void test_dot_standalone(void) {
 /* Lexer: Operators                                                         */
 /* ======================================================================== */
 
-static void test_horn_clause(void) {
+static void
+test_horn_clause(void)
+{
     TEST("horn clause operator :-");
     wl_lexer_t lex;
     wl_lexer_init(&lex, ":-");
@@ -326,7 +364,9 @@ static void test_horn_clause(void) {
     PASS();
 }
 
-static void test_comparison_operators(void) {
+static void
+test_comparison_operators(void)
+{
     TEST("comparison operators");
     wl_lexer_t lex;
     wl_lexer_init(&lex, "= != < > <= >=");
@@ -340,7 +380,9 @@ static void test_comparison_operators(void) {
     PASS();
 }
 
-static void test_arithmetic_operators(void) {
+static void
+test_arithmetic_operators(void)
+{
     TEST("arithmetic operators");
     wl_lexer_t lex;
     wl_lexer_init(&lex, "+ - * / %");
@@ -357,7 +399,9 @@ static void test_arithmetic_operators(void) {
 /* Lexer: Directives                                                        */
 /* ======================================================================== */
 
-static void test_directive_decl(void) {
+static void
+test_directive_decl(void)
+{
     TEST("directive .decl");
     wl_lexer_t lex;
     wl_lexer_init(&lex, ".decl");
@@ -366,7 +410,9 @@ static void test_directive_decl(void) {
     PASS();
 }
 
-static void test_directive_input(void) {
+static void
+test_directive_input(void)
+{
     TEST("directive .input");
     wl_lexer_t lex;
     wl_lexer_init(&lex, ".input");
@@ -375,7 +421,9 @@ static void test_directive_input(void) {
     PASS();
 }
 
-static void test_directive_output(void) {
+static void
+test_directive_output(void)
+{
     TEST("directive .output");
     wl_lexer_t lex;
     wl_lexer_init(&lex, ".output");
@@ -384,7 +432,9 @@ static void test_directive_output(void) {
     PASS();
 }
 
-static void test_directive_printsize(void) {
+static void
+test_directive_printsize(void)
+{
     TEST("directive .printsize");
     wl_lexer_t lex;
     wl_lexer_init(&lex, ".printsize");
@@ -393,7 +443,9 @@ static void test_directive_printsize(void) {
     PASS();
 }
 
-static void test_directive_plan(void) {
+static void
+test_directive_plan(void)
+{
     TEST("directive .plan");
     wl_lexer_t lex;
     wl_lexer_init(&lex, ".plan");
@@ -402,7 +454,9 @@ static void test_directive_plan(void) {
     PASS();
 }
 
-static void test_dot_followed_by_non_directive(void) {
+static void
+test_dot_followed_by_non_directive(void)
+{
     TEST("dot followed by non-directive is DOT + IDENT");
     wl_lexer_t lex;
     wl_lexer_init(&lex, ".foo");
@@ -416,7 +470,9 @@ static void test_dot_followed_by_non_directive(void) {
 /* Lexer: Comments                                                          */
 /* ======================================================================== */
 
-static void test_hash_comment(void) {
+static void
+test_hash_comment(void)
+{
     TEST("hash comment");
     wl_lexer_t lex;
     wl_lexer_init(&lex, "# this is a comment\nfoo");
@@ -425,7 +481,9 @@ static void test_hash_comment(void) {
     PASS();
 }
 
-static void test_double_slash_comment(void) {
+static void
+test_double_slash_comment(void)
+{
     TEST("double-slash comment");
     wl_lexer_t lex;
     wl_lexer_init(&lex, "// this is a comment\nbar");
@@ -434,7 +492,9 @@ static void test_double_slash_comment(void) {
     PASS();
 }
 
-static void test_comment_at_end_of_line(void) {
+static void
+test_comment_at_end_of_line(void)
+{
     TEST("comment at end of line");
     wl_lexer_t lex;
     wl_lexer_init(&lex, "foo # comment\nbar");
@@ -444,7 +504,9 @@ static void test_comment_at_end_of_line(void) {
     PASS();
 }
 
-static void test_comment_only(void) {
+static void
+test_comment_only(void)
+{
     TEST("comment-only input");
     wl_lexer_t lex;
     wl_lexer_init(&lex, "# just a comment");
@@ -456,7 +518,9 @@ static void test_comment_only(void) {
 /* Lexer: Line/Column Tracking                                              */
 /* ======================================================================== */
 
-static void test_line_tracking(void) {
+static void
+test_line_tracking(void)
+{
     TEST("line number tracking");
     wl_lexer_t lex;
     wl_lexer_init(&lex, "foo\nbar\nbaz");
@@ -465,15 +529,17 @@ static void test_line_tracking(void) {
     wl_token_t t3 = wl_lexer_next_token(&lex);
     if (t1.line != 1 || t2.line != 2 || t3.line != 3) {
         char buf[128];
-        snprintf(buf, sizeof(buf), "lines: %u,%u,%u expected 1,2,3",
-                 t1.line, t2.line, t3.line);
+        snprintf(buf, sizeof(buf), "lines: %u,%u,%u expected 1,2,3", t1.line,
+                 t2.line, t3.line);
         FAIL(buf);
         return;
     }
     PASS();
 }
 
-static void test_column_tracking(void) {
+static void
+test_column_tracking(void)
+{
     TEST("column tracking");
     wl_lexer_t lex;
     wl_lexer_init(&lex, "  foo bar");
@@ -481,8 +547,7 @@ static void test_column_tracking(void) {
     wl_token_t t2 = wl_lexer_next_token(&lex);
     if (t1.col != 3 || t2.col != 7) {
         char buf[128];
-        snprintf(buf, sizeof(buf), "cols: %u,%u expected 3,7",
-                 t1.col, t2.col);
+        snprintf(buf, sizeof(buf), "cols: %u,%u expected 3,7", t1.col, t2.col);
         FAIL(buf);
         return;
     }
@@ -493,26 +558,30 @@ static void test_column_tracking(void) {
 /* Lexer: Peek                                                              */
 /* ======================================================================== */
 
-static void test_peek_does_not_advance(void) {
+static void
+test_peek_does_not_advance(void)
+{
     TEST("peek does not advance position");
     wl_lexer_t lex;
     wl_lexer_init(&lex, "foo bar");
     wl_token_t t1 = wl_lexer_peek_token(&lex);
     wl_token_t t2 = wl_lexer_peek_token(&lex);
     wl_token_t t3 = wl_lexer_next_token(&lex);
-    if (t1.type != WL_TOK_IDENT || t2.type != WL_TOK_IDENT ||
-        t3.type != WL_TOK_IDENT) {
+    if (t1.type != WL_TOK_IDENT || t2.type != WL_TOK_IDENT
+        || t3.type != WL_TOK_IDENT) {
         FAIL("peek should return same token");
         return;
     }
     char *s1 = wl_token_to_string(&t1);
     char *s3 = wl_token_to_string(&t3);
     if (strcmp(s1, "foo") != 0 || strcmp(s3, "foo") != 0) {
-        free(s1); free(s3);
+        free(s1);
+        free(s3);
         FAIL("peek and next should return 'foo'");
         return;
     }
-    free(s1); free(s3);
+    free(s1);
+    free(s3);
     ASSERT_TOK_STR(lex, WL_TOK_IDENT, "bar");
     PASS();
 }
@@ -521,7 +590,9 @@ static void test_peek_does_not_advance(void) {
 /* Lexer: Complex Token Sequences                                           */
 /* ======================================================================== */
 
-static void test_declaration_tokens(void) {
+static void
+test_declaration_tokens(void)
+{
     TEST("declaration token sequence");
     wl_lexer_t lex;
     wl_lexer_init(&lex, ".decl Arc(x: int32, y: int32)");
@@ -540,11 +611,13 @@ static void test_declaration_tokens(void) {
     PASS();
 }
 
-static void test_input_directive_tokens(void) {
+static void
+test_input_directive_tokens(void)
+{
     TEST("input directive token sequence");
     wl_lexer_t lex;
-    wl_lexer_init(&lex,
-        ".input Arc(IO=\"file\", filename=\"Arc.csv\", delimiter=\",\")");
+    wl_lexer_init(
+        &lex, ".input Arc(IO=\"file\", filename=\"Arc.csv\", delimiter=\",\")");
     ASSERT_TOK(lex, WL_TOK_INPUT);
     ASSERT_TOK_STR(lex, WL_TOK_IDENT, "Arc");
     ASSERT_TOK(lex, WL_TOK_LPAREN);
@@ -564,7 +637,9 @@ static void test_input_directive_tokens(void) {
     PASS();
 }
 
-static void test_rule_tokens(void) {
+static void
+test_rule_tokens(void)
+{
     TEST("rule token sequence");
     wl_lexer_t lex;
     wl_lexer_init(&lex, "Tc(x, y) :- Arc(x, y).");
@@ -586,7 +661,9 @@ static void test_rule_tokens(void) {
     PASS();
 }
 
-static void test_negation_tokens(void) {
+static void
+test_negation_tokens(void)
+{
     TEST("negation token sequence");
     wl_lexer_t lex;
     wl_lexer_init(&lex, "r(x) :- a(x), !b(x).");
@@ -610,7 +687,9 @@ static void test_negation_tokens(void) {
     PASS();
 }
 
-static void test_aggregate_tokens(void) {
+static void
+test_aggregate_tokens(void)
+{
     TEST("aggregate expression tokens");
     wl_lexer_t lex;
     wl_lexer_init(&lex, "sssp(x, min(d)) :- sssp2(x, d).");
@@ -635,7 +714,9 @@ static void test_aggregate_tokens(void) {
     PASS();
 }
 
-static void test_arithmetic_in_aggregate(void) {
+static void
+test_arithmetic_in_aggregate(void)
+{
     TEST("arithmetic inside aggregate");
     wl_lexer_t lex;
     wl_lexer_init(&lex, "min(d1 + d2)");
@@ -649,7 +730,9 @@ static void test_arithmetic_in_aggregate(void) {
     PASS();
 }
 
-static void test_comparison_tokens(void) {
+static void
+test_comparison_tokens(void)
+{
     TEST("comparison expression tokens");
     wl_lexer_t lex;
     wl_lexer_init(&lex, "x != y, a >= 10, b < c");
@@ -668,7 +751,9 @@ static void test_comparison_tokens(void) {
     PASS();
 }
 
-static void test_wildcard_in_atom(void) {
+static void
+test_wildcard_in_atom(void)
+{
     TEST("wildcard in atom arguments");
     wl_lexer_t lex;
     wl_lexer_init(&lex, "edge(_, y)");
@@ -682,7 +767,9 @@ static void test_wildcard_in_atom(void) {
     PASS();
 }
 
-static void test_plan_after_rule(void) {
+static void
+test_plan_after_rule(void)
+{
     TEST(".plan after rule terminator");
     wl_lexer_t lex;
     wl_lexer_init(&lex, "r(x) :- a(x). .plan");
@@ -705,7 +792,9 @@ static void test_plan_after_rule(void) {
 /* Lexer: Error Cases                                                       */
 /* ======================================================================== */
 
-static void test_unterminated_string(void) {
+static void
+test_unterminated_string(void)
+{
     TEST("unterminated string produces error");
     wl_lexer_t lex;
     wl_lexer_init(&lex, "\"hello");
@@ -717,7 +806,9 @@ static void test_unterminated_string(void) {
     PASS();
 }
 
-static void test_unknown_character(void) {
+static void
+test_unknown_character(void)
+{
     TEST("unknown character produces error");
     wl_lexer_t lex;
     wl_lexer_init(&lex, "@");
@@ -733,7 +824,9 @@ static void test_unknown_character(void) {
 /* Main                                                                     */
 /* ======================================================================== */
 
-int main(void) {
+int
+main(void)
+{
     printf("=== wirelog Lexer Tests ===\n\n");
 
     printf("--- Basic Tokens ---\n");
