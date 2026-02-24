@@ -84,6 +84,50 @@ wl_ir_expr_free(wl_ir_expr_t *expr)
     free(expr);
 }
 
+wl_ir_expr_t *
+wl_ir_expr_clone(const wl_ir_expr_t *expr)
+{
+    if (!expr)
+        return NULL;
+
+    wl_ir_expr_t *clone = wl_ir_expr_create(expr->type);
+    if (!clone)
+        return NULL;
+
+    clone->int_value = expr->int_value;
+    clone->bool_value = expr->bool_value;
+    clone->arith_op = expr->arith_op;
+    clone->cmp_op = expr->cmp_op;
+    clone->agg_fn = expr->agg_fn;
+
+    if (expr->var_name) {
+        clone->var_name = strdup_safe(expr->var_name);
+        if (!clone->var_name) {
+            wl_ir_expr_free(clone);
+            return NULL;
+        }
+    }
+
+    if (expr->str_value) {
+        clone->str_value = strdup_safe(expr->str_value);
+        if (!clone->str_value) {
+            wl_ir_expr_free(clone);
+            return NULL;
+        }
+    }
+
+    for (uint32_t i = 0; i < expr->child_count; i++) {
+        wl_ir_expr_t *child_clone = wl_ir_expr_clone(expr->children[i]);
+        if (!child_clone) {
+            wl_ir_expr_free(clone);
+            return NULL;
+        }
+        wl_ir_expr_add_child(clone, child_clone);
+    }
+
+    return clone;
+}
+
 /* ======================================================================== */
 /* IR Node Construction                                                     */
 /* ======================================================================== */

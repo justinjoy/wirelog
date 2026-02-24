@@ -112,6 +112,18 @@ wl_ir_expr_add_child(wl_ir_expr_t *parent, wl_ir_expr_t *child);
 void
 wl_ir_expr_free(wl_ir_expr_t *expr);
 
+/**
+ * wl_ir_expr_clone:
+ * @expr: Expression to clone (NULL-safe).
+ *
+ * Recursive deep copy of an expression tree.
+ * All strings and child arrays are independently allocated.
+ *
+ * Returns: (transfer full): New expression tree, or NULL on error/NULL input.
+ */
+wl_ir_expr_t *
+wl_ir_expr_clone(const wl_ir_expr_t *expr);
+
 /* ======================================================================== */
 /* Utility                                                                  */
 /* ======================================================================== */
