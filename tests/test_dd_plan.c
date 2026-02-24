@@ -7,6 +7,7 @@
  */
 
 #include "../wirelog/ir/dd_plan.h"
+#include "../wirelog/ir/ir.h"
 #include "../wirelog/ir/program.h"
 #include "../wirelog/wirelog-parser.h"
 
@@ -330,6 +331,219 @@ test_plan_stratum_count(void)
 }
 
 /* ======================================================================== */
+/* Helper: find relation plan by name                                       */
+/* ======================================================================== */
+
+static wl_dd_relation_plan_t *
+find_relation_plan(const wl_dd_plan_t *plan, const char *name)
+{
+    for (uint32_t s = 0; s < plan->stratum_count; s++) {
+        for (uint32_t r = 0; r < plan->strata[s].relation_count; r++) {
+            if (strcmp(plan->strata[s].relations[r].name, name) == 0)
+                return &plan->strata[s].relations[r];
+        }
+    }
+    return NULL;
+}
+
+/* ======================================================================== */
+/* FILTER and PROJECT Translation Tests                                     */
+/* ======================================================================== */
+
+static void
+test_plan_filter(void)
+{
+    TEST("DD plan: r(x) :- a(x), x > 5. -> VARIABLE + FILTER");
+
+    wirelog_error_t err;
+    wirelog_program_t *prog = wirelog_parse_string(".decl a(x: int32)\n"
+                                                   ".decl r(x: int32)\n"
+                                                   "r(x) :- a(x), x > 5.\n",
+                                                   &err);
+
+    if (!prog) {
+        FAIL("parse returned NULL");
+        return;
+    }
+
+    wl_dd_plan_t *plan = NULL;
+    int rc = wl_dd_plan_generate(prog, &plan);
+
+    if (rc != 0 || !plan) {
+        wirelog_program_free(prog);
+        FAIL("plan generation failed");
+        return;
+    }
+
+    wl_dd_relation_plan_t *rp = find_relation_plan(plan, "r");
+    if (!rp) {
+        wl_dd_plan_free(plan);
+        wirelog_program_free(prog);
+        FAIL("relation 'r' not found in plan");
+        return;
+    }
+
+    /* IR tree: PROJECT(FILTER(SCAN)) -> post-order: VARIABLE, FILTER, MAP */
+    /* Check that a FILTER op exists with non-NULL filter_expr */
+    bool found_filter = false;
+    for (uint32_t i = 0; i < rp->op_count; i++) {
+        if (rp->ops[i].op == WL_DD_FILTER) {
+            if (rp->ops[i].filter_expr != NULL)
+                found_filter = true;
+            else {
+                wl_dd_plan_free(plan);
+                wirelog_program_free(prog);
+                FAIL("FILTER op has NULL filter_expr");
+                return;
+            }
+        }
+    }
+
+    if (!found_filter) {
+        wl_dd_plan_free(plan);
+        wirelog_program_free(prog);
+        FAIL("expected FILTER op for r(x) :- a(x), x > 5.");
+        return;
+    }
+
+    wl_dd_plan_free(plan);
+    wirelog_program_free(prog);
+    PASS();
+}
+
+static void
+test_plan_project(void)
+{
+    TEST("DD plan: r(x) :- a(x, y). -> VARIABLE + MAP");
+
+    wirelog_error_t err;
+    wirelog_program_t *prog
+        = wirelog_parse_string(".decl a(x: int32, y: int32)\n"
+                               ".decl r(x: int32)\n"
+                               "r(x) :- a(x, y).\n",
+                               &err);
+
+    if (!prog) {
+        FAIL("parse returned NULL");
+        return;
+    }
+
+    wl_dd_plan_t *plan = NULL;
+    int rc = wl_dd_plan_generate(prog, &plan);
+
+    if (rc != 0 || !plan) {
+        wirelog_program_free(prog);
+        FAIL("plan generation failed");
+        return;
+    }
+
+    wl_dd_relation_plan_t *rp = find_relation_plan(plan, "r");
+    if (!rp) {
+        wl_dd_plan_free(plan);
+        wirelog_program_free(prog);
+        FAIL("relation 'r' not found in plan");
+        return;
+    }
+
+    /* IR tree: PROJECT(SCAN) -> post-order: VARIABLE, MAP */
+    bool found_map = false;
+    for (uint32_t i = 0; i < rp->op_count; i++) {
+        if (rp->ops[i].op == WL_DD_MAP) {
+            if (rp->ops[i].project_count > 0)
+                found_map = true;
+            else {
+                wl_dd_plan_free(plan);
+                wirelog_program_free(prog);
+                FAIL("MAP op has project_count == 0");
+                return;
+            }
+        }
+    }
+
+    if (!found_map) {
+        wl_dd_plan_free(plan);
+        wirelog_program_free(prog);
+        FAIL("expected MAP op for r(x) :- a(x, y).");
+        return;
+    }
+
+    wl_dd_plan_free(plan);
+    wirelog_program_free(prog);
+    PASS();
+}
+
+static void
+test_plan_filter_project(void)
+{
+    TEST("DD plan: r(x) :- a(x,y), y>0. -> VARIABLE, FILTER, MAP order");
+
+    wirelog_error_t err;
+    wirelog_program_t *prog
+        = wirelog_parse_string(".decl a(x: int32, y: int32)\n"
+                               ".decl r(x: int32)\n"
+                               "r(x) :- a(x, y), y > 0.\n",
+                               &err);
+
+    if (!prog) {
+        FAIL("parse returned NULL");
+        return;
+    }
+
+    wl_dd_plan_t *plan = NULL;
+    int rc = wl_dd_plan_generate(prog, &plan);
+
+    if (rc != 0 || !plan) {
+        wirelog_program_free(prog);
+        FAIL("plan generation failed");
+        return;
+    }
+
+    wl_dd_relation_plan_t *rp = find_relation_plan(plan, "r");
+    if (!rp) {
+        wl_dd_plan_free(plan);
+        wirelog_program_free(prog);
+        FAIL("relation 'r' not found in plan");
+        return;
+    }
+
+    /* IR tree: PROJECT(FILTER(SCAN))
+     * Post-order: VARIABLE, FILTER, MAP */
+    if (rp->op_count < 3) {
+        char buf[100];
+        snprintf(buf, sizeof(buf), "expected >= 3 ops, got %u", rp->op_count);
+        wl_dd_plan_free(plan);
+        wirelog_program_free(prog);
+        FAIL(buf);
+        return;
+    }
+
+    if (rp->ops[0].op != WL_DD_VARIABLE) {
+        wl_dd_plan_free(plan);
+        wirelog_program_free(prog);
+        FAIL("op[0] should be VARIABLE");
+        return;
+    }
+
+    if (rp->ops[1].op != WL_DD_FILTER || rp->ops[1].filter_expr == NULL) {
+        wl_dd_plan_free(plan);
+        wirelog_program_free(prog);
+        FAIL("op[1] should be FILTER with non-NULL filter_expr");
+        return;
+    }
+
+    if (rp->ops[2].op != WL_DD_MAP || rp->ops[2].project_count == 0) {
+        wl_dd_plan_free(plan);
+        wirelog_program_free(prog);
+        FAIL("op[2] should be MAP with project_count > 0");
+        return;
+    }
+
+    wl_dd_plan_free(plan);
+    wirelog_program_free(prog);
+    PASS();
+}
+
+/* ======================================================================== */
 /* Main                                                                     */
 /* ======================================================================== */
 
@@ -349,6 +563,11 @@ main(void)
     test_plan_simple_scan();
     test_plan_edb_list();
     test_plan_stratum_count();
+
+    /* FILTER and PROJECT translation */
+    test_plan_filter();
+    test_plan_project();
+    test_plan_filter_project();
 
     printf("\n=== Results: %d passed, %d failed, %d total ===\n\n",
            tests_passed, tests_failed, tests_run);

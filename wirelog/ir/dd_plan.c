@@ -102,6 +102,28 @@ translate_ir_node(const wirelog_ir_node_t *node, wl_dd_relation_plan_t *rp,
             op.relation_name = strdup_safe(node->relation_name);
         break;
 
+    case WIRELOG_IR_FILTER:
+        op.op = WL_DD_FILTER;
+        if (node->filter_expr) {
+            op.filter_expr = wl_ir_expr_clone(node->filter_expr);
+            if (!op.filter_expr)
+                return -1;
+        }
+        break;
+
+    case WIRELOG_IR_PROJECT:
+        op.op = WL_DD_MAP;
+        op.project_count = node->project_count;
+        if (node->project_count > 0 && node->project_indices) {
+            op.project_indices
+                = (uint32_t *)malloc(node->project_count * sizeof(uint32_t));
+            if (!op.project_indices)
+                return -1;
+            memcpy(op.project_indices, node->project_indices,
+                   node->project_count * sizeof(uint32_t));
+        }
+        break;
+
     default:
         /* Other node types implemented in subsequent commits */
         return 0;
