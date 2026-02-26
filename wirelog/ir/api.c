@@ -22,6 +22,7 @@
 #include "../parser/parser.h"
 #include "../wirelog-parser.h"
 
+#include <stdlib.h>
 #include <string.h>
 
 /* ======================================================================== */
@@ -172,6 +173,47 @@ wirelog_program_is_stratified(const wirelog_program_t *program)
     if (!program)
         return false;
     return program->is_stratified;
+}
+
+/* ======================================================================== */
+/* Fact Extraction                                                          */
+/* ======================================================================== */
+
+int
+wirelog_program_get_facts(const wirelog_program_t *prog, const char *relation,
+                          int64_t **data, uint32_t *num_rows,
+                          uint32_t *num_cols)
+{
+    if (!prog || !relation || !data || !num_rows || !num_cols)
+        return -1;
+
+    *data = NULL;
+    *num_rows = 0;
+    *num_cols = 0;
+
+    /* Find the relation */
+    for (uint32_t i = 0; i < prog->relation_count; i++) {
+        if (prog->relations[i].name
+            && strcmp(prog->relations[i].name, relation) == 0) {
+            const wl_relation_info_t *rel = &prog->relations[i];
+            if (rel->fact_count == 0)
+                return 1;
+
+            uint32_t ncols = rel->column_count;
+            uint32_t total = rel->fact_count * ncols;
+            int64_t *copy = (int64_t *)malloc(total * sizeof(int64_t));
+            if (!copy)
+                return -1;
+            memcpy(copy, rel->fact_data, total * sizeof(int64_t));
+
+            *data = copy;
+            *num_rows = rel->fact_count;
+            *num_cols = ncols;
+            return 0;
+        }
+    }
+
+    return -1; /* relation not found */
 }
 
 /* ======================================================================== */
