@@ -126,6 +126,7 @@ wirelog_sources += wirelog_parser_src
 wirelog_sources += wirelog_ir_src
 wirelog_sources += wirelog_optimizer_src
 wirelog_sources += wirelog_dd_src
+wirelog_sources += wirelog_ffi_src
 wirelog_sources += wirelog_io_src
 
 # Public headers
