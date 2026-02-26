@@ -16,7 +16,7 @@ ir_src = files(
   '../wirelog/ir/program.c',
   '../wirelog/ir/stratify.c',
   '../wirelog/ir/api.c',
-  '../wirelog/ir/dd_plan.c',
+  '../wirelog/ffi/dd_plan.c',
 )
 
 optimizer_src = files(

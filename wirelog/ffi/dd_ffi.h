@@ -154,7 +154,7 @@
  * Both headers are internal (not installed), so this include is safe.
  * The marshalling functions below convert wl_dd_plan_t -> wl_ffi_plan_t.
  */
-#include "../ir/dd_plan.h"
+#include "dd_plan.h"
 
 /* ======================================================================== */
 /* Serialized Expression Buffer                                             */
