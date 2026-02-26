@@ -85,7 +85,7 @@ impl WlFfiExprTag {
 /// Mirrors `wl_ffi_expr_buffer_t` from dd_ffi.h.
 ///
 /// - `data`: Pointer to byte buffer (owned by C, Rust borrows).
-///           NULL if no expression.
+///   NULL if no expression.
 /// - `size`: Number of bytes.  0 if no expression.
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
