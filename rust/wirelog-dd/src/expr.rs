@@ -1,4 +1,10 @@
 /*
+ * Copyright (C) CleverPlant
+ * Licensed under LGPL-3.0
+ * For commercial licenses, contact: inquiry@cleverplant.com
+ */
+
+/*
  * expr.rs - RPN expression deserializer and stack-based evaluator
  *
  * The wirelog C side serializes IR expression trees into flat RPN (Reverse Polish

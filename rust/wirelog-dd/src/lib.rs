@@ -1,9 +1,11 @@
 /*
- * wirelog-dd: Rust Differential Dataflow executor for wirelog
- *
  * Copyright (C) CleverPlant
  * Licensed under LGPL-3.0
  * For commercial licenses, contact: inquiry@cleverplant.com
+ */
+
+/*
+ * wirelog-dd: Rust Differential Dataflow executor for wirelog
  */
 
 mod dataflow;
