@@ -281,6 +281,35 @@ wirelog/ffi/
 - ✅ 불투명 워커 핸들 (`wl_dd_worker_t`) — 향후 Rust executor 통합용
 - ✅ 27/27 테스트 passing (수식 직렬화, 연산자 변환, 키 충실도, 메모리 정리)
 
+#### Rust DD Executor (`wirelog-dd` 크레이트)
+
+**파일**:
+```
+rust/wirelog-dd/
+  Cargo.toml          # 크레이트 설정 (staticlib, DD/timely/columnar 의존성)
+  src/
+    lib.rs            # 모듈 선언, FFI 재내보내기
+    ffi_types.rs      # repr(C) Rust 미러 (dd_ffi.h 타입 대응)
+    ffi.rs            # C FFI 진입점 (워커 생명주기, EDB 로딩)
+    expr.rs           # RPN 수식 역직렬화 + 스택 기반 평가기
+    plan_reader.rs    # Unsafe FFI plan → safe Rust 소유 타입 변환
+    dataflow.rs       # 인터프리터 기반 plan 실행 (Phase 0)
+```
+
+**Rust 측 상태** (Phase 0 — 인터프리터 기반 executor 완료):
+- ✅ 크레이트 골격: `staticlib`, `#[no_mangle] extern "C"` FFI 진입점
+- ✅ `repr(C)` 타입 미러 — `dd_ffi.h` 레이아웃 일치 (16개 레이아웃 테스트)
+- ✅ FFI 진입점: `wl_dd_worker_create/destroy`, `wl_dd_load_edb`, `wl_dd_execute`, `wl_dd_execute_cb`
+- ✅ EDB 로딩: 플랫 i64 배열 → HashMap<String, Vec<Vec<i64>>> (append 시맨틱스)
+- ✅ RPN 수식 역직렬화: 바이트 버퍼 → `Vec<ExprOp>` (19개 태그 타입)
+- ✅ 스택 기반 수식 평가기: `eval_filter()` — Int/Str/Bool 값 지원
+- ✅ FFI plan 리더: unsafe C 포인터 → safe owned Rust 타입 (`SafePlan`, `SafeOp` 등)
+- ✅ 비재귀 stratum 실행: 단일 패스 순차 연산자 해석
+- ✅ 재귀 stratum 실행: `HashSet` 수렴 검사를 통한 반복 고정점 (최대 1000회)
+- ✅ 전체 8가지 연산자 타입: Variable, Map, Filter, Join, Antijoin, Reduce, Concat, Consolidate
+- ✅ Meson-Cargo 빌드 통합 (`-Ddd=true`, `ninja rust-clippy`, `ninja rust-fmt-check`, `ninja rust-test`)
+- ✅ 90/90 Rust 테스트 passing (clippy clean, rustfmt clean)
+
 **변환 규칙** (IR 노드 → DD 연산자):
 ```
 SCAN      → WL_DD_VARIABLE   (입력 컬렉션 참조)
@@ -297,8 +326,9 @@ FLATMAP   → WL_DD_FILTER + WL_DD_MAP  (fused filter+project)
 - ✅ wirelog IR을 DD operator graph로 변환 (C 측 plan)
 - ✅ C → Rust 데이터 마샬링 (FFI-safe 플랫 구조체, RPN 수식 직렬화)
 - ✅ FFI 바운더리 정의 (메모리 소유권: C가 할당, Rust가 빌림)
-- 🔄 DD 워커 관리 (Rust 측 구현 계획)
-- 🔄 결과 수집 및 변환 (계획)
+- ✅ DD 워커 관리 (Rust 측: 워커 생성/해제, EDB 로딩)
+- ✅ Plan 실행 (Phase 0: 인터프리터 기반, 비재귀 + 재귀)
+- 🔄 결과 콜백 통합 (`wl_dd_execute_cb` 스텁 → 전체 파이프라인)
 
 **설계 결정 사항**:
 - ✅ DD op의 모든 포인터 필드는 소유(deep copy), `wl_dd_plan_free()`로 해제
@@ -307,7 +337,8 @@ FLATMAP   → WL_DD_FILTER + WL_DD_MAP  (fused filter+project)
 - ✅ FFI 바운더리: 복사 기반 마샬링, C가 모든 메모리 소유, Rust는 const 포인터로 빌림
 - ✅ 수식 트리를 RPN 바이트 버퍼로 직렬화 (FFI를 통한 포인터 트리 전달 방지)
 - ✅ FFI 타입은 고정 폭 정수와 명시적 enum 값 사용 (ABI 안정성)
-- [ ] Context 전달 방식 (worker handle → 실행 컨텍스트)
+- ✅ Context 전달 방식 (worker handle → 실행 컨텍스트, `WlDdWorker` 구현)
+- [ ] `wl_dd_execute_cb`를 dataflow executor에 연결 (FFI 스텁 → plan reader + 인터프리터)
 
 #### I/O Layer (Phase 0: 기본)
 
@@ -373,15 +404,16 @@ typedef struct {
 - ✅ Stratification 테스트 (20/20 passing)
 - ✅ IR → DD operator graph 변환기 (전체 8가지 IR 노드 타입, 19/19 tests)
 - ✅ Rust FFI 마샬링 레이어 (FFI-safe 타입, RPN 직렬화, plan 마샬링, 27/27 tests)
-- 🔄 Rust 측 executor 통합
-- 🔄 기본 통합 테스트
+- ✅ Rust DD executor 크레이트 (`wirelog-dd`, 인터프리터 기반 Phase 0, 90/90 Rust tests)
+- ✅ Meson-Cargo 빌드 통합 (`-Ddd=true`, 린트 타겟)
+- 🔄 종단간 통합 테스트 (C → FFI → Rust → 결과)
 
 **검증**:
 - [ ] 임베디드 타겟 (ARM cross-compile) 빌드 성공
 - [ ] 엔터프라이즈 타겟 (x86-64) 빌드 성공
 - [ ] 기본 Datalog 프로그램 실행 확인
 
-**현재 상태**: Parser (91/91), IR (56/56), Stratification (20/20), DD Plan (19/19), Logic Fusion (14/14), FFI Marshalling (27/27) 완료 — 227 tests passing. Phase 1 최적화 진행 중.
+**현재 상태**: Parser (91/91), IR (56/56), Stratification (20/20), DD Plan (19/19), Logic Fusion (14/14), FFI Marshalling (27/27), Rust DD Executor (90/90) 완료 — 317 tests passing (227 C + 90 Rust). Phase 1 최적화 진행 중.
 
 ### Phase 1: 최적화 (Weeks 5-10) - 모든 환경 공통
 
@@ -454,6 +486,8 @@ typedef struct {
 | **Stratification** | Tarjan's SCC | ✅ 구현됨 | O(V+E), iterative, 20/20 tests |
 | **DD Plan** | IR → DD op graph | ✅ 구현됨 | 8 op types, stratum-aware, 19/19 tests |
 | **FFI 마샬링** | DD plan → FFI-safe 타입 | ✅ 구현됨 | RPN 수식 직렬화, 27/27 tests |
+| **Rust DD Executor** | wirelog-dd 크레이트 | ✅ 구현됨 | 인터프리터 기반 Phase 0, 90/90 Rust tests |
+| **빌드 통합** | Meson + Cargo | ✅ 구현됨 | `-Ddd=true`, clippy/fmt/test 타겟 |
 | **메모리** | nanoarrow (중기) | 계획 | Columnar, Arrow interop |
 | **Allocator** | Region/Arena + system malloc | 계획 (Phase 2) | jemalloc 검토 후 보류; §4.1 ADR 참조 |
 | **Threading** | Optional pthreads | 계획 | Single-threaded 기본 |
@@ -575,6 +609,7 @@ wirelog는 임베디드(ARM/RISC-V, <256MB)와 엔터프라이즈(x86-64, GB 규
 | 2026-02-24 | 0.5 | DD Plan Translator 완료 (19 tests); 전체 8가지 IR→DD 변환; 186 total |
 | 2026-02-24 | 0.6 | Phase 1 Logic Fusion 완료 (14 tests); in-place FILTER+PROJECT→FLATMAP; 200 total |
 | 2026-02-26 | 0.7 | FFI 마샬링 레이어 완료 (27 tests); dd_plan을 ffi/로 이동; 227 total |
+| 2026-02-26 | 0.8 | Rust DD executor 크레이트 완료 (90 tests); Meson-Cargo 통합; 317 total (227 C + 90 Rust) |
 
 ---
 
@@ -586,5 +621,7 @@ wirelog는 임베디드(ARM/RISC-V, <256MB)와 엔터프라이즈(x86-64, GB 규
 5. [x] Logic Fusion 최적화 패스 (FILTER+PROJECT → FLATMAP, 14/14 tests)
 6. [ ] 나머지 Phase 1 최적화 패스 (JPP, SIP, Subplan Sharing)
 7. [x] FFI 마샬링 레이어 (C 측, FFI-safe 타입, RPN 직렬화, 27/27 tests)
-8. [ ] Rust 측 DD executor 통합 (Cargo.toml, lib.rs, cbindgen)
-9. [ ] 통합 테스트 작성
+8. [x] Rust DD executor 크레이트 (FFI 스텁, 타입 미러, 수식 평가기, plan 리더, dataflow 인터프리터, 90/90 Rust tests)
+9. [x] Meson-Cargo 빌드 통합 (`-Ddd=true`, `ninja rust-clippy/rust-fmt-check/rust-test`)
+10. [ ] `wl_dd_execute_cb` 연결 (FFI → plan_reader → dataflow executor)
+11. [ ] 종단간 통합 테스트 (C 프로그램 → FFI → Rust 실행 → 결과 콜백)
