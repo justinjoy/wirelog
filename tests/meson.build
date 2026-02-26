@@ -95,3 +95,18 @@ test_fusion_exe = executable(
 )
 
 test('fusion', test_fusion_exe)
+
+ffi_src = files(
+  '../wirelog/ffi/dd_marshal.c',
+)
+
+test_dd_ffi_exe = executable(
+  'test_dd_ffi',
+  files('test_dd_ffi.c'),
+  parser_src,
+  ir_src,
+  ffi_src,
+  include_directories: [wirelog_inc, wirelog_src_inc],
+)
+
+test('dd_ffi', test_dd_ffi_exe)
