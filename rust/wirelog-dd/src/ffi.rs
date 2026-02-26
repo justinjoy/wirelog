@@ -38,6 +38,7 @@ pub type WlDdOnTupleFn = Option<
 /// Opaque worker handle exposed to C.
 /// Stores configuration and EDB (input) data loaded before execution.
 pub struct WlDdWorker {
+    #[allow(dead_code)] // Used when timely::execute is wired up
     pub(crate) num_workers: u32,
     /// EDB data: relation_name -> Vec of rows, each row is Vec<i64>
     pub(crate) edb_data: HashMap<String, Vec<Vec<i64>>>,
@@ -129,7 +130,11 @@ pub unsafe extern "C" fn wl_dd_load_edb(
         .map(|chunk| chunk.to_vec())
         .collect();
 
-    worker.edb_data.entry(rel_name.clone()).or_default().extend(rows);
+    worker
+        .edb_data
+        .entry(rel_name.clone())
+        .or_default()
+        .extend(rows);
     worker.edb_ncols.insert(rel_name, num_cols);
 
     0
@@ -140,10 +145,7 @@ pub unsafe extern "C" fn wl_dd_load_edb(
 /// # Safety
 /// `plan` and `worker` must be valid pointers or NULL.
 #[no_mangle]
-pub unsafe extern "C" fn wl_dd_execute(
-    plan: *const WlFfiPlan,
-    worker: *mut WlDdWorker,
-) -> c_int {
+pub unsafe extern "C" fn wl_dd_execute(plan: *const WlFfiPlan, worker: *mut WlDdWorker) -> c_int {
     if plan.is_null() || worker.is_null() {
         return -2;
     }
@@ -254,13 +256,7 @@ mod tests {
         unsafe {
             let name = CString::new("a").unwrap();
             let data: [i64; 2] = [1, 2];
-            let rc = wl_dd_load_edb(
-                std::ptr::null_mut(),
-                name.as_ptr(),
-                data.as_ptr(),
-                1,
-                2,
-            );
+            let rc = wl_dd_load_edb(std::ptr::null_mut(), name.as_ptr(), data.as_ptr(), 1, 2);
             assert_eq!(rc, -2);
         }
     }
@@ -374,12 +370,7 @@ mod tests {
     fn test_execute_cb_null_plan() {
         unsafe {
             let w = wl_dd_worker_create(1);
-            let rc = wl_dd_execute_cb(
-                std::ptr::null(),
-                w,
-                None,
-                std::ptr::null_mut(),
-            );
+            let rc = wl_dd_execute_cb(std::ptr::null(), w, None, std::ptr::null_mut());
             assert_eq!(rc, -2);
             wl_dd_worker_destroy(w);
         }
@@ -389,12 +380,7 @@ mod tests {
     fn test_execute_cb_null_worker() {
         unsafe {
             let dummy = 1usize as *const WlFfiPlan;
-            let rc = wl_dd_execute_cb(
-                dummy,
-                std::ptr::null_mut(),
-                None,
-                std::ptr::null_mut(),
-            );
+            let rc = wl_dd_execute_cb(dummy, std::ptr::null_mut(), None, std::ptr::null_mut());
             assert_eq!(rc, -2);
         }
     }
@@ -404,12 +390,7 @@ mod tests {
         unsafe {
             let w = wl_dd_worker_create(1);
             let dummy = 1usize as *const WlFfiPlan;
-            let rc = wl_dd_execute_cb(
-                dummy,
-                w,
-                None,
-                std::ptr::null_mut(),
-            );
+            let rc = wl_dd_execute_cb(dummy, w, None, std::ptr::null_mut());
             assert_eq!(rc, -1);
             wl_dd_worker_destroy(w);
         }

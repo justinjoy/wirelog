@@ -6,6 +6,8 @@
  * For commercial licenses, contact: inquiry@cleverplant.com
  */
 
+#[allow(dead_code)] // Building blocks for FFI plan reader + dataflow execution
+mod expr;
 mod ffi;
 pub mod ffi_types;
 
