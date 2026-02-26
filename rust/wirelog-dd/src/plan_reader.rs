@@ -1,4 +1,10 @@
 /*
+ * Copyright (C) CleverPlant
+ * Licensed under LGPL-3.0
+ * For commercial licenses, contact: inquiry@cleverplant.com
+ */
+
+/*
  * plan_reader.rs - Convert unsafe FFI plan pointers into safe Rust types
  *
  * The C side passes a const wl_ffi_plan_t* across the FFI boundary.

@@ -1,4 +1,10 @@
 /*
+ * Copyright (C) CleverPlant
+ * Licensed under LGPL-3.0
+ * For commercial licenses, contact: inquiry@cleverplant.com
+ */
+
+/*
  * ffi.rs - C FFI entry points for wirelog DD executor
  *
  * These functions are exported with C linkage and called by the wirelog

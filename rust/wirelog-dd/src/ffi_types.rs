@@ -1,4 +1,10 @@
 /*
+ * Copyright (C) CleverPlant
+ * Licensed under LGPL-3.0
+ * For commercial licenses, contact: inquiry@cleverplant.com
+ */
+
+/*
  * ffi_types.rs - Rust mirrors of wirelog/ffi/dd_ffi.h types
  *
  * These #[repr(C)] types exactly match the C structs defined in dd_ffi.h.

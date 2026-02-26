@@ -1,4 +1,10 @@
 /*
+ * Copyright (C) CleverPlant
+ * Licensed under LGPL-3.0
+ * For commercial licenses, contact: inquiry@cleverplant.com
+ */
+
+/*
  * dataflow.rs - Interpreter-based plan execution (Phase 0)
  *
  * Executes a SafePlan against in-memory EDB data using a simple
