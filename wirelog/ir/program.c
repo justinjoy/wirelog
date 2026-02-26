@@ -79,6 +79,7 @@ relation_info_free(wl_relation_info_t *info)
         free(info->input_param_names);
         free(info->input_param_values);
     }
+    free(info->fact_data);
 }
 
 static void
@@ -355,6 +356,52 @@ collect_rule(struct wirelog_program *prog, const wl_ast_node_t *rule_node)
     return 0;
 }
 
+static int
+collect_fact(struct wirelog_program *prog, const wl_ast_node_t *fact_node)
+{
+    if (!fact_node->name)
+        return -1;
+
+    wl_relation_info_t *rel = find_relation(prog, fact_node->name);
+    if (!rel) {
+        rel = add_relation(prog, fact_node->name);
+        if (!rel)
+            return -1;
+    }
+
+    uint32_t ncols = fact_node->child_count;
+
+    /* Grow fact_data buffer if needed */
+    uint32_t needed = (rel->fact_count + 1) * ncols;
+    if (needed > rel->fact_capacity) {
+        uint32_t new_cap
+            = rel->fact_capacity == 0 ? ncols * 8 : rel->fact_capacity * 2;
+        if (new_cap < needed)
+            new_cap = needed;
+        int64_t *new_data
+            = (int64_t *)realloc(rel->fact_data, new_cap * sizeof(int64_t));
+        if (!new_data)
+            return -1;
+        rel->fact_data = new_data;
+        rel->fact_capacity = new_cap;
+    }
+
+    /* Copy fact values into row-major layout */
+    uint32_t offset = rel->fact_count * ncols;
+    for (uint32_t i = 0; i < ncols; i++) {
+        const wl_ast_node_t *arg = fact_node->children[i];
+        if (arg->type == WL_NODE_INTEGER) {
+            rel->fact_data[offset + i] = arg->int_value;
+        } else if (arg->type == WL_NODE_STRING) {
+            /* String facts: store 0 for now (string interning TBD) */
+            rel->fact_data[offset + i] = 0;
+        }
+    }
+
+    rel->fact_count++;
+    return 0;
+}
+
 int
 wl_program_collect_metadata(struct wirelog_program *program,
                             const wl_ast_node_t *ast)
@@ -381,6 +428,9 @@ wl_program_collect_metadata(struct wirelog_program *program,
             break;
         case WL_NODE_RULE:
             rc = collect_rule(program, child);
+            break;
+        case WL_NODE_FACT:
+            rc = collect_fact(program, child);
             break;
         default:
             /* Ignore unknown node types */

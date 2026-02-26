@@ -34,6 +34,10 @@ typedef struct {
     char **input_param_names;
     char **input_param_values;
     uint32_t input_param_count;
+    /* Inline facts (row-major int64_t array) */
+    int64_t *fact_data;
+    uint32_t fact_count;
+    uint32_t fact_capacity;
 } wl_relation_info_t;
 
 /* ======================================================================== */

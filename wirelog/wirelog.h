@@ -97,6 +97,42 @@ void
 wirelog_program_free(wirelog_program_t *program);
 
 /* ======================================================================== */
+/* Fact Extraction API                                                      */
+/* ======================================================================== */
+
+/**
+ * Extract inline facts for a relation from the compiled program.
+ *
+ * Returns a flat row-major int64_t array of all facts declared for
+ * the given relation.  Caller must free the returned array.
+ *
+ * @param prog       Compiled program
+ * @param relation   Relation name (e.g., "edge")
+ * @param data       Output: allocated array of int64_t values (caller frees)
+ * @param num_rows   Output: number of fact tuples
+ * @param num_cols   Output: number of columns per tuple
+ * @return 0 on success, -1 on error (unknown relation), 1 if no facts
+ */
+int
+wirelog_program_get_facts(const wirelog_program_t *prog, const char *relation,
+                          int64_t **data, uint32_t *num_rows,
+                          uint32_t *num_cols);
+
+/**
+ * Load all inline facts from the program into a DD worker.
+ *
+ * Iterates over all relations with inline facts (fact_count > 0) and
+ * calls wl_dd_load_edb() for each.  This bridges the parser's fact
+ * storage with the DD execution engine.
+ *
+ * @param prog    Compiled program with inline facts
+ * @param worker  DD worker handle to load facts into
+ * @return 0 on success, -1 on error (NULL args or EDB load failure)
+ */
+int
+wirelog_load_all_facts(const wirelog_program_t *prog, void *worker);
+
+/* ======================================================================== */
 /* Optimizer API                                                            */
 /* ======================================================================== */
 

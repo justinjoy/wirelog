@@ -11,6 +11,7 @@
 
 #include "../wirelog/ffi/dd_ffi.h"
 #include "../wirelog/wirelog-parser.h"
+#include "../wirelog/wirelog.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -592,6 +593,242 @@ test_execute_no_callback(void)
 }
 
 /* ======================================================================== */
+/* Test: Bulk Fact Loading                                                  */
+/* ======================================================================== */
+
+/*
+ * wirelog_load_all_facts() should iterate over all relations with
+ * inline facts in the program and call wl_dd_load_edb() for each.
+ *
+ * Program:
+ *   .decl edge(x: int32, y: int32)
+ *   .decl node(x: int32)
+ *   edge(1, 2). edge(2, 3).
+ *   node(10).
+ *
+ * After calling wirelog_load_all_facts(), the DD worker should have
+ * EDB data for both "edge" (2 rows x 2 cols) and "node" (1 row x 1 col).
+ */
+static void
+test_load_all_facts(void)
+{
+    TEST("wirelog_load_all_facts loads all EDB relations");
+
+    wirelog_error_t err;
+    wirelog_program_t *prog
+        = wirelog_parse_string(".decl edge(x: int32, y: int32)\n"
+                               ".decl node(x: int32)\n"
+                               "edge(1, 2).\n"
+                               "edge(2, 3).\n"
+                               "node(10).\n",
+                               &err);
+    if (!prog) {
+        FAIL("program is NULL");
+        return;
+    }
+
+    wl_dd_worker_t *w = wl_dd_worker_create(1);
+    if (!w) {
+        wirelog_program_free(prog);
+        FAIL("worker is NULL");
+        return;
+    }
+
+    int rc = wirelog_load_all_facts(prog, w);
+    if (rc != 0) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "load_all_facts returned %d", rc);
+        wl_dd_worker_destroy(w);
+        wirelog_program_free(prog);
+        FAIL(msg);
+        return;
+    }
+
+    /* Verify by executing a passthrough rule that uses the loaded facts */
+    /* For now, just verify the function returns 0 (success) */
+
+    wl_dd_worker_destroy(w);
+    wirelog_program_free(prog);
+    PASS();
+}
+
+static void
+test_load_all_facts_no_facts(void)
+{
+    TEST("wirelog_load_all_facts with no inline facts returns 0");
+
+    wirelog_program_t *prog
+        = wirelog_parse_string(".decl edge(x: int32, y: int32)\n", NULL);
+    if (!prog) {
+        FAIL("program is NULL");
+        return;
+    }
+
+    wl_dd_worker_t *w = wl_dd_worker_create(1);
+
+    int rc = wirelog_load_all_facts(prog, w);
+    if (rc != 0) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "expected 0, got %d", rc);
+        wl_dd_worker_destroy(w);
+        wirelog_program_free(prog);
+        FAIL(msg);
+        return;
+    }
+
+    wl_dd_worker_destroy(w);
+    wirelog_program_free(prog);
+    PASS();
+}
+
+static void
+test_load_all_facts_null_args(void)
+{
+    TEST("wirelog_load_all_facts rejects NULL arguments");
+
+    wl_dd_worker_t *w = wl_dd_worker_create(1);
+
+    if (wirelog_load_all_facts(NULL, w) != -1) {
+        wl_dd_worker_destroy(w);
+        FAIL("should return -1 for NULL program");
+        return;
+    }
+
+    wirelog_program_t *prog = wirelog_parse_string(".decl a(x: int32)\n", NULL);
+    if (wirelog_load_all_facts(prog, NULL) != -1) {
+        wirelog_program_free(prog);
+        wl_dd_worker_destroy(w);
+        FAIL("should return -1 for NULL worker");
+        return;
+    }
+
+    wirelog_program_free(prog);
+    wl_dd_worker_destroy(w);
+    PASS();
+}
+
+/* ======================================================================== */
+/* Test: End-to-end Inline Facts + Rules                                    */
+/* ======================================================================== */
+
+/*
+ * Full pipeline: inline facts parsed -> loaded via wirelog_load_all_facts ->
+ * rules executed via DD -> results verified.
+ *
+ * Datalog:
+ *   .decl edge(x: int32, y: int32)
+ *   .decl tc(x: int32, y: int32)
+ *   edge(1, 2).
+ *   edge(2, 3).
+ *   edge(3, 4).
+ *   tc(x, y) :- edge(x, y).
+ *   tc(x, z) :- tc(x, y), edge(y, z).
+ *
+ * Expected tc: (1,2),(2,3),(3,4),(1,3),(2,4),(1,4)  = 6 tuples
+ */
+static void
+test_e2e_inline_facts_tc(void)
+{
+    TEST("e2e: inline facts + transitive closure rules");
+
+    const char *src = ".decl edge(x: int32, y: int32)\n"
+                      ".decl tc(x: int32, y: int32)\n"
+                      "edge(1, 2).\n"
+                      "edge(2, 3).\n"
+                      "edge(3, 4).\n"
+                      "tc(x, y) :- edge(x, y).\n"
+                      "tc(x, z) :- tc(x, y), edge(y, z).\n";
+
+    wirelog_error_t err;
+    wirelog_program_t *prog = wirelog_parse_string(src, &err);
+    if (!prog) {
+        FAIL("program is NULL");
+        return;
+    }
+
+    /* Generate DD plan */
+    wl_dd_plan_t *dd_plan = NULL;
+    int rc = wl_dd_plan_generate(prog, &dd_plan);
+    if (rc != 0) {
+        wirelog_program_free(prog);
+        FAIL("dd_plan_generate failed");
+        return;
+    }
+
+    wl_ffi_plan_t *ffi = NULL;
+    rc = wl_dd_marshal_plan(dd_plan, &ffi);
+    if (rc != 0) {
+        wl_dd_plan_free(dd_plan);
+        wirelog_program_free(prog);
+        FAIL("dd_marshal_plan failed");
+        return;
+    }
+
+    /* Create worker and load inline facts */
+    wl_dd_worker_t *w = wl_dd_worker_create(1);
+    rc = wirelog_load_all_facts(prog, w);
+    if (rc != 0) {
+        wl_dd_worker_destroy(w);
+        wl_ffi_plan_free(ffi);
+        wl_dd_plan_free(dd_plan);
+        wirelog_program_free(prog);
+        FAIL("wirelog_load_all_facts failed");
+        return;
+    }
+
+    /* Execute */
+    tuple_collector_t results;
+    memset(&results, 0, sizeof(results));
+
+    rc = wl_dd_execute_cb(ffi, w, collect_tuple, &results);
+    if (rc != 0) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "execute_cb returned %d", rc);
+        wl_dd_worker_destroy(w);
+        wl_ffi_plan_free(ffi);
+        wl_dd_plan_free(dd_plan);
+        wirelog_program_free(prog);
+        FAIL(msg);
+        return;
+    }
+
+    /* Verify: 6 tc tuples */
+    int n = count_tuples(&results, "tc");
+    if (n != 6) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "expected 6 tc tuples, got %d", n);
+        wl_dd_worker_destroy(w);
+        wl_ffi_plan_free(ffi);
+        wl_dd_plan_free(dd_plan);
+        wirelog_program_free(prog);
+        FAIL(msg);
+        return;
+    }
+
+    int64_t e12[] = { 1, 2 }, e23[] = { 2, 3 }, e34[] = { 3, 4 };
+    int64_t e13[] = { 1, 3 }, e24[] = { 2, 4 }, e14[] = { 1, 4 };
+
+    if (!has_tuple(&results, "tc", e12, 2) || !has_tuple(&results, "tc", e23, 2)
+        || !has_tuple(&results, "tc", e34, 2)
+        || !has_tuple(&results, "tc", e13, 2)
+        || !has_tuple(&results, "tc", e24, 2)
+        || !has_tuple(&results, "tc", e14, 2)) {
+        wl_dd_worker_destroy(w);
+        wl_ffi_plan_free(ffi);
+        wl_dd_plan_free(dd_plan);
+        wirelog_program_free(prog);
+        FAIL("missing expected tc tuple");
+        return;
+    }
+
+    wl_dd_worker_destroy(w);
+    wl_ffi_plan_free(ffi);
+    wl_dd_plan_free(dd_plan);
+    wirelog_program_free(prog);
+    PASS();
+}
+
+/* ======================================================================== */
 /* Main                                                                     */
 /* ======================================================================== */
 
@@ -610,6 +847,14 @@ main(void)
     printf("\n--- Callback Variants ---\n");
     test_execute_null_callback();
     test_execute_no_callback();
+
+    printf("\n--- Bulk Fact Loading ---\n");
+    test_load_all_facts();
+    test_load_all_facts_no_facts();
+    test_load_all_facts_null_args();
+
+    printf("\n--- End-to-end Inline Facts ---\n");
+    test_e2e_inline_facts_tc();
 
     printf("\n=== Results: %d passed, %d failed, %d total ===\n\n",
            tests_passed, tests_failed, tests_run);

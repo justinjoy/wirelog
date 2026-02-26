@@ -100,6 +100,12 @@ ffi_src = files(
   '../wirelog/ffi/dd_marshal.c',
 )
 
+# facts_loader.c calls wl_dd_load_edb (Rust FFI), so it is only
+# compiled into targets that link rust_ffi_dep.
+facts_loader_src = files(
+  '../wirelog/ffi/facts_loader.c',
+)
+
 test_dd_ffi_exe = executable(
   'test_dd_ffi',
   files('test_dd_ffi.c'),
@@ -117,6 +123,7 @@ test_dd_execute_exe = executable(
   parser_src,
   ir_src,
   ffi_src,
+  facts_loader_src,
   dependencies: [rust_ffi_dep],
   include_directories: [wirelog_inc, wirelog_src_inc],
 )

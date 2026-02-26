@@ -1583,6 +1583,175 @@ test_api_end_to_end(void)
 }
 
 /* ======================================================================== */
+/* Fact Collection Tests                                                    */
+/* ======================================================================== */
+
+static void
+test_fact_collection_single_relation(void)
+{
+    TEST("Fact collection: edge(1,2). edge(2,3). stored in relation");
+
+    struct wirelog_program *prog
+        = make_program(".decl edge(src: int32, dst: int32)\n"
+                       "edge(1, 2).\n"
+                       "edge(2, 3).\n");
+
+    if (!prog) {
+        FAIL("program is NULL");
+        return;
+    }
+
+    if (prog->relation_count != 1) {
+        wl_program_free(prog);
+        FAIL("expected 1 relation");
+        return;
+    }
+
+    wl_relation_info_t *rel = &prog->relations[0];
+    if (rel->fact_count != 2) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "expected 2 facts, got %u", rel->fact_count);
+        wl_program_free(prog);
+        FAIL(buf);
+        return;
+    }
+
+    /* fact_data layout: [1, 2, 2, 3] (row-major, 2 cols per row) */
+    if (!rel->fact_data) {
+        wl_program_free(prog);
+        FAIL("fact_data should not be NULL");
+        return;
+    }
+
+    if (rel->fact_data[0] != 1 || rel->fact_data[1] != 2) {
+        wl_program_free(prog);
+        FAIL("fact 0 should be (1, 2)");
+        return;
+    }
+
+    if (rel->fact_data[2] != 2 || rel->fact_data[3] != 3) {
+        wl_program_free(prog);
+        FAIL("fact 1 should be (2, 3)");
+        return;
+    }
+
+    wl_program_free(prog);
+    PASS();
+}
+
+/* ======================================================================== */
+/* Fact Extraction API Tests                                                */
+/* ======================================================================== */
+
+static void
+test_api_get_facts(void)
+{
+    TEST("wirelog_program_get_facts returns correct data");
+
+    wirelog_program_t *prog
+        = wirelog_parse_string(".decl edge(src: int32, dst: int32)\n"
+                               "edge(1, 2).\n"
+                               "edge(2, 3).\n"
+                               "edge(3, 4).\n",
+                               NULL);
+    if (!prog) {
+        FAIL("program is NULL");
+        return;
+    }
+
+    int64_t *data = NULL;
+    uint32_t num_rows = 0, num_cols = 0;
+    int rc
+        = wirelog_program_get_facts(prog, "edge", &data, &num_rows, &num_cols);
+    if (rc != 0) {
+        wirelog_program_free(prog);
+        FAIL("get_facts should return 0");
+        return;
+    }
+
+    if (num_rows != 3 || num_cols != 2) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "expected 3x2, got %ux%u", num_rows,
+                 num_cols);
+        free(data);
+        wirelog_program_free(prog);
+        FAIL(buf);
+        return;
+    }
+
+    /* Verify data: {1,2, 2,3, 3,4} */
+    if (data[0] != 1 || data[1] != 2 || data[2] != 2 || data[3] != 3
+        || data[4] != 3 || data[5] != 4) {
+        free(data);
+        wirelog_program_free(prog);
+        FAIL("fact data mismatch");
+        return;
+    }
+
+    free(data);
+    wirelog_program_free(prog);
+    PASS();
+}
+
+static void
+test_api_get_facts_no_facts(void)
+{
+    TEST("wirelog_program_get_facts returns 1 for no-facts relation");
+
+    wirelog_program_t *prog
+        = wirelog_parse_string(".decl edge(src: int32, dst: int32)\n", NULL);
+    if (!prog) {
+        FAIL("program is NULL");
+        return;
+    }
+
+    int64_t *data = NULL;
+    uint32_t num_rows = 0, num_cols = 0;
+    int rc
+        = wirelog_program_get_facts(prog, "edge", &data, &num_rows, &num_cols);
+    if (rc != 1) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "expected rc=1, got %d", rc);
+        free(data);
+        wirelog_program_free(prog);
+        FAIL(buf);
+        return;
+    }
+
+    wirelog_program_free(prog);
+    PASS();
+}
+
+static void
+test_api_get_facts_unknown_relation(void)
+{
+    TEST("wirelog_program_get_facts returns -1 for unknown relation");
+
+    wirelog_program_t *prog
+        = wirelog_parse_string(".decl edge(src: int32, dst: int32)\n", NULL);
+    if (!prog) {
+        FAIL("program is NULL");
+        return;
+    }
+
+    int64_t *data = NULL;
+    uint32_t num_rows = 0, num_cols = 0;
+    int rc = wirelog_program_get_facts(prog, "nonexistent", &data, &num_rows,
+                                       &num_cols);
+    if (rc != -1) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "expected rc=-1, got %d", rc);
+        free(data);
+        wirelog_program_free(prog);
+        FAIL(buf);
+        return;
+    }
+
+    wirelog_program_free(prog);
+    PASS();
+}
+
+/* ======================================================================== */
 /* Main                                                                     */
 /* ======================================================================== */
 
@@ -1625,6 +1794,14 @@ main(void)
     /* UNION merge */
     test_union_merge_tc();
     test_union_single_rule();
+
+    /* Fact collection */
+    test_fact_collection_single_relation();
+
+    /* Fact extraction API */
+    test_api_get_facts();
+    test_api_get_facts_no_facts();
+    test_api_get_facts_unknown_relation();
 
     /* Public API */
     test_api_parse_string();
