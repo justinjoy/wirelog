@@ -281,6 +281,35 @@ wirelog/ffi/
 - ✅ Opaque worker handle (`wl_dd_worker_t`) for future Rust executor integration
 - ✅ 27/27 tests passing (expression serialization, operator translation, key fidelity, memory cleanup)
 
+#### Rust DD Executor (`wirelog-dd` crate)
+
+**Files**:
+```
+rust/wirelog-dd/
+  Cargo.toml          # Crate config (staticlib, DD/timely/columnar deps)
+  src/
+    lib.rs            # Module declarations, FFI re-exports
+    ffi_types.rs      # repr(C) Rust mirrors of dd_ffi.h types
+    ffi.rs            # C FFI entry points (worker lifecycle, EDB loading)
+    expr.rs           # RPN expression deserializer + stack evaluator
+    plan_reader.rs    # Unsafe FFI plan → safe Rust owned types
+    dataflow.rs       # Interpreter-based plan execution (Phase 0)
+```
+
+**Rust-side Status** (Phase 0 — interpreter-based executor complete):
+- ✅ Crate scaffold: `staticlib` with `#[no_mangle] extern "C"` FFI entry points
+- ✅ `repr(C)` type mirrors matching `dd_ffi.h` layout (16 layout tests)
+- ✅ FFI entry points: `wl_dd_worker_create/destroy`, `wl_dd_load_edb`, `wl_dd_execute`, `wl_dd_execute_cb`
+- ✅ EDB loading: flat i64 array → HashMap<String, Vec<Vec<i64>>> with append semantics
+- ✅ RPN expression deserializer: byte buffer → `Vec<ExprOp>` (19 tag types)
+- ✅ Stack-based expression evaluator: `eval_filter()` with Int/Str/Bool values
+- ✅ FFI plan reader: unsafe C pointers → safe owned Rust types (`SafePlan`, `SafeOp`, etc.)
+- ✅ Non-recursive stratum execution: single-pass sequential operator interpretation
+- ✅ Recursive stratum execution: iterated fixed-point with `HashSet` convergence (max 1000 iterations)
+- ✅ All 8 operator types: Variable, Map, Filter, Join, Antijoin, Reduce, Concat, Consolidate
+- ✅ Meson-Cargo build integration (`-Ddd=true`, `ninja rust-clippy`, `ninja rust-fmt-check`, `ninja rust-test`)
+- ✅ 90/90 Rust tests passing (clippy clean, rustfmt clean)
+
 **Translation Rules** (IR node → DD operator):
 ```
 SCAN      → WL_DD_VARIABLE   (reference to input collection)
@@ -297,8 +326,9 @@ FLATMAP   → WL_DD_FILTER + WL_DD_MAP  (fused filter+project)
 - ✅ Convert wirelog IR to DD operator graph (C-side plan)
 - ✅ C → Rust data marshalling (FFI-safe flat structs, RPN expression serialization)
 - ✅ FFI boundary defined (memory ownership: C allocates, Rust borrows)
-- 🔄 DD worker management (Rust-side implementation planned)
-- 🔄 Result collection and conversion (planned)
+- ✅ DD worker management (Rust-side: worker create/destroy, EDB loading)
+- ✅ Plan execution (Phase 0: interpreter-based, non-recursive + recursive)
+- 🔄 Result callback integration (`wl_dd_execute_cb` stub → full pipeline)
 
 **Design Decisions**:
 - ✅ All pointer fields in DD ops are owned (deep copies), freed by `wl_dd_plan_free()`
@@ -307,7 +337,8 @@ FLATMAP   → WL_DD_FILTER + WL_DD_MAP  (fused filter+project)
 - ✅ FFI boundary: copy-based marshalling, C owns all memory, Rust borrows via const pointers
 - ✅ Expression trees serialized to RPN byte buffers (avoids pointer trees across FFI)
 - ✅ FFI types use fixed-width integers and explicit enum values for ABI stability
-- [ ] Context passing mechanism (worker handle → execution context)
+- ✅ Context passing mechanism (worker handle → execution context via `WlDdWorker`)
+- [ ] Wire `wl_dd_execute_cb` to dataflow executor (connect FFI stubs to plan reader + interpreter)
 
 #### I/O Layer (Phase 0: Basic)
 
@@ -373,15 +404,16 @@ typedef struct {
 - ✅ Stratification tests (20/20 passing)
 - ✅ IR → DD operator graph translator (all 8 IR node types, 19/19 tests)
 - ✅ Rust FFI marshalling layer (FFI-safe types, RPN serialization, plan marshalling, 27/27 tests)
-- 🔄 Rust-side executor integration
-- 🔄 Basic integration tests
+- ✅ Rust DD executor crate (`wirelog-dd`, interpreter-based Phase 0, 90/90 Rust tests)
+- ✅ Meson-Cargo build integration (`-Ddd=true`, lint targets)
+- 🔄 End-to-end integration tests (C → FFI → Rust → results)
 
 **Validation**:
 - [ ] Embedded target (ARM cross-compile) build success
 - [ ] Enterprise target (x86-64) build success
 - [ ] Basic Datalog program execution verification
 
-**Current Status**: Parser (91/91), IR (56/56), Stratification (20/20), DD Plan (19/19), Logic Fusion (14/14), FFI Marshalling (27/27) complete — 227 tests passing. Phase 1 Optimization in progress.
+**Current Status**: Parser (91/91), IR (56/56), Stratification (20/20), DD Plan (19/19), Logic Fusion (14/14), FFI Marshalling (27/27), Rust DD Executor (90/90) complete — 317 tests passing (227 C + 90 Rust). Phase 1 Optimization in progress.
 
 ### Phase 1: Optimization (Weeks 5-10) - All environments common
 
@@ -454,6 +486,8 @@ typedef struct {
 | **Stratification** | Tarjan's SCC | ✅ Implemented | O(V+E), iterative, 20/20 tests |
 | **DD Plan** | IR → DD op graph | ✅ Implemented | 8 op types, stratum-aware, 19/19 tests |
 | **FFI Marshalling** | DD plan → FFI-safe types | ✅ Implemented | RPN expr serialization, 27/27 tests |
+| **Rust DD Executor** | wirelog-dd crate | ✅ Implemented | Interpreter-based Phase 0, 90/90 Rust tests |
+| **Build Integration** | Meson + Cargo | ✅ Implemented | `-Ddd=true`, clippy/fmt/test targets |
 | **Memory** | nanoarrow (mid-term) | Planned | Columnar, Arrow interop |
 | **Allocator** | Region/Arena + system malloc | Planned (Phase 2) | jemalloc evaluated and deferred; see §4.1 ADR |
 | **Threading** | Optional pthreads | Planned | Single-threaded default |
@@ -575,6 +609,7 @@ in the enterprise path, reconsider jemalloc or mimalloc for that target only.
 | 2026-02-24 | 0.5 | DD Plan Translator complete (19 tests); all 8 IR→DD translations; 186 total |
 | 2026-02-24 | 0.6 | Phase 1 Logic Fusion complete (14 tests); in-place FILTER+PROJECT→FLATMAP; 200 total |
 | 2026-02-26 | 0.7 | FFI marshalling layer complete (27 tests); dd_plan moved to ffi/; 227 total |
+| 2026-02-26 | 0.8 | Rust DD executor crate complete (90 tests); Meson-Cargo integration; 317 total (227 C + 90 Rust) |
 
 ---
 
@@ -586,5 +621,7 @@ in the enterprise path, reconsider jemalloc or mimalloc for that target only.
 5. [x] Logic Fusion optimization pass (FILTER+PROJECT → FLATMAP, 14/14 tests)
 6. [ ] Remaining Phase 1 optimization passes (JPP, SIP, Subplan Sharing)
 7. [x] FFI marshalling layer (C-side, FFI-safe types, RPN serialization, 27/27 tests)
-8. [ ] Rust-side DD executor integration (Cargo.toml, lib.rs, cbindgen)
-9. [ ] Integration test creation
+8. [x] Rust DD executor crate (FFI stubs, type mirrors, expr evaluator, plan reader, dataflow interpreter, 90/90 Rust tests)
+9. [x] Meson-Cargo build integration (`-Ddd=true`, `ninja rust-clippy/rust-fmt-check/rust-test`)
+10. [ ] Wire `wl_dd_execute_cb` to connect FFI → plan_reader → dataflow executor
+11. [ ] End-to-end integration tests (C program → FFI → Rust execution → result callback)
