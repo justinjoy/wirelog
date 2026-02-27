@@ -13,6 +13,8 @@
 #include "../wirelog/wirelog-parser.h"
 #include "../wirelog/wirelog.h"
 
+#include "test_tmpdir.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -829,6 +831,189 @@ test_e2e_inline_facts_tc(void)
 }
 
 /* ======================================================================== */
+/* Test: .input directive CSV loading                                        */
+/* ======================================================================== */
+
+/*
+ * Program uses .input to load edge data from a CSV file, then runs TC.
+ *
+ * edges.csv:
+ *   1,2
+ *   2,3
+ *   3,4
+ *
+ * Datalog:
+ *   .decl edge(x: int32, y: int32)
+ *   .input edge(filename="edges.csv", delimiter=",")
+ *   .decl tc(x: int32, y: int32)
+ *   tc(x, y) :- edge(x, y).
+ *   tc(x, z) :- tc(x, y), edge(y, z).
+ *
+ * Expected tc: 6 tuples
+ */
+static void
+test_load_input_files_tc(void)
+{
+    TEST("wirelog_load_input_files: CSV .input + TC rules");
+
+    /* Create CSV file */
+    char csv_path[512];
+    test_tmppath(csv_path, sizeof(csv_path), "wirelog_test_edges.csv");
+    FILE *f = fopen(csv_path, "w");
+    if (!f) {
+        FAIL("cannot create CSV file");
+        return;
+    }
+    fprintf(f, "1,2\n2,3\n3,4\n");
+    fclose(f);
+
+    char src[1024];
+    snprintf(src, sizeof(src),
+             ".decl edge(x: int32, y: int32)\n"
+             ".input edge(filename=\"%s\", delimiter=\",\")\n"
+             ".decl tc(x: int32, y: int32)\n"
+             "tc(x, y) :- edge(x, y).\n"
+             "tc(x, z) :- tc(x, y), edge(y, z).\n",
+             csv_path);
+
+    wirelog_error_t err;
+    wirelog_program_t *prog = wirelog_parse_string(src, &err);
+    if (!prog) {
+        remove(csv_path);
+        FAIL("parse failed");
+        return;
+    }
+
+    /* Generate plan */
+    wl_dd_plan_t *dd_plan = NULL;
+    int rc = wl_dd_plan_generate(prog, &dd_plan);
+    if (rc != 0) {
+        wirelog_program_free(prog);
+        remove(csv_path);
+        FAIL("dd_plan_generate failed");
+        return;
+    }
+
+    wl_ffi_plan_t *ffi = NULL;
+    rc = wl_dd_marshal_plan(dd_plan, &ffi);
+    if (rc != 0) {
+        wl_dd_plan_free(dd_plan);
+        wirelog_program_free(prog);
+        remove(csv_path);
+        FAIL("marshal failed");
+        return;
+    }
+
+    /* Create worker and load from .input directives */
+    wl_dd_worker_t *w = wl_dd_worker_create(1);
+
+    rc = wirelog_load_input_files(prog, w);
+    if (rc != 0) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "load_input_files returned %d", rc);
+        wl_dd_worker_destroy(w);
+        wl_ffi_plan_free(ffi);
+        wl_dd_plan_free(dd_plan);
+        wirelog_program_free(prog);
+        remove(csv_path);
+        FAIL(msg);
+        return;
+    }
+
+    /* Execute */
+    tuple_collector_t results;
+    memset(&results, 0, sizeof(results));
+
+    rc = wl_dd_execute_cb(ffi, w, collect_tuple, &results);
+    if (rc != 0) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "execute_cb returned %d", rc);
+        wl_dd_worker_destroy(w);
+        wl_ffi_plan_free(ffi);
+        wl_dd_plan_free(dd_plan);
+        wirelog_program_free(prog);
+        remove(csv_path);
+        FAIL(msg);
+        return;
+    }
+
+    int n = count_tuples(&results, "tc");
+    if (n != 6) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "expected 6 tc tuples, got %d", n);
+        wl_dd_worker_destroy(w);
+        wl_ffi_plan_free(ffi);
+        wl_dd_plan_free(dd_plan);
+        wirelog_program_free(prog);
+        remove(csv_path);
+        FAIL(msg);
+        return;
+    }
+
+    wl_dd_worker_destroy(w);
+    wl_ffi_plan_free(ffi);
+    wl_dd_plan_free(dd_plan);
+    wirelog_program_free(prog);
+    remove(csv_path);
+    PASS();
+}
+
+static void
+test_load_input_files_no_input(void)
+{
+    TEST("wirelog_load_input_files: no .input returns 0");
+
+    wirelog_program_t *prog
+        = wirelog_parse_string(".decl edge(x: int32, y: int32)\n", NULL);
+    if (!prog) {
+        FAIL("program is NULL");
+        return;
+    }
+
+    wl_dd_worker_t *w = wl_dd_worker_create(1);
+
+    int rc = wirelog_load_input_files(prog, w);
+    if (rc != 0) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "expected 0, got %d", rc);
+        wl_dd_worker_destroy(w);
+        wirelog_program_free(prog);
+        FAIL(msg);
+        return;
+    }
+
+    wl_dd_worker_destroy(w);
+    wirelog_program_free(prog);
+    PASS();
+}
+
+static void
+test_load_input_files_null_args(void)
+{
+    TEST("wirelog_load_input_files: NULL args return -1");
+
+    wl_dd_worker_t *w = wl_dd_worker_create(1);
+
+    if (wirelog_load_input_files(NULL, w) != -1) {
+        wl_dd_worker_destroy(w);
+        FAIL("should return -1 for NULL program");
+        return;
+    }
+
+    wirelog_program_t *prog = wirelog_parse_string(".decl a(x: int32)\n", NULL);
+    if (wirelog_load_input_files(prog, NULL) != -1) {
+        wirelog_program_free(prog);
+        wl_dd_worker_destroy(w);
+        FAIL("should return -1 for NULL worker");
+        return;
+    }
+
+    wirelog_program_free(prog);
+    wl_dd_worker_destroy(w);
+    PASS();
+}
+
+/* ======================================================================== */
 /* Main                                                                     */
 /* ======================================================================== */
 
@@ -855,6 +1040,11 @@ main(void)
 
     printf("\n--- End-to-end Inline Facts ---\n");
     test_e2e_inline_facts_tc();
+
+    printf("\n--- .input Directive CSV Loading ---\n");
+    test_load_input_files_tc();
+    test_load_input_files_no_input();
+    test_load_input_files_null_args();
 
     printf("\n=== Results: %d passed, %d failed, %d total ===\n\n",
            tests_passed, tests_failed, tests_run);

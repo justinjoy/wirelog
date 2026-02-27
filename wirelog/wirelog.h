@@ -132,6 +132,20 @@ wirelog_program_get_facts(const wirelog_program_t *prog, const char *relation,
 int
 wirelog_load_all_facts(const wirelog_program_t *prog, void *worker);
 
+/**
+ * Load CSV files for all relations with .input directives.
+ *
+ * Iterates over all relations with has_input=true, reads the "filename"
+ * and "delimiter" parameters, parses the CSV file, and loads the data
+ * into the DD worker via wl_dd_load_edb().
+ *
+ * @param prog    Compiled program with .input directives
+ * @param worker  DD worker handle to load facts into
+ * @return 0 on success, -1 on error (NULL args, missing file, parse error)
+ */
+int
+wirelog_load_input_files(const wirelog_program_t *prog, void *worker);
+
 /* ======================================================================== */
 /* Optimizer API                                                            */
 /* ======================================================================== */
