@@ -41,3 +41,10 @@ option(
   value: false,
   description: 'Build documentation (not yet implemented)'
 )
+
+option(
+  'bench',
+  type: 'boolean',
+  value: false,
+  description: 'Build benchmark programs (requires DD executor)'
+)

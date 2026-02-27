@@ -248,6 +248,15 @@ if dd_option
 endif
 
 # ============================================================================
+# Benchmarks (requires DD executor)
+# ============================================================================
+
+bench_option = get_option('bench')
+if bench_option and dd_option
+  subdir('bench')
+endif
+
+# ============================================================================
 # Tests
 # ============================================================================
 
@@ -276,5 +285,6 @@ message('  Embedded mode: @0@'.format(is_embedded))
 message('  IPC support: ' + ipc_option)
 message('  Threading: ' + threads_option)
 message('  DD executor: @0@'.format(dd_option))
+message('  Benchmarks: @0@'.format(bench_option))
 message('  Tests: @0@'.format(tests_option))
 message('')
