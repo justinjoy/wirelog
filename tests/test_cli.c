@@ -13,6 +13,8 @@
 #include "../wirelog/wirelog-parser.h"
 #include "../wirelog/wirelog.h"
 
+#include "test_tmpdir.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -59,7 +61,8 @@ test_read_file_basic(void)
     TEST("wl_read_file reads a .dl file");
 
     /* Write a temp file */
-    const char *path = "/tmp/wirelog_test_read.dl";
+    char path[512];
+    test_tmppath(path, sizeof(path), "wirelog_test_read.dl");
     FILE *f = fopen(path, "w");
     if (!f) {
         FAIL("cannot create temp file");
@@ -96,7 +99,9 @@ test_read_file_nonexistent(void)
 {
     TEST("wl_read_file returns NULL for nonexistent file");
 
-    char *contents = wl_read_file("/tmp/wirelog_no_such_file_xyz.dl");
+    char nxpath[512];
+    test_tmppath(nxpath, sizeof(nxpath), "wirelog_no_such_file_xyz.dl");
+    char *contents = wl_read_file(nxpath);
     if (contents != NULL) {
         free(contents);
         FAIL("expected NULL for nonexistent file");
@@ -130,7 +135,8 @@ test_print_tuple_basic(void)
 {
     TEST("wl_print_tuple formats relation(v1, v2)");
 
-    const char *path = "/tmp/wirelog_test_output.txt";
+    char path[512];
+    test_tmppath(path, sizeof(path), "wirelog_test_output.txt");
     FILE *f = fopen(path, "w");
     if (!f) {
         FAIL("cannot create temp file");
@@ -167,7 +173,8 @@ test_print_tuple_single_col(void)
 {
     TEST("wl_print_tuple formats single column");
 
-    const char *path = "/tmp/wirelog_test_output2.txt";
+    char path[512];
+    test_tmppath(path, sizeof(path), "wirelog_test_output2.txt");
     FILE *f = fopen(path, "w");
     if (!f) {
         FAIL("cannot create temp file");
@@ -215,7 +222,8 @@ test_run_pipeline_tc(void)
                       "tc(x, y) :- edge(x, y).\n"
                       "tc(x, z) :- tc(x, y), edge(y, z).\n";
 
-    const char *outpath = "/tmp/wirelog_test_pipeline.txt";
+    char outpath[512];
+    test_tmppath(outpath, sizeof(outpath), "wirelog_test_pipeline.txt");
     FILE *f = fopen(outpath, "w");
     if (!f) {
         FAIL("cannot create output file");
@@ -301,7 +309,8 @@ test_run_pipeline_csv_input(void)
     TEST("wl_run_pipeline with .input CSV loads external data");
 
     /* Create CSV file */
-    const char *csv_path = "/tmp/wirelog_test_pipeline_edges.csv";
+    char csv_path[512];
+    test_tmppath(csv_path, sizeof(csv_path), "wirelog_test_pipeline_edges.csv");
     FILE *csv = fopen(csv_path, "w");
     if (!csv) {
         FAIL("cannot create CSV file");
@@ -310,15 +319,17 @@ test_run_pipeline_csv_input(void)
     fprintf(csv, "1,2\n2,3\n3,4\n");
     fclose(csv);
 
-    const char *src
-        = ".decl edge(x: int32, y: int32)\n"
-          ".input edge(filename=\"/tmp/wirelog_test_pipeline_edges.csv\", "
-          "delimiter=\",\")\n"
-          ".decl tc(x: int32, y: int32)\n"
-          "tc(x, y) :- edge(x, y).\n"
-          "tc(x, z) :- tc(x, y), edge(y, z).\n";
+    char src[1024];
+    snprintf(src, sizeof(src),
+             ".decl edge(x: int32, y: int32)\n"
+             ".input edge(filename=\"%s\", delimiter=\",\")\n"
+             ".decl tc(x: int32, y: int32)\n"
+             "tc(x, y) :- edge(x, y).\n"
+             "tc(x, z) :- tc(x, y), edge(y, z).\n",
+             csv_path);
 
-    const char *outpath = "/tmp/wirelog_test_pipeline_csv_out.txt";
+    char outpath[512];
+    test_tmppath(outpath, sizeof(outpath), "wirelog_test_pipeline_csv_out.txt");
     FILE *f = fopen(outpath, "w");
     if (!f) {
         remove(csv_path);
@@ -371,6 +382,105 @@ test_run_pipeline_csv_input(void)
     PASS();
 }
 
+static void
+test_run_pipeline_csv_missing_file(void)
+{
+    TEST("wl_run_pipeline fails when .input CSV file is missing");
+
+    char nxcsv[512];
+    test_tmppath(nxcsv, sizeof(nxcsv), "wirelog_no_such_file_xyz.csv");
+    char src[1024];
+    snprintf(src, sizeof(src),
+             ".decl edge(x: int32, y: int32)\n"
+             ".input edge(filename=\"%s\", delimiter=\",\")\n"
+             ".decl tc(x: int32, y: int32)\n"
+             "tc(x, y) :- edge(x, y).\n",
+             nxcsv);
+
+    int rc = wl_run_pipeline(src, 1, stdout);
+    if (rc == 0) {
+        FAIL("should fail for missing CSV file");
+        return;
+    }
+    PASS();
+}
+
+static void
+test_run_pipeline_csv_tab_delimiter(void)
+{
+    TEST("wl_run_pipeline with tab-delimited CSV");
+
+    char csv_path[512];
+    test_tmppath(csv_path, sizeof(csv_path), "wirelog_test_tab.csv");
+    FILE *csv = fopen(csv_path, "w");
+    if (!csv) {
+        FAIL("cannot create CSV file");
+        return;
+    }
+    fprintf(csv, "1\t2\n2\t3\n");
+    fclose(csv);
+
+    char src[1024];
+    snprintf(src, sizeof(src),
+             ".decl edge(x: int32, y: int32)\n"
+             ".input edge(filename=\"%s\", delimiter=\"\\t\")\n"
+             ".decl r(x: int32, y: int32)\n"
+             "r(x, y) :- edge(x, y).\n",
+             csv_path);
+
+    char outpath[512];
+    test_tmppath(outpath, sizeof(outpath), "wirelog_test_tab_out.txt");
+    FILE *f = fopen(outpath, "w");
+    if (!f) {
+        remove(csv_path);
+        FAIL("cannot create output file");
+        return;
+    }
+
+    int rc = wl_run_pipeline(src, 1, f);
+    fclose(f);
+
+    if (rc != 0) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "wl_run_pipeline returned %d", rc);
+        remove(outpath);
+        remove(csv_path);
+        FAIL(msg);
+        return;
+    }
+
+    char *output = wl_read_file(outpath);
+    if (!output) {
+        remove(outpath);
+        remove(csv_path);
+        FAIL("cannot read output");
+        return;
+    }
+
+    int count = 0;
+    const char *p = output;
+    while ((p = strstr(p, "r(")) != NULL) {
+        count++;
+        p++;
+    }
+
+    if (count != 2) {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "expected 2 r tuples, got %d\n%s", count,
+                 output);
+        free(output);
+        remove(outpath);
+        remove(csv_path);
+        FAIL(msg);
+        return;
+    }
+
+    free(output);
+    remove(outpath);
+    remove(csv_path);
+    PASS();
+}
+
 /* ======================================================================== */
 /* Main                                                                     */
 /* ======================================================================== */
@@ -396,6 +506,8 @@ main(void)
 
     printf("\n--- Pipeline with .input CSV ---\n");
     test_run_pipeline_csv_input();
+    test_run_pipeline_csv_missing_file();
+    test_run_pipeline_csv_tab_delimiter();
 
     printf("\n=== Results: %d passed, %d failed, %d total ===\n\n",
            tests_passed, tests_failed, tests_run);
