@@ -117,6 +117,10 @@ test_dd_ffi_exe = executable(
 
 test('dd_ffi', test_dd_ffi_exe)
 
+csv_src = files(
+  '../wirelog/io/csv_reader.c',
+)
+
 test_dd_execute_exe = executable(
   'test_dd_execute',
   files('test_dd_execute.c'),
@@ -124,6 +128,7 @@ test_dd_execute_exe = executable(
   ir_src,
   ffi_src,
   facts_loader_src,
+  csv_src,
   dependencies: [rust_ffi_dep],
   include_directories: [wirelog_inc, wirelog_src_inc],
 )
@@ -141,16 +146,13 @@ test_cli_exe = executable(
   ir_src,
   ffi_src,
   facts_loader_src,
+  csv_src,
   cli_src,
   dependencies: [rust_ffi_dep],
   include_directories: [wirelog_inc, wirelog_src_inc],
 )
 
 test('cli', test_cli_exe)
-
-csv_src = files(
-  '../wirelog/io/csv_reader.c',
-)
 
 test_csv_exe = executable(
   'test_csv',
