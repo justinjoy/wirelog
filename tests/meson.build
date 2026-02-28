@@ -17,10 +17,15 @@ ir_src = files(
   '../wirelog/ir/stratify.c',
   '../wirelog/ir/api.c',
   '../wirelog/ffi/dd_plan.c',
+  '../wirelog/intern.c',
 )
 
 optimizer_src = files(
   '../wirelog/passes/fusion.c',
+)
+
+intern_src = files(
+  '../wirelog/intern.c',
 )
 
 # ============================================================================
@@ -158,7 +163,17 @@ test_csv_exe = executable(
   'test_csv',
   files('test_csv.c'),
   csv_src,
+  intern_src,
   include_directories: [wirelog_inc, wirelog_src_inc],
 )
 
 test('csv', test_csv_exe)
+
+test_intern_exe = executable(
+  'test_intern',
+  files('test_intern.c'),
+  intern_src,
+  include_directories: [wirelog_inc, wirelog_src_inc],
+)
+
+test('intern', test_intern_exe)
