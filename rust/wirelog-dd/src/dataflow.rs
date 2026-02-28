@@ -5,20 +5,26 @@
  */
 
 /*
- * dataflow.rs - Interpreter-based plan execution (Phase 0)
+ * dataflow.rs - Differential Dataflow plan execution
  *
- * Executes a SafePlan against in-memory EDB data using a simple
- * interpreter.  Non-recursive strata run as a single pass.
- * Recursive strata iterate to a fixed point (max 1000 rounds).
+ * Executes a SafePlan against in-memory EDB data using actual
+ * Differential Dataflow operators via timely dataflow.
  *
- * Phase 1 will replace this with actual Differential Dataflow
- * graph construction via timely/DD APIs.
+ * Non-recursive strata build a DD operator graph in a single
+ * worker.dataflow() scope.  Recursive strata use DD's iterate()
+ * for fixed-point computation with distinct() for set semantics.
  *
  * Data model: all tuples are Vec<i64>, matching the wirelog i64
  * column representation used on the C side.
  */
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
+use differential_dataflow::collection::VecCollection;
+use differential_dataflow::input::Input;
+use differential_dataflow::operators::{Iterate, Join, Reduce, Threshold};
+use timely::dataflow::Scope;
 
 use crate::expr::{eval_filter, ExprOp, Value};
 use crate::plan_reader::{SafeAggFn, SafeOp, SafePlan, SafeRelationPlan, SafeStratumPlan};
@@ -52,222 +58,520 @@ pub fn execute_plan(
     edb_data: &HashMap<String, Vec<Row>>,
     _num_workers: u32,
 ) -> Result<ExecutionResult, String> {
-    let mut result = ExecutionResult::default();
+    // Clone plan and edb_data into owned values for the move closure
+    let plan_owned = plan.clone();
+    let edb_owned = edb_data.clone();
 
-    // Accumulate relation data across strata.
-    // Start with EDB data; each stratum adds its IDB outputs.
-    let mut relation_data: HashMap<String, Vec<Row>> = edb_data.clone();
+    // Shared result sink
+    let results: Arc<Mutex<HashMap<String, Vec<Row>>>> = Arc::new(Mutex::new(HashMap::new()));
+    let results_for_worker = results.clone();
 
-    for stratum in &plan.strata {
-        if stratum.is_recursive {
-            execute_recursive_stratum(stratum, &mut relation_data, &mut result)?;
-        } else {
-            execute_non_recursive_stratum(stratum, &relation_data, &mut result)?;
-        }
+    timely::execute(timely::Config::thread(), move |worker| {
+        // Accumulate relation data across strata.
+        // Start with EDB data; each stratum adds its IDB outputs.
+        let mut relation_data: HashMap<String, Vec<Row>> = edb_owned.clone();
 
-        // Make newly computed relations available for subsequent strata
-        for (name, rows) in &result.tuples {
-            relation_data.insert(name.clone(), rows.clone());
-        }
-    }
+        for stratum in &plan_owned.strata {
+            let stratum_results = if stratum.is_recursive {
+                execute_recursive_stratum_dd(worker, stratum, &relation_data)
+            } else {
+                execute_non_recursive_stratum_dd(worker, stratum, &relation_data)
+            };
 
-    Ok(result)
-}
+            // Make newly computed relations available for subsequent strata
+            for (name, rows) in &stratum_results {
+                relation_data.insert(name.clone(), rows.clone());
+            }
 
-/* ======================================================================== */
-/* Non-Recursive Stratum Execution                                          */
-/* ======================================================================== */
-
-/// Execute a non-recursive stratum (single pass).
-///
-/// Each relation plan is evaluated independently, consuming collections
-/// from EDB or previously computed IDB relations.
-fn execute_non_recursive_stratum(
-    stratum: &SafeStratumPlan,
-    relation_data: &HashMap<String, Vec<Row>>,
-    result: &mut ExecutionResult,
-) -> Result<(), String> {
-    for rel_plan in &stratum.relations {
-        let rows = evaluate_relation_plan(rel_plan, relation_data)?;
-        result
-            .tuples
-            .entry(rel_plan.name.clone())
-            .or_default()
-            .extend(rows);
-    }
-    Ok(())
-}
-
-/* ======================================================================== */
-/* Recursive Stratum Execution                                              */
-/* ======================================================================== */
-
-/// Maximum iterations for recursive fixed-point computation.
-const MAX_ITERATIONS: u32 = 1000;
-
-/// Execute a recursive stratum using iterated fixed-point.
-///
-/// Repeatedly evaluates all relation plans in the stratum until
-/// no new tuples are produced (fixed point) or the iteration
-/// limit is reached.
-fn execute_recursive_stratum(
-    stratum: &SafeStratumPlan,
-    relation_data: &mut HashMap<String, Vec<Row>>,
-    result: &mut ExecutionResult,
-) -> Result<(), String> {
-    // Collect all known tuples per relation in this stratum
-    let mut known: HashMap<String, HashSet<Row>> = HashMap::new();
-
-    // Seed with any existing data for these relations
-    for rel_plan in &stratum.relations {
-        let set = known.entry(rel_plan.name.clone()).or_default();
-        if let Some(existing) = relation_data.get(&rel_plan.name) {
-            for row in existing {
-                set.insert(row.clone());
+            // Store in final results (insert replaces prior strata's base case
+            // since recursive strata produce the complete relation)
+            let mut res = results_for_worker.lock().unwrap();
+            for (name, rows) in stratum_results {
+                res.insert(name, rows);
             }
         }
+    })
+    .map_err(|e| format!("Timely execution error: {:?}", e))?;
+
+    let tuples = match Arc::try_unwrap(results) {
+        Ok(mutex) => mutex.into_inner().unwrap(),
+        Err(arc) => arc.lock().unwrap().clone(),
+    };
+
+    Ok(ExecutionResult { tuples })
+}
+
+/* ======================================================================== */
+/* Non-Recursive Stratum (DD)                                               */
+/* ======================================================================== */
+
+/// Execute a non-recursive stratum using DD operators.
+fn execute_non_recursive_stratum_dd<A: timely::communication::Allocate>(
+    worker: &mut timely::worker::Worker<A>,
+    stratum: &SafeStratumPlan,
+    relation_data: &HashMap<String, Vec<Row>>,
+) -> HashMap<String, Vec<Row>> {
+    // If no data available, all relation results will be empty
+    if relation_data.is_empty() {
+        return stratum
+            .relations
+            .iter()
+            .map(|r| (r.name.clone(), Vec::new()))
+            .collect();
     }
 
-    for _iteration in 0..MAX_ITERATIONS {
-        let mut new_tuples_found = false;
+    let results: Arc<Mutex<HashMap<String, Vec<Row>>>> = Arc::new(Mutex::new(HashMap::new()));
+    let results_clone = results.clone();
 
-        for rel_plan in &stratum.relations {
-            let rows = evaluate_relation_plan(rel_plan, relation_data)?;
-            let set = known.entry(rel_plan.name.clone()).or_default();
+    // Clone data needed inside the dataflow closure
+    let relation_data_owned = relation_data.clone();
+    let relations_owned = stratum.relations.clone();
 
-            for row in rows {
-                if set.insert(row.clone()) {
-                    new_tuples_found = true;
-                    // Add to relation_data so next evaluation sees it
-                    relation_data
-                        .entry(rel_plan.name.clone())
+    let probe = worker.dataflow::<(), _, _>(move |scope| {
+        let probe = timely::dataflow::operators::probe::Handle::new();
+
+        // Materialize all known relations as DD collections
+        let mut collections = HashMap::new();
+        for (name, rows) in &relation_data_owned {
+            let (_, coll) = scope.new_collection_from(rows.clone());
+            collections.insert(name.clone(), coll);
+        }
+
+        // Evaluate each relation plan
+        for rel_plan in &relations_owned {
+            let coll = build_relation_plan(rel_plan, &collections);
+            // Consolidate to ensure diff cancellations (e.g. from antijoin)
+            // are resolved before collecting results.
+            let coll = coll.consolidate();
+            // Attach result inspector
+            let rel_name = rel_plan.name.clone();
+            let results_ref = results_clone.clone();
+            coll.inspect(move |&(ref data, _time, diff): &(Row, (), isize)| {
+                if diff > 0 {
+                    results_ref
+                        .lock()
+                        .unwrap()
+                        .entry(rel_name.clone())
                         .or_default()
-                        .push(row);
+                        .push(data.clone());
+                }
+            })
+            .probe_with(&probe);
+        }
+
+        probe
+    });
+
+    worker.step_while(|| !probe.done());
+
+    match Arc::try_unwrap(results) {
+        Ok(mutex) => mutex.into_inner().unwrap(),
+        Err(arc) => arc.lock().unwrap().clone(),
+    }
+}
+
+/* ======================================================================== */
+/* Recursive Stratum (DD)                                                   */
+/* ======================================================================== */
+
+/// Execute a recursive stratum using DD's iterate().
+fn execute_recursive_stratum_dd<A: timely::communication::Allocate>(
+    worker: &mut timely::worker::Worker<A>,
+    stratum: &SafeStratumPlan,
+    relation_data: &HashMap<String, Vec<Row>>,
+) -> HashMap<String, Vec<Row>> {
+    let results: Arc<Mutex<HashMap<String, Vec<Row>>>> = Arc::new(Mutex::new(HashMap::new()));
+    let results_clone = results.clone();
+
+    let relation_data_owned = relation_data.clone();
+    let relations_owned = stratum.relations.clone();
+
+    // Collect the names of relations defined in this recursive stratum
+    let recursive_rel_names: Vec<String> = relations_owned.iter().map(|r| r.name.clone()).collect();
+
+    let probe = worker.dataflow::<(), _, _>(move |scope| {
+        // Materialize EDB / prior-stratum collections
+        let mut edb_collections = HashMap::new();
+        for (name, rows) in &relation_data_owned {
+            let (_, coll) = scope.new_collection_from(rows.clone());
+            edb_collections.insert(name.clone(), coll);
+        }
+
+        // For recursive strata, we need to seed the recursive relations
+        // with any existing data and then iterate.
+        // We support one recursive relation per stratum (the common case).
+        // For multiple mutually-recursive relations, we concatenate them
+        // into a single tagged collection, iterate, then split.
+
+        if recursive_rel_names.len() == 1 {
+            // Single recursive relation (common case: e.g., transitive closure)
+            let rel_name = &recursive_rel_names[0];
+            let rel_plan = &relations_owned[0];
+
+            // Seed: existing data for this relation (from prior stratum base case)
+            let seed_data = relation_data_owned
+                .get(rel_name)
+                .cloned()
+                .unwrap_or_default();
+            let (_, seed_coll) = scope.new_collection_from(seed_data);
+
+            let result = seed_coll.iterate(|inner| {
+                // Bring EDB collections into the iterate scope
+                let mut inner_collections = HashMap::new();
+                for (name, coll) in &edb_collections {
+                    inner_collections.insert(name.clone(), coll.enter(&inner.scope()));
+                }
+                // The iterating collection itself is available as `inner`
+                inner_collections.insert(rel_name.clone(), inner.clone());
+
+                let new_tuples = build_relation_plan(rel_plan, &inner_collections);
+                inner.concat(&new_tuples).distinct()
+            });
+
+            let rn = rel_name.clone();
+            let results_ref = results_clone.clone();
+            result
+                .consolidate()
+                .inspect(move |&(ref data, _time, diff): &(Row, _, isize)| {
+                    if diff > 0 {
+                        results_ref
+                            .lock()
+                            .unwrap()
+                            .entry(rn.clone())
+                            .or_default()
+                            .push(data.clone());
+                    }
+                })
+                .probe()
+        } else {
+            // Multiple mutually-recursive relations: tag rows with relation index
+            // and iterate over the combined collection.
+            // Tag format: prepend relation index as first element of row.
+
+            // Seed all recursive relations
+            let mut seed_rows: Vec<Row> = Vec::new();
+            for (idx, rel_name) in recursive_rel_names.iter().enumerate() {
+                if let Some(rows) = relation_data_owned.get(rel_name) {
+                    for row in rows {
+                        let mut tagged = vec![idx as i64];
+                        tagged.extend(row.iter());
+                        seed_rows.push(tagged);
+                    }
                 }
             }
-        }
+            let (_, seed_coll) = scope.new_collection_from(seed_rows);
 
-        if !new_tuples_found {
-            break;
+            let result = seed_coll.iterate(|inner| {
+                let mut inner_edb = HashMap::new();
+                for (name, coll) in &edb_collections {
+                    inner_edb.insert(name.clone(), coll.enter(&inner.scope()));
+                }
+
+                let mut all_new: Option<VecCollection<_, Row>> = None;
+
+                for (idx, rel_plan) in relations_owned.iter().enumerate() {
+                    let tag = idx as i64;
+
+                    let mut inner_collections = inner_edb.clone();
+                    // Add all recursive relations (untagged) into scope
+                    for (ridx, rname) in recursive_rel_names.iter().enumerate() {
+                        let rtag = ridx as i64;
+                        let rc = inner
+                            .filter(move |row: &Row| row[0] == rtag)
+                            .map(|row: Row| row[1..].to_vec());
+                        inner_collections.insert(rname.clone(), rc);
+                    }
+
+                    let new_tuples = build_relation_plan(rel_plan, &inner_collections);
+                    // Re-tag the results
+                    let tagged_new = new_tuples.map(move |row: Row| {
+                        let mut t = vec![tag];
+                        t.extend(row.iter());
+                        t
+                    });
+
+                    all_new = Some(match all_new {
+                        Some(acc) => acc.concat(&tagged_new),
+                        None => tagged_new,
+                    });
+                }
+
+                let combined = match all_new {
+                    Some(c) => inner.concat(&c),
+                    None => inner.clone(),
+                };
+                combined.distinct()
+            });
+
+            // Split tagged results back into per-relation results
+            for (idx, rel_name) in recursive_rel_names.iter().enumerate() {
+                let tag = idx as i64;
+                let rn = rel_name.clone();
+                let results_ref = results_clone.clone();
+                result
+                    .filter(move |row: &Row| row[0] == tag)
+                    .map(|row: Row| row[1..].to_vec())
+                    .consolidate()
+                    .inspect(move |&(ref data, _time, diff): &(Row, _, isize)| {
+                        if diff > 0 {
+                            results_ref
+                                .lock()
+                                .unwrap()
+                                .entry(rn.clone())
+                                .or_default()
+                                .push(data.clone());
+                        }
+                    })
+                    .probe();
+            }
+            // Return a dummy probe from one of the result inspections
+            result.probe()
         }
+    });
+
+    worker.step_while(|| !probe.done());
+
+    match Arc::try_unwrap(results) {
+        Ok(mutex) => mutex.into_inner().unwrap(),
+        Err(arc) => arc.lock().unwrap().clone(),
     }
-
-    // Collect final results
-    for rel_plan in &stratum.relations {
-        if let Some(set) = known.get(&rel_plan.name) {
-            let rows: Vec<Row> = set.iter().cloned().collect();
-            result.tuples.insert(rel_plan.name.clone(), rows);
-        }
-    }
-
-    Ok(())
 }
 
 /* ======================================================================== */
-/* Relation Plan Evaluation (Interpreter)                                   */
+/* Relation Plan Builder (DD operator graph)                                */
 /* ======================================================================== */
 
-/// Evaluate a relation plan by interpreting operators sequentially.
+/// Build a DD operator graph for a single relation plan.
 ///
-/// Each operator transforms an in-memory collection of rows.
-fn evaluate_relation_plan(
+/// Translates the sequence of SafeOp instructions into chained DD
+/// operators, returning the final Collection.
+fn build_relation_plan<G: Scope>(
     rel_plan: &SafeRelationPlan,
-    relation_data: &HashMap<String, Vec<Row>>,
-) -> Result<Vec<Row>, String> {
-    let mut current: Vec<Row> = Vec::new();
-    let mut accumulated: Vec<Row> = Vec::new();
+    collections: &HashMap<String, VecCollection<G, Row>>,
+) -> VecCollection<G, Row>
+where
+    G::Timestamp: differential_dataflow::lattice::Lattice + Ord,
+{
+    // `current` tracks the collection being built by the current operator chain.
+    // `accumulated` collects results from prior UNION branches for Concat.
+    let mut current: Option<VecCollection<G, Row>> = None;
+    let mut accumulated: Option<VecCollection<G, Row>> = None;
 
     for op in &rel_plan.ops {
         match op {
             SafeOp::Variable { relation_name } => {
                 // Save current to accumulator for CONCAT (UNION branches)
-                if !current.is_empty() {
-                    accumulated.append(&mut current);
+                if let Some(c) = current.take() {
+                    accumulated = Some(match accumulated {
+                        Some(acc) => acc.concat(&c),
+                        None => c,
+                    });
                 }
-                current = relation_data
-                    .get(relation_name)
-                    .cloned()
-                    .unwrap_or_default();
+                current = collections.get(relation_name).cloned();
+                if current.is_none() {
+                    // Empty collection for missing relations
+                    // We need a scope reference -- get it from any existing collection
+                    if let Some((_, any_coll)) = collections.iter().next() {
+                        current = Some(any_coll.filter(|_: &Row| false));
+                    }
+                }
             }
 
             SafeOp::Map { indices, .. } => {
-                if !indices.is_empty() {
-                    current = current
-                        .into_iter()
-                        .map(|row| indices.iter().map(|&i| row[i as usize]).collect())
-                        .collect();
+                if let Some(c) = current.take() {
+                    if !indices.is_empty() {
+                        let indices = indices.clone();
+                        current = Some(c.map(move |row: Row| {
+                            indices.iter().map(|&i| row[i as usize]).collect()
+                        }));
+                    } else {
+                        // Empty indices = identity pass-through
+                        current = Some(c);
+                    }
                 }
-                // Empty indices = identity pass-through (keep current as-is)
             }
 
             SafeOp::Filter { expr } => {
-                if !expr.is_empty() {
-                    current = filter_rows(current, expr)?;
+                if let Some(c) = current.take() {
+                    if !expr.is_empty() {
+                        let expr = expr.clone();
+                        current =
+                            Some(c.filter(move |row: &Row| {
+                                eval_filter_row(row, &expr).unwrap_or(false)
+                            }));
+                    } else {
+                        current = Some(c);
+                    }
                 }
             }
 
             SafeOp::Join {
                 right_relation,
                 left_keys,
-                right_keys,
+                right_keys: _,
             } => {
-                let right = relation_data
-                    .get(right_relation)
-                    .cloned()
-                    .unwrap_or_default();
-                current = join_rows(&current, &right, left_keys, right_keys)?;
+                if let Some(c) = current.take() {
+                    let key_count = left_keys.len();
+                    let right_coll = collections.get(right_relation).cloned();
+
+                    if let Some(right) = right_coll {
+                        // Left: key = last key_count columns, value = full row
+                        let k = key_count;
+                        let left_keyed = c.map(move |row: Row| {
+                            let key: Row = row[row.len() - k..].to_vec();
+                            (key, row)
+                        });
+
+                        // Right: key = first key_count columns, value = remaining cols
+                        let right_keyed = right.map(move |row: Row| {
+                            let key: Row = row[..key_count].to_vec();
+                            let val: Row = row[key_count..].to_vec();
+                            (key, val)
+                        });
+
+                        current = Some(left_keyed.join_map(
+                            &right_keyed,
+                            |_key: &Row, lrow: &Row, rval: &Row| {
+                                let mut out = lrow.clone();
+                                out.extend(rval.iter());
+                                out
+                            },
+                        ));
+                    } else {
+                        // Right relation not found -> empty join result
+                        current = Some(c.filter(|_: &Row| false));
+                    }
+                }
             }
 
             SafeOp::Antijoin {
                 right_relation,
                 left_keys,
-                right_keys,
+                right_keys: _,
             } => {
-                let right = relation_data
-                    .get(right_relation)
-                    .cloned()
-                    .unwrap_or_default();
-                current = antijoin_rows(&current, &right, left_keys, right_keys)?;
+                if let Some(c) = current.take() {
+                    let key_count = left_keys.len();
+                    let right_coll = collections.get(right_relation).cloned();
+
+                    if let Some(right) = right_coll {
+                        // Left: key = last key_count columns, value = full row
+                        let k = key_count;
+                        let left_keyed = c.map(move |row: Row| {
+                            let key: Row = row[row.len() - k..].to_vec();
+                            (key, row)
+                        });
+
+                        // Right: extract just the keys
+                        let right_keys_coll = right.map(move |row: Row| row[..key_count].to_vec());
+
+                        current =
+                            Some(left_keyed.antijoin(&right_keys_coll).map(|(_key, row)| row));
+                    } else {
+                        // Right relation not found -> antijoin keeps everything
+                        current = Some(c);
+                    }
+                }
             }
 
             SafeOp::Reduce {
                 agg_fn,
                 group_by_indices,
             } => {
-                current = reduce_rows(&current, agg_fn, group_by_indices)?;
+                if let Some(c) = current.take() {
+                    let gb = group_by_indices.clone();
+                    let agg = *agg_fn;
+
+                    // Key by group-by columns, value = full row
+                    let keyed = c.map(move |row: Row| {
+                        let key: Row = gb.iter().map(|&i| row[i as usize]).collect();
+                        (key, row)
+                    });
+
+                    let reduced = keyed.reduce(
+                        move |_key: &Row,
+                              input: &[(&Row, isize)],
+                              output: &mut Vec<(i64, isize)>| {
+                            let agg_val = match agg {
+                                SafeAggFn::Count => {
+                                    input.iter().map(|(_, c)| *c as i64).sum::<i64>()
+                                }
+                                SafeAggFn::Sum => {
+                                    // Sum the last non-group-by column
+                                    let vi = if !input.is_empty() && !input[0].0.is_empty() {
+                                        input[0].0.len() - 1
+                                    } else {
+                                        0
+                                    };
+                                    input.iter().map(|(r, c)| r[vi] * (*c as i64)).sum()
+                                }
+                                SafeAggFn::Min => {
+                                    let vi = input[0].0.len() - 1;
+                                    input.iter().map(|(r, _)| r[vi]).min().unwrap_or(0)
+                                }
+                                SafeAggFn::Max => {
+                                    let vi = input[0].0.len() - 1;
+                                    input.iter().map(|(r, _)| r[vi]).max().unwrap_or(0)
+                                }
+                                SafeAggFn::Avg => {
+                                    let vi = input[0].0.len() - 1;
+                                    let total_count: i64 =
+                                        input.iter().map(|(_, c)| *c as i64).sum();
+                                    let sum: i64 =
+                                        input.iter().map(|(r, c)| r[vi] * (*c as i64)).sum();
+                                    if total_count > 0 {
+                                        sum / total_count
+                                    } else {
+                                        0
+                                    }
+                                }
+                            };
+                            output.push((agg_val, 1));
+                        },
+                    );
+
+                    // Output: key columns + aggregated value
+                    current = Some(reduced.map(|(key, agg): (Row, i64)| {
+                        let mut r = key;
+                        r.push(agg);
+                        r
+                    }));
+                }
             }
 
             SafeOp::Concat => {
                 // Merge accumulated results from previous UNION branches
                 // with the current branch's results.
-                current.append(&mut accumulated);
+                if let Some(c) = current.take() {
+                    current = Some(match accumulated.take() {
+                        Some(acc) => acc.concat(&c),
+                        None => c,
+                    });
+                }
             }
 
             SafeOp::Consolidate => {
-                // Deduplicate
-                current.sort();
-                current.dedup();
+                // Set-semantic deduplication
+                if let Some(c) = current.take() {
+                    current = Some(c.distinct());
+                }
             }
         }
     }
 
-    Ok(current)
+    // Return final collection (or empty if nothing was built)
+    current.unwrap_or_else(|| {
+        // Create an empty collection - find any scope reference
+        if let Some((_, any_coll)) = collections.iter().next() {
+            any_coll.filter(|_: &Row| false)
+        } else {
+            panic!("No collections available to create empty collection")
+        }
+    })
 }
 
 /* ======================================================================== */
 /* Row-Level Operations                                                     */
 /* ======================================================================== */
-
-/// Filter rows using an expression evaluator.
-fn filter_rows(rows: Vec<Row>, expr: &[ExprOp]) -> Result<Vec<Row>, String> {
-    let mut result = Vec::new();
-    for row in rows {
-        if eval_filter_row(&row, expr).map_err(|e| format!("Filter error: {}", e))? {
-            result.push(row);
-        }
-    }
-    Ok(result)
-}
 
 /// Evaluate a filter expression against a single row.
 ///
@@ -279,125 +583,6 @@ fn eval_filter_row(row: &[i64], expr: &[ExprOp]) -> Result<bool, String> {
         vars.insert(format!("col{}", i), Value::Int(val));
     }
     eval_filter(expr, &vars).map_err(|e| e.to_string())
-}
-
-/// Join two row collections on positional key columns.
-///
-/// Convention: the join key for the left side is the last `key_count`
-/// columns; the join key for the right side is the first `key_count`
-/// columns.  The output concatenates the left row with the right
-/// row's non-key columns.
-fn join_rows(
-    left: &[Row],
-    right: &[Row],
-    left_keys: &[String],
-    right_keys: &[String],
-) -> Result<Vec<Row>, String> {
-    if left_keys.len() != right_keys.len() {
-        return Err("Join key count mismatch".to_string());
-    }
-
-    // Build a hash index on the right side (first key_count columns)
-    let key_count = left_keys.len();
-    let mut right_index: HashMap<Vec<i64>, Vec<&Row>> = HashMap::new();
-    for row in right {
-        let key: Vec<i64> = row.iter().take(key_count).cloned().collect();
-        right_index.entry(key).or_default().push(row);
-    }
-
-    // Probe with left rows (last key_count columns as join key)
-    let mut result = Vec::new();
-    for lrow in left {
-        let key: Vec<i64> = lrow.iter().rev().take(key_count).rev().cloned().collect();
-        if let Some(matches) = right_index.get(&key) {
-            for rrow in matches {
-                let mut out = lrow.clone();
-                out.extend(rrow.iter().skip(key_count));
-                result.push(out);
-            }
-        }
-    }
-
-    Ok(result)
-}
-
-/// Antijoin: keep left rows that have NO match in right.
-fn antijoin_rows(
-    left: &[Row],
-    right: &[Row],
-    left_keys: &[String],
-    right_keys: &[String],
-) -> Result<Vec<Row>, String> {
-    if left_keys.len() != right_keys.len() {
-        return Err("Antijoin key count mismatch".to_string());
-    }
-
-    let key_count = left_keys.len();
-    let mut right_keys_set: HashSet<Vec<i64>> = HashSet::new();
-    for row in right {
-        let key: Vec<i64> = row.iter().take(key_count).cloned().collect();
-        right_keys_set.insert(key);
-    }
-
-    let result: Vec<Row> = left
-        .iter()
-        .filter(|lrow| {
-            let key: Vec<i64> = lrow.iter().rev().take(key_count).rev().cloned().collect();
-            !right_keys_set.contains(&key)
-        })
-        .cloned()
-        .collect();
-
-    Ok(result)
-}
-
-/// Reduce (aggregate) rows by group-by columns.
-fn reduce_rows(
-    rows: &[Row],
-    agg_fn: &SafeAggFn,
-    group_by_indices: &[u32],
-) -> Result<Vec<Row>, String> {
-    let mut groups: HashMap<Vec<i64>, Vec<&Row>> = HashMap::new();
-
-    for row in rows {
-        let key: Vec<i64> = group_by_indices.iter().map(|&i| row[i as usize]).collect();
-        groups.entry(key).or_default().push(row);
-    }
-
-    let mut result = Vec::new();
-    for (key, group) in groups {
-        let agg_val = match agg_fn {
-            SafeAggFn::Count => group.len() as i64,
-            SafeAggFn::Sum => {
-                // Sum the last non-group-by column
-                let val_idx = if group[0].len() > group_by_indices.len() {
-                    group[0].len() - 1
-                } else {
-                    0
-                };
-                group.iter().map(|r| r[val_idx]).sum()
-            }
-            SafeAggFn::Min => {
-                let val_idx = group[0].len() - 1;
-                group.iter().map(|r| r[val_idx]).min().unwrap_or(0)
-            }
-            SafeAggFn::Max => {
-                let val_idx = group[0].len() - 1;
-                group.iter().map(|r| r[val_idx]).max().unwrap_or(0)
-            }
-            SafeAggFn::Avg => {
-                let val_idx = group[0].len() - 1;
-                let sum: i64 = group.iter().map(|r| r[val_idx]).sum();
-                sum / group.len() as i64
-            }
-        };
-
-        let mut out = key;
-        out.push(agg_val);
-        result.push(out);
-    }
-
-    Ok(result)
 }
 
 /* ======================================================================== */
