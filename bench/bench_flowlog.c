@@ -117,12 +117,14 @@ overflow:
 #define WL_REACH 1
 #define WL_CC 2
 #define WL_SSSP 3
-#define WL_COUNT 4
+#define WL_SG 4
+#define WL_COUNT 5
 
-static const char *wl_names[WL_COUNT] = { "tc", "reach", "cc", "sssp" };
+static const char *wl_names[WL_COUNT] = { "tc", "reach", "cc", "sssp", "sg" };
 
 /* Relation name used for CSV-to-facts conversion per workload */
-static const char *wl_relations[WL_COUNT] = { "edge", "edge", "edge", "wedge" };
+static const char *wl_relations[WL_COUNT]
+    = { "edge", "edge", "edge", "wedge", "edge" };
 
 /* Templates: %s is replaced by inline facts block */
 static const char *wl_templates[WL_COUNT] = {
@@ -151,6 +153,12 @@ static const char *wl_templates[WL_COUNT] = {
     ".decl dist(x: int32, d: int32)\n"
     "dist(1, 0).\n"
     "dist(y, min(d + w)) :- dist(x, d), wedge(x, y, w).\n",
+    /* SG (Same Generation) */
+    ".decl edge(x: int32, y: int32)\n"
+    "%s\n"
+    ".decl sg(x: int32, y: int32)\n"
+    "sg(x, y) :- edge(p, x), edge(p, y), x != y.\n"
+    "sg(x, y) :- edge(a, x), sg(a, b), edge(b, y).\n",
 };
 
 /* ----------------------------------------------------------------
@@ -246,8 +254,8 @@ run_workload(int wl_id, const char *data_path, uint32_t workers, int repeat)
         return -1;
 
     int32_t edge_count = 0;
-    if (csv_to_inline_facts(data_path, wl_relations[wl_id], facts_buf, SRC_BUFSZ,
-                            &edge_count)
+    if (csv_to_inline_facts(data_path, wl_relations[wl_id], facts_buf,
+                            SRC_BUFSZ, &edge_count)
         != 0) {
         free(facts_buf);
         return -1;
@@ -333,13 +341,14 @@ print_header(void)
 static void
 usage(const char *prog)
 {
-    fprintf(stderr,
-            "Usage: %s --workload {tc|reach|cc|sssp|all} --data FILE\n"
-            "          [--data-weighted FILE] [--workers N] [--repeat R]\n"
-            "\n"
-            "  --data FILE           Unweighted edge CSV (src,dst)\n"
-            "  --data-weighted FILE  Weighted edge CSV (src,dst,weight) for SSSP\n",
-            prog);
+    fprintf(
+        stderr,
+        "Usage: %s --workload {tc|reach|cc|sssp|sg|all} --data FILE\n"
+        "          [--data-weighted FILE] [--workers N] [--repeat R]\n"
+        "\n"
+        "  --data FILE           Unweighted edge CSV (src,dst)\n"
+        "  --data-weighted FILE  Weighted edge CSV (src,dst,weight) for SSSP\n",
+        prog);
 }
 
 int
@@ -411,6 +420,8 @@ main(int argc, char **argv)
             return 1;
         }
         rc = run_workload(WL_SSSP, data_weighted_path, workers, repeat);
+    } else if (strcmp(workload, "sg") == 0) {
+        rc = run_workload(WL_SG, data_path, workers, repeat);
     } else if (strcmp(workload, "all") == 0) {
         for (int i = 0; i < WL_COUNT; i++) {
             if (i == WL_SSSP && !data_weighted_path) {
