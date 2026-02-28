@@ -1,0 +1,5 @@
+.decl edge(x: int32, y: int32)
+.input edge(filename="EDGES", delimiter=",")
+.decl sg(x: int32, y: int32)
+sg(x, y) :- edge(p, x), edge(p, y), x != y.
+sg(x, y) :- edge(a, x), sg(a, b), edge(b, y).
