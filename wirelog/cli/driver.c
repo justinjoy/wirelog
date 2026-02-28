@@ -77,6 +77,7 @@ typedef struct {
     FILE *out;
     const wirelog_program_t *prog;
     const wl_intern_t *intern;
+    bool has_any_output; /* true if any relation has .output */
 } wl_output_ctx_t;
 
 /* Find the relation info for a given relation name */
@@ -101,6 +102,10 @@ print_tuple_cb(const char *relation, const int64_t *row, uint32_t ncols,
 
     if (ctx->prog)
         rel = find_relation(ctx->prog, relation);
+
+    /* Filter: if any relation has .output, only print those */
+    if (ctx->has_any_output && rel && !rel->has_output)
+        return;
 
     fprintf(ctx->out, "%s(", relation);
     for (uint32_t i = 0; i < ncols; i++) {
@@ -178,11 +183,21 @@ wl_run_pipeline(const char *source, uint32_t num_workers, FILE *out)
         return -1;
     }
 
-    /* 5. Execute with type-aware output callback */
+    /* 5. Check if any relation has .output directive */
+    bool has_any_output = false;
+    for (uint32_t i = 0; i < prog->relation_count; i++) {
+        if (prog->relations[i].has_output) {
+            has_any_output = true;
+            break;
+        }
+    }
+
+    /* 6. Execute with type-aware output callback */
     wl_output_ctx_t ctx = {
         .out = out,
         .prog = prog,
         .intern = prog->intern,
+        .has_any_output = has_any_output,
     };
     rc = wl_dd_execute_cb(ffi, w, print_tuple_cb, &ctx);
 
