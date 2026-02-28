@@ -2,6 +2,12 @@
 
 All notable changes to wirelog are documented in this file.
 
+## [0.11.0] - 2026-02-28 — Phase 1 Entry
+
+Phase 1 begins. wirelog now supports string-typed columns via symbol interning,
+external CSV data loading, and head arithmetic — the foundational capabilities
+needed for real-world Datalog applications (DOOP, Polonius, network policy).
+
 ## [0.10.1] - 2026-02-28
 
 ### Added

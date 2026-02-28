@@ -36,8 +36,8 @@ extern "C" {
 /* ======================================================================== */
 
 #define WIRELOG_VERSION_MAJOR 0
-#define WIRELOG_VERSION_MINOR 10
-#define WIRELOG_VERSION_PATCH 1
+#define WIRELOG_VERSION_MINOR 11
+#define WIRELOG_VERSION_PATCH 0
 
 #define WIRELOG_VERSION                                          \
     (WIRELOG_VERSION_MAJOR * 10000 + WIRELOG_VERSION_MINOR * 100 \
