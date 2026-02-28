@@ -1,0 +1,9 @@
+.decl edge(x: int32, y: int32)
+.input edge(filename="EDGES", delimiter=",")
+.decl blue(x: int32)
+.decl red(x: int32)
+.decl not_bipartite(x: int32)
+blue(1).
+red(y) :- blue(x), edge(x, y).
+blue(y) :- red(x), edge(x, y).
+not_bipartite(x) :- blue(x), red(x).

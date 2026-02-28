@@ -118,13 +118,15 @@ overflow:
 #define WL_CC 2
 #define WL_SSSP 3
 #define WL_SG 4
-#define WL_COUNT 5
+#define WL_BP 5
+#define WL_COUNT 6
 
-static const char *wl_names[WL_COUNT] = { "tc", "reach", "cc", "sssp", "sg" };
+static const char *wl_names[WL_COUNT]
+    = { "tc", "reach", "cc", "sssp", "sg", "bipartite" };
 
 /* Relation name used for CSV-to-facts conversion per workload */
 static const char *wl_relations[WL_COUNT]
-    = { "edge", "edge", "edge", "wedge", "edge" };
+    = { "edge", "edge", "edge", "wedge", "edge", "edge" };
 
 /* Templates: %s is replaced by inline facts block */
 static const char *wl_templates[WL_COUNT] = {
@@ -159,6 +161,16 @@ static const char *wl_templates[WL_COUNT] = {
     ".decl sg(x: int32, y: int32)\n"
     "sg(x, y) :- edge(p, x), edge(p, y), x != y.\n"
     "sg(x, y) :- edge(a, x), sg(a, b), edge(b, y).\n",
+    /* Bipartite Detection */
+    ".decl edge(x: int32, y: int32)\n"
+    "%s\n"
+    ".decl blue(x: int32)\n"
+    ".decl red(x: int32)\n"
+    ".decl not_bipartite(x: int32)\n"
+    "blue(1).\n"
+    "red(y) :- blue(x), edge(x, y).\n"
+    "blue(y) :- red(x), edge(x, y).\n"
+    "not_bipartite(x) :- blue(x), red(x).\n",
 };
 
 /* ----------------------------------------------------------------
@@ -464,7 +476,9 @@ usage(const char *prog)
 {
     fprintf(
         stderr,
-        "Usage: %s --workload {tc|reach|cc|sssp|sg|andersen|all} --data FILE\n"
+        "Usage: %s --workload {tc|reach|cc|sssp|sg|bipartite|andersen|all} "
+        "--data "
+        "FILE\n"
         "          [--data-weighted FILE] [--data-andersen DIR]\n"
         "          [--workers N] [--repeat R]\n"
         "\n"
@@ -551,6 +565,8 @@ main(int argc, char **argv)
         rc = run_workload(WL_SSSP, data_weighted_path, workers, repeat);
     } else if (strcmp(workload, "sg") == 0) {
         rc = run_workload(WL_SG, data_path, workers, repeat);
+    } else if (strcmp(workload, "bipartite") == 0) {
+        rc = run_workload(WL_BP, data_path, workers, repeat);
     } else if (strcmp(workload, "andersen") == 0) {
         if (!data_andersen_path) {
             fprintf(stderr, "error: andersen requires --data-andersen DIR\n");
