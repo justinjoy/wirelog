@@ -20,6 +20,7 @@ wirelog_ir_src = files(
   'ir/program.c',
   'ir/stratify.c',
   'ir/api.c',
+  'intern.c',
 )
 
 # ============================================================================
