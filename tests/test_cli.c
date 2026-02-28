@@ -632,6 +632,127 @@ test_run_pipeline_mixed_type_output(void)
 }
 
 /* ======================================================================== */
+/* Test: .output directive filters output to marked relations               */
+/* ======================================================================== */
+
+static void
+test_run_pipeline_output_filter(void)
+{
+    TEST("wl_run_pipeline outputs only .output-marked relations");
+
+    /* Two IDB relations: tc and reach.  Only tc has .output. */
+    const char *src = ".decl edge(x: int32, y: int32)\n"
+                      "edge(1, 2). edge(2, 3). edge(3, 4).\n"
+                      ".decl tc(x: int32, y: int32)\n"
+                      ".output tc\n"
+                      "tc(x, y) :- edge(x, y).\n"
+                      "tc(x, z) :- tc(x, y), edge(y, z).\n"
+                      ".decl reach(x: int32)\n"
+                      "reach(1).\n"
+                      "reach(y) :- reach(x), edge(x, y).\n";
+
+    char outpath[512];
+    test_tmppath(outpath, sizeof(outpath), "wirelog_test_output_filter.txt");
+    FILE *f = fopen(outpath, "w");
+    if (!f) {
+        FAIL("cannot create output file");
+        return;
+    }
+
+    int rc = wl_run_pipeline(src, 1, f);
+    fclose(f);
+
+    if (rc != 0) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "wl_run_pipeline returned %d", rc);
+        remove(outpath);
+        FAIL(msg);
+        return;
+    }
+
+    char *output = wl_read_file(outpath);
+    if (!output) {
+        remove(outpath);
+        FAIL("cannot read output file");
+        return;
+    }
+
+    /* tc should be in output */
+    if (strstr(output, "tc(") == NULL) {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "output should contain tc tuples: %s",
+                 output);
+        free(output);
+        remove(outpath);
+        FAIL(msg);
+        return;
+    }
+
+    /* reach should NOT be in output (IDB but no .output directive) */
+    if (strstr(output, "reach(") != NULL) {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "output should NOT contain reach tuples: %s",
+                 output);
+        free(output);
+        remove(outpath);
+        FAIL(msg);
+        return;
+    }
+
+    free(output);
+    remove(outpath);
+    PASS();
+}
+
+static void
+test_run_pipeline_no_output_directive(void)
+{
+    TEST("wl_run_pipeline outputs all relations when no .output is used");
+
+    const char *src = ".decl edge(x: int32, y: int32)\n"
+                      "edge(1, 2). edge(2, 3).\n"
+                      ".decl tc(x: int32, y: int32)\n"
+                      "tc(x, y) :- edge(x, y).\n"
+                      "tc(x, z) :- tc(x, y), edge(y, z).\n";
+
+    char outpath[512];
+    test_tmppath(outpath, sizeof(outpath), "wirelog_test_no_output_dir.txt");
+    FILE *f = fopen(outpath, "w");
+    if (!f) {
+        FAIL("cannot create output file");
+        return;
+    }
+
+    int rc = wl_run_pipeline(src, 1, f);
+    fclose(f);
+
+    if (rc != 0) {
+        remove(outpath);
+        FAIL("wl_run_pipeline failed");
+        return;
+    }
+
+    char *output = wl_read_file(outpath);
+    if (!output) {
+        remove(outpath);
+        FAIL("cannot read output file");
+        return;
+    }
+
+    /* Both tc and edge should be in output (no .output filtering) */
+    if (strstr(output, "tc(") == NULL) {
+        free(output);
+        remove(outpath);
+        FAIL("output should contain tc tuples");
+        return;
+    }
+
+    free(output);
+    remove(outpath);
+    PASS();
+}
+
+/* ======================================================================== */
 /* Main                                                                     */
 /* ======================================================================== */
 
@@ -662,6 +783,10 @@ main(void)
     printf("\n--- Pipeline with String Output ---\n");
     test_run_pipeline_string_output();
     test_run_pipeline_mixed_type_output();
+
+    printf("\n--- Pipeline with .output Directive ---\n");
+    test_run_pipeline_output_filter();
+    test_run_pipeline_no_output_directive();
 
     printf("\n=== Results: %d passed, %d failed, %d total ===\n\n",
            tests_passed, tests_failed, tests_run);
