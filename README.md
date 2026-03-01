@@ -147,7 +147,8 @@ For details, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Documentation
 
-- **[ARCHITECTURE.md](docs/ARCHITECTURE.md)** - Detailed system design
+- **[User Manual](https://justinjoy.github.io/wirelog/)** - Tutorial, language reference, examples, CLI usage
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** - Internal system design (developer reference)
 - **[LICENSE.md](LICENSE.md)** - Licensing information
 
 ## License
