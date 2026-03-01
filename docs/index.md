@@ -8,7 +8,9 @@ nav_order: 1
 
 **Embedded-to-Enterprise Datalog Engine**
 
-wirelog is a C11-based Datalog engine that compiles Datalog programs and executes them via [Differential Dataflow](https://github.com/TimelyDataflow/differential-dataflow). It supports recursive queries, stratified negation, aggregation, and CSV data loading.
+wirelog is a C11-based Datalog engine designed for embedded-to-enterprise deployments. The compiler frontend (parser, optimizer, plan generator) is written in C11, and the current execution backend uses [Differential Dataflow](https://github.com/TimelyDataflow/differential-dataflow) (Rust) via FFI. A future release will add a pure C11 execution backend using [nanoarrow](https://github.com/apache/arrow-nanoarrow), enabling lightweight embedded deployments without external dependencies.
+
+wirelog supports recursive queries, stratified negation, aggregation, and CSV data loading.
 
 ## Quick Start
 
