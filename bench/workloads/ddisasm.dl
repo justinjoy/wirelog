@@ -1,0 +1,119 @@
+/* DDISASM - Simplified Disassembly Analysis
+ *
+ * Simplified version of GrammaTech's DDISASM disassembly tool.
+ * Models binary code discovery via mutual recursion between
+ * code, code_in_block, may_fallthrough, and block_head.
+ *
+ * 28 rules across 4 phases:
+ *   Phase 1: Code discovery (mutual recursion) - 14 rules
+ *   Phase 2: Block properties                  -  4 rules
+ *   Phase 3: Control flow graph                -  4 rules
+ *   Phase 4: Reachability & functions           -  6 rules
+ *
+ * EDB: instruction, next, entry_point, direct_jump, cond_jump,
+ *      direct_call, return_inst, nop
+ *
+ * Reference: FlowLog (VLDB 2026), Section 10
+ */
+
+/* ---- EDB declarations ---- */
+.decl instruction(ea: int32, sz: int32)
+.input instruction(filename="INSTRUCTION", delimiter=",")
+.decl next(ea: int32, next_ea: int32)
+.input next(filename="NEXT", delimiter=",")
+.decl entry_point(ea: int32)
+.input entry_point(filename="ENTRY_POINT", delimiter=",")
+.decl direct_jump(ea: int32, dest: int32)
+.input direct_jump(filename="DIRECT_JUMP", delimiter=",")
+.decl cond_jump(ea: int32, dest: int32)
+.input cond_jump(filename="COND_JUMP", delimiter=",")
+.decl direct_call(ea: int32, dest: int32)
+.input direct_call(filename="DIRECT_CALL", delimiter=",")
+.decl return_inst(ea: int32)
+.input return_inst(filename="RETURN_INST", delimiter=",")
+.decl nop(ea: int32)
+.input nop(filename="NOP", delimiter=",")
+
+/* ---- Phase 1: Code Discovery (mutual recursion) ---- */
+
+.decl possible_target(ea: int32)
+.decl code(ea: int32)
+.decl no_fallthrough(ea: int32)
+.decl may_fallthrough(ea: int32, next_ea: int32)
+.decl code_in_block(ea: int32, block: int32)
+.decl block_head(b: int32)
+
+/* R1-R4: possible targets from entry, jumps, calls */
+possible_target(ea) :- entry_point(ea).
+possible_target(dest) :- direct_jump(_, dest).
+possible_target(dest) :- cond_jump(_, dest).
+possible_target(dest) :- direct_call(_, dest).
+
+/* R5-R6: after cond_jump/call, fall-through starts new block */
+possible_target(next_ea) :- cond_jump(ea, _), next(ea, next_ea).
+possible_target(next_ea) :- direct_call(ea, _), next(ea, next_ea).
+
+/* R7-R8: code discovery */
+code(ea) :- possible_target(ea), instruction(ea, _).
+code(next_ea) :- may_fallthrough(_, next_ea).
+
+/* R9-R10: instructions that do not fall through */
+no_fallthrough(ea) :- return_inst(ea).
+no_fallthrough(ea) :- direct_jump(ea, _).
+
+/* R11: may_fallthrough edge (mutual recursion with code_in_block) */
+may_fallthrough(ea, next_ea) :- code_in_block(ea, _), next(ea, next_ea), !no_fallthrough(ea).
+
+/* R12-R13: code_in_block assignment */
+code_in_block(ea, ea) :- possible_target(ea), code(ea).
+code_in_block(ea, block) :- code(ea), may_fallthrough(prev, ea), code_in_block(prev, block), !possible_target(ea).
+
+/* R14: block_head projection */
+block_head(b) :- code_in_block(_, b).
+
+/* ---- Phase 2: Block Properties ---- */
+
+.decl block_has_return(b: int32)
+.decl block_has_jump(b: int32)
+.decl block_has_cond_jump(b: int32)
+.decl block_has_call(b: int32)
+
+/* R15-R18: block classification */
+block_has_return(b) :- code_in_block(ea, b), return_inst(ea).
+block_has_jump(b) :- code_in_block(ea, b), direct_jump(ea, _).
+block_has_cond_jump(b) :- code_in_block(ea, b), cond_jump(ea, _).
+block_has_call(b) :- code_in_block(ea, b), direct_call(ea, _).
+
+/* ---- Phase 3: Control Flow Graph ---- */
+
+.decl cfg_edge(src: int32, dest: int32)
+.decl call_target(dest: int32)
+
+/* R19-R21: CFG edges from jumps and fall-through */
+cfg_edge(src, dest) :- code_in_block(ea, src), direct_jump(ea, dest), block_head(dest).
+cfg_edge(src, dest) :- code_in_block(ea, src), cond_jump(ea, dest), block_head(dest).
+cfg_edge(src, dest) :- may_fallthrough(ea, dest), code_in_block(ea, src), block_head(dest).
+
+/* R22: call targets */
+call_target(dest) :- direct_call(_, dest), block_head(dest).
+
+/* ---- Phase 4: Reachability & Functions ---- */
+
+.decl reachable(b: int32)
+.decl dead_block(b: int32)
+.decl function_entry(b: int32)
+.decl in_function(b: int32, func: int32)
+
+/* R23-R24: reachability (recursive) */
+reachable(b) :- entry_point(ea), code_in_block(ea, b).
+reachable(dest) :- reachable(src), cfg_edge(src, dest).
+
+/* R25: dead code detection */
+dead_block(b) :- block_head(b), !reachable(b).
+
+/* R26: function entry identification */
+function_entry(b) :- call_target(b), reachable(b).
+
+/* R27-R28: function membership (recursive) */
+in_function(func, func) :- function_entry(func).
+in_function(b, func) :- in_function(src, func), cfg_edge(src, b), !function_entry(b).
