@@ -19,6 +19,8 @@
 #include "bench_util.h"
 
 #include "../wirelog/ffi/dd_ffi.h"
+#include "../wirelog/passes/fusion.h"
+#include "../wirelog/passes/jpp.h"
 #include "../wirelog/wirelog.h"
 
 #include <getopt.h>
@@ -206,6 +208,10 @@ run_pipeline_count(const char *source, uint32_t num_workers, int64_t *out_count)
     wirelog_program_t *prog = wirelog_parse_string(source, &err);
     if (!prog)
         return -1;
+
+    /* Optimize */
+    wl_fusion_apply(prog, NULL);
+    wl_jpp_apply(prog, NULL);
 
     wl_dd_plan_t *dd_plan = NULL;
     int rc = wl_dd_plan_generate(prog, &dd_plan);
