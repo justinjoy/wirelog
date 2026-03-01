@@ -814,6 +814,135 @@ run_csda_workload(const char *data_dir, uint32_t workers, int repeat)
 }
 
 /* ----------------------------------------------------------------
+ * Galen - Medical Ontology Inference (multi-relation workload)
+ * ---------------------------------------------------------------- */
+
+static const char *galen_template
+    = ".decl inputP(x: int32, y: int32)\n"
+      "%s\n"
+      ".decl inputQ(x: int32, y: int32, z: int32)\n"
+      "%s\n"
+      ".decl s(r: int32, p: int32)\n"
+      "%s\n"
+      ".decl rc(r: int32, p: int32, e: int32)\n"
+      "%s\n"
+      ".decl c(y: int32, w: int32, z: int32)\n"
+      "%s\n"
+      ".decl u(w: int32, r: int32, z: int32)\n"
+      "%s\n"
+      ".decl outP(x: int32, z: int32)\n"
+      ".decl outQ(x: int32, y: int32, z: int32)\n"
+      "outP(x, y) :- inputP(x, y).\n"
+      "outQ(x, y, z) :- inputQ(x, y, z).\n"
+      "outP(x, z) :- outP(x, y), outP(y, z).\n"
+      "outQ(x, r, z) :- outP(x, y), outQ(y, r, z).\n"
+      "outP(x, z) :- outP(y, w), u(w, r, z), outQ(x, r, y).\n"
+      "outP(x, z) :- c(y, w, z), outP(x, w), outP(x, y).\n"
+      "outQ(x, q, z) :- outQ(x, r, z), s(r, q).\n"
+      "outQ(x, e, o) :- outQ(x, y, z), rc(y, u, e), outQ(z, u, o).\n";
+
+#define GALEN_NRELS 6
+static const char *galen_rels[GALEN_NRELS]
+    = { "inputP", "inputQ", "s", "rc", "c", "u" };
+static const char *galen_files[GALEN_NRELS]
+    = { "inputP.csv", "inputQ.csv", "s.csv", "rc.csv", "c.csv", "u.csv" };
+
+static int
+run_galen_workload(const char *data_dir, uint32_t workers, int repeat)
+{
+    /* Load 6 CSV files into inline facts buffers */
+    size_t per_buf = SRC_BUFSZ / GALEN_NRELS;
+    char *bufs[GALEN_NRELS];
+    int32_t total_facts = 0;
+
+    for (int i = 0; i < GALEN_NRELS; i++) {
+        bufs[i] = (char *)malloc(per_buf);
+        if (!bufs[i]) {
+            for (int j = 0; j < i; j++)
+                free(bufs[j]);
+            return -1;
+        }
+
+        char path[1024];
+        snprintf(path, sizeof(path), "%s/%s", data_dir, galen_files[i]);
+
+        int32_t count = 0;
+        if (csv_to_inline_facts(path, galen_rels[i], bufs[i], per_buf, &count)
+            != 0) {
+            for (int j = 0; j <= i; j++)
+                free(bufs[j]);
+            return -1;
+        }
+        total_facts += count;
+    }
+
+    /* Build combined source */
+    char *source = (char *)malloc(SRC_BUFSZ);
+    if (!source) {
+        for (int i = 0; i < GALEN_NRELS; i++)
+            free(bufs[i]);
+        return -1;
+    }
+
+    int n = snprintf(source, SRC_BUFSZ, galen_template, bufs[0], bufs[1],
+                     bufs[2], bufs[3], bufs[4], bufs[5]);
+    for (int i = 0; i < GALEN_NRELS; i++)
+        free(bufs[i]);
+
+    if (n < 0 || (size_t)n >= SRC_BUFSZ) {
+        fprintf(stderr, "error: source buffer overflow\n");
+        free(source);
+        return -1;
+    }
+
+    /* Collect timing samples */
+    double *times = (double *)malloc(sizeof(double) * (size_t)repeat);
+    if (!times) {
+        free(source);
+        return -1;
+    }
+
+    int64_t tuples = 0;
+    int64_t peak_rss = -1;
+    int status_ok = 1;
+
+    for (int r = 0; r < repeat; r++) {
+        bench_time_t t0 = bench_time_now();
+        int64_t cnt = 0;
+        int rc = run_pipeline_count(source, workers, &cnt);
+        bench_time_t t1 = bench_time_now();
+
+        times[r] = bench_time_diff_ms(t0, t1);
+
+        if (rc != 0) {
+            status_ok = 0;
+            break;
+        }
+        tuples = cnt;
+    }
+
+    peak_rss = bench_peak_rss_kb();
+
+    if (status_ok) {
+        qsort(times, (size_t)repeat, sizeof(double), bench_cmp_double);
+        double min_ms = times[0];
+        double median_ms = times[repeat / 2];
+        double max_ms = times[repeat - 1];
+
+        printf("galen\t-\t%d\t%u\t%d\t%.1f\t%.1f\t%.1f\t%" PRId64 "\t%" PRId64
+               "\t%s\n",
+               total_facts, workers, repeat, min_ms, median_ms, max_ms,
+               peak_rss, tuples, "OK");
+    } else {
+        printf("galen\t-\t-\t%u\t%d\t-\t-\t-\t-\t-\tFAIL\n", workers, repeat);
+    }
+
+    free(times);
+    free(source);
+    return status_ok ? 0 : -1;
+}
+
+/* ----------------------------------------------------------------
  * Main
  * ---------------------------------------------------------------- */
 
@@ -830,11 +959,12 @@ usage(const char *prog)
     fprintf(
         stderr,
         "Usage: %s --workload "
-        "{tc|reach|cc|sssp|sg|bipartite|andersen|dyck|cspa|csda|all} --data "
+        "{tc|reach|cc|sssp|sg|bipartite|andersen|dyck|cspa|csda|galen|all} "
+        "--data "
         "FILE\n"
         "          [--data-weighted FILE] [--data-andersen DIR]\n"
         "          [--data-dyck DIR] [--data-cspa DIR]\n"
-        "          [--data-csda DIR]\n"
+        "          [--data-csda DIR] [--data-galen DIR]\n"
         "          [--workers N] [--repeat R]\n"
         "\n"
         "  --data FILE           Unweighted edge CSV (src,dst)\n"
@@ -844,7 +974,8 @@ usage(const char *prog)
         "  --data-dyck DIR       Directory with open1/close1/open2/close2 "
         "CSVs\n"
         "  --data-cspa DIR       Directory with assign/dereference CSVs\n"
-        "  --data-csda DIR       Directory with nullEdge/edge CSVs\n",
+        "  --data-csda DIR       Directory with nullEdge/edge CSVs\n"
+        "  --data-galen DIR      Directory with Galen ontology CSVs\n",
         prog);
 }
 
@@ -858,6 +989,7 @@ main(int argc, char **argv)
     const char *data_dyck_path = NULL;
     const char *data_cspa_path = NULL;
     const char *data_csda_path = NULL;
+    const char *data_galen_path = NULL;
     uint32_t workers = 1;
     int repeat = 3;
 
@@ -869,6 +1001,7 @@ main(int argc, char **argv)
         { "data-dyck", required_argument, NULL, 'D' },
         { "data-cspa", required_argument, NULL, 'C' },
         { "data-csda", required_argument, NULL, 'S' },
+        { "data-galen", required_argument, NULL, 'G' },
         { "workers", required_argument, NULL, 'j' },
         { "repeat", required_argument, NULL, 'r' },
         { "help", no_argument, NULL, 'h' },
@@ -876,9 +1009,9 @@ main(int argc, char **argv)
     };
 
     int opt;
-    while (
-        (opt = getopt_long(argc, argv, "w:d:W:A:D:C:S:j:r:h", long_opts, NULL))
-        != -1) {
+    while ((opt
+            = getopt_long(argc, argv, "w:d:W:A:D:C:S:G:j:r:h", long_opts, NULL))
+           != -1) {
         switch (opt) {
         case 'w':
             workload = optarg;
@@ -900,6 +1033,9 @@ main(int argc, char **argv)
             break;
         case 'S':
             data_csda_path = optarg;
+            break;
+        case 'G':
+            data_galen_path = optarg;
             break;
         case 'j':
             workers = (uint32_t)strtoul(optarg, NULL, 10);
@@ -966,6 +1102,12 @@ main(int argc, char **argv)
             return 1;
         }
         rc = run_csda_workload(data_csda_path, workers, repeat);
+    } else if (strcmp(workload, "galen") == 0) {
+        if (!data_galen_path) {
+            fprintf(stderr, "error: galen requires --data-galen DIR\n");
+            return 1;
+        }
+        rc = run_galen_workload(data_galen_path, workers, repeat);
     } else if (strcmp(workload, "all") == 0) {
         for (int i = 0; i < WL_COUNT; i++) {
             if (i == WL_SSSP && !data_weighted_path) {
@@ -994,6 +1136,11 @@ main(int argc, char **argv)
         }
         if (data_csda_path) {
             int r = run_csda_workload(data_csda_path, workers, repeat);
+            if (r != 0)
+                rc = r;
+        }
+        if (data_galen_path) {
+            int r = run_galen_workload(data_galen_path, workers, repeat);
             if (r != 0)
                 rc = r;
         }

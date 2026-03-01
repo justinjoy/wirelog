@@ -1,0 +1,22 @@
+.decl inputP(x: int32, y: int32)
+.input inputP(filename="INPUTP", delimiter=",")
+.decl inputQ(x: int32, y: int32, z: int32)
+.input inputQ(filename="INPUTQ", delimiter=",")
+.decl s(r: int32, p: int32)
+.input s(filename="S", delimiter=",")
+.decl rc(r: int32, p: int32, e: int32)
+.input rc(filename="RC", delimiter=",")
+.decl c(y: int32, w: int32, z: int32)
+.input c(filename="C", delimiter=",")
+.decl u(w: int32, r: int32, z: int32)
+.input u(filename="U", delimiter=",")
+.decl outP(x: int32, z: int32)
+.decl outQ(x: int32, y: int32, z: int32)
+outP(x, y) :- inputP(x, y).
+outQ(x, y, z) :- inputQ(x, y, z).
+outP(x, z) :- outP(x, y), outP(y, z).
+outQ(x, r, z) :- outP(x, y), outQ(y, r, z).
+outP(x, z) :- outP(y, w), u(w, r, z), outQ(x, r, y).
+outP(x, z) :- c(y, w, z), outP(x, w), outP(x, y).
+outQ(x, q, z) :- outQ(x, r, z), s(r, q).
+outQ(x, e, o) :- outQ(x, y, z), rc(y, u, e), outQ(z, u, o).
