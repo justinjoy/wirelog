@@ -6,7 +6,7 @@ bench_flowlog = executable(
   files('../wirelog/cli/driver.c'),
   config_h_file,
   include_directories: [wirelog_inc, wirelog_src_inc],
-  dependencies: wirelog_run_deps,
+  dependencies: wirelog_cli_deps,
   install: false,
 )
 

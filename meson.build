@@ -223,27 +223,21 @@ if dd_option
     'wirelog/ffi/facts_loader.c',
   )
 
-  wirelog_run_deps = [rust_ffi_dep]
+  wirelog_cli_deps = [rust_ffi_dep]
   if threads_option == 'enabled'
-    wirelog_run_deps += threads_dep
+    wirelog_cli_deps += threads_dep
   endif
 
-  # Build target is 'wirelog-cli' to avoid collision with the wirelog/
-  # source subdirectory in the build tree. Installed as 'wirelog'.
-  wirelog_run = executable(
+  wirelog_cli = executable(
     'wirelog-cli',
     files('wirelog/cli/main.c'),
     wirelog_sources,
     wirelog_cli_src,
     config_h_file,
     include_directories: [wirelog_inc, wirelog_src_inc],
-    dependencies: wirelog_run_deps,
+    dependencies: wirelog_cli_deps,
     install: true,
     install_dir: get_option('bindir'),
-  )
-
-  meson.add_install_script('sh', '-c',
-    'mv "$DESTDIR$MESON_INSTALL_PREFIX/bin/wirelog-cli" "$DESTDIR$MESON_INSTALL_PREFIX/bin/wirelog"'
   )
 endif
 
