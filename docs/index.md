@@ -23,9 +23,11 @@ meson compile -C builddir
 ./builddir/wirelog-cli program.dl
 ```
 
-**Hello World** -- transitive closure in 4 lines:
+**Hello World** -- transitive closure:
 
 ```
+.decl edge(x: int32, y: int32)
+.decl tc(x: int32, y: int32)
 edge(1, 2). edge(2, 3). edge(3, 4).
 tc(x, y) :- edge(x, y).
 tc(x, z) :- tc(x, y), edge(y, z).

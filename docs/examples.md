@@ -12,6 +12,10 @@ Complete programs demonstrating wirelog features. Each example can be saved as a
 Find all nodes reachable from a source node.
 
 ```
+.decl edge(x: int32, y: int32)
+.decl source(x: int32)
+.decl reach(x: int32)
+
 edge(1, 2).
 edge(2, 3).
 edge(3, 4).
@@ -40,6 +44,9 @@ reach(6)
 Compute all pairs (x, z) where z is reachable from x.
 
 ```
+.decl edge(x: int32, y: int32)
+.decl tc(x: int32, y: int32)
+
 edge(1, 2).
 edge(2, 3).
 edge(3, 4).
@@ -64,6 +71,9 @@ tc(3, 4)
 Find pairs of nodes at the same depth from shared parents.
 
 ```
+.decl edge(x: int32, y: int32)
+.decl sg(x: int32, y: int32)
+
 edge(1, 2).
 edge(1, 3).
 edge(2, 4).
@@ -80,6 +90,9 @@ Output includes pairs like `sg(2, 3)` and `sg(4, 5)`.
 Find shortest distances from node 1 in a weighted graph.
 
 ```
+.decl edge(x: int32, y: int32, w: int32)
+.decl dist(x: int32, d: int32)
+
 edge(1, 2, 5).
 edge(2, 3, 3).
 edge(1, 3, 10).
@@ -103,6 +116,9 @@ dist(4, 10)
 Label each node with the minimum node ID in its connected component.
 
 ```
+.decl edge(x: int32, y: int32)
+.decl cc(x: int32, c: int32)
+
 edge(1, 2).
 edge(2, 3).
 edge(4, 5).
@@ -127,6 +143,11 @@ cc(5, 4)
 Color a graph with two colors. If any node gets both colors, the graph is not bipartite.
 
 ```
+.decl edge(x: int32, y: int32)
+.decl blue(x: int32)
+.decl red(x: int32)
+.decl not_bipartite(x: int32)
+
 edge(1, 2).
 edge(2, 3).
 edge(3, 4).
@@ -201,6 +222,9 @@ wirelog-cli program.dl
 Count the number of outgoing edges per node.
 
 ```
+.decl edge(x: int32, y: int32)
+.decl out_degree(x: int32, c: int32)
+
 edge(1, 2).
 edge(1, 3).
 edge(1, 4).
@@ -221,6 +245,10 @@ out_degree(2, 1)
 Find nodes with no outgoing edges.
 
 ```
+.decl edge(x: int32, y: int32)
+.decl node(x: int32)
+.decl sink(x: int32)
+
 edge(1, 2).
 edge(2, 3).
 
@@ -241,6 +269,9 @@ sink(3)
 wirelog handles string values via interning.
 
 ```
+.decl knows(x: string, y: string)
+.decl chain(x: string, y: string)
+
 knows("Alice", "Bob").
 knows("Bob", "Carol").
 knows("Carol", "Dave").
