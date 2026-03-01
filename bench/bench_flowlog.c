@@ -1211,6 +1211,195 @@ run_polonius_workload(const char *data_dir, uint32_t workers, int repeat)
 }
 
 /* ----------------------------------------------------------------
+ * DDISASM - Disassembly Analysis (multi-relation workload)
+ * ---------------------------------------------------------------- */
+
+#define DDISASM_NRELS 8
+static const char *ddisasm_rels[DDISASM_NRELS] = {
+    "instruction", "next",        "entry_point", "direct_jump",
+    "cond_jump",   "direct_call", "return_inst", "nop",
+};
+static const char *ddisasm_files[DDISASM_NRELS] = {
+    "instruction.csv", "next.csv",        "entry_point.csv", "direct_jump.csv",
+    "cond_jump.csv",   "direct_call.csv", "return_inst.csv", "nop.csv",
+};
+static const char *ddisasm_decls[DDISASM_NRELS] = {
+    ".decl instruction(ea: int32, sz: int32)\n",
+    ".decl next(ea: int32, next_ea: int32)\n",
+    ".decl entry_point(ea: int32)\n",
+    ".decl direct_jump(ea: int32, dest: int32)\n",
+    ".decl cond_jump(ea: int32, dest: int32)\n",
+    ".decl direct_call(ea: int32, dest: int32)\n",
+    ".decl return_inst(ea: int32)\n",
+    ".decl nop(ea: int32)\n",
+};
+
+/* IDB declarations + 28 rules */
+static const char *ddisasm_rules
+    = ".decl possible_target(ea: int32)\n"
+      ".decl code(ea: int32)\n"
+      ".decl no_fallthrough(ea: int32)\n"
+      ".decl may_fallthrough(ea: int32, next_ea: int32)\n"
+      ".decl code_in_block(ea: int32, block: int32)\n"
+      ".decl block_head(b: int32)\n"
+      ".decl block_has_return(b: int32)\n"
+      ".decl block_has_jump(b: int32)\n"
+      ".decl block_has_cond_jump(b: int32)\n"
+      ".decl block_has_call(b: int32)\n"
+      ".decl cfg_edge(src: int32, dest: int32)\n"
+      ".decl call_target(dest: int32)\n"
+      ".decl reachable(b: int32)\n"
+      ".decl dead_block(b: int32)\n"
+      ".decl function_entry(b: int32)\n"
+      ".decl in_function(b: int32, func: int32)\n"
+      /* Phase 1: Code Discovery (mutual recursion) */
+      "possible_target(ea) :- entry_point(ea).\n"
+      "possible_target(dest) :- direct_jump(_, dest).\n"
+      "possible_target(dest) :- cond_jump(_, dest).\n"
+      "possible_target(dest) :- direct_call(_, dest).\n"
+      "possible_target(next_ea) :- cond_jump(ea, _), next(ea, next_ea).\n"
+      "possible_target(next_ea) :- direct_call(ea, _), next(ea, next_ea).\n"
+      "code(ea) :- possible_target(ea), instruction(ea, _).\n"
+      "code(next_ea) :- may_fallthrough(_, next_ea).\n"
+      "no_fallthrough(ea) :- return_inst(ea).\n"
+      "no_fallthrough(ea) :- direct_jump(ea, _).\n"
+      "may_fallthrough(ea, next_ea) :- code_in_block(ea, _), "
+      "next(ea, next_ea), !no_fallthrough(ea).\n"
+      "code_in_block(ea, ea) :- possible_target(ea), code(ea).\n"
+      "code_in_block(ea, block) :- code(ea), may_fallthrough(prev, ea), "
+      "code_in_block(prev, block), !possible_target(ea).\n"
+      "block_head(b) :- code_in_block(_, b).\n"
+      /* Phase 2: Block Properties */
+      "block_has_return(b) :- code_in_block(ea, b), return_inst(ea).\n"
+      "block_has_jump(b) :- code_in_block(ea, b), direct_jump(ea, _).\n"
+      "block_has_cond_jump(b) :- code_in_block(ea, b), cond_jump(ea, _).\n"
+      "block_has_call(b) :- code_in_block(ea, b), direct_call(ea, _).\n"
+      /* Phase 3: Control Flow Graph */
+      "cfg_edge(src, dest) :- code_in_block(ea, src), "
+      "direct_jump(ea, dest), block_head(dest).\n"
+      "cfg_edge(src, dest) :- code_in_block(ea, src), "
+      "cond_jump(ea, dest), block_head(dest).\n"
+      "cfg_edge(src, dest) :- may_fallthrough(ea, dest), "
+      "code_in_block(ea, src), block_head(dest).\n"
+      "call_target(dest) :- direct_call(_, dest), block_head(dest).\n"
+      /* Phase 4: Reachability & Functions */
+      "reachable(b) :- entry_point(ea), code_in_block(ea, b).\n"
+      "reachable(dest) :- reachable(src), cfg_edge(src, dest).\n"
+      "dead_block(b) :- block_head(b), !reachable(b).\n"
+      "function_entry(b) :- call_target(b), reachable(b).\n"
+      "in_function(func, func) :- function_entry(func).\n"
+      "in_function(b, func) :- in_function(src, func), cfg_edge(src, b), "
+      "!function_entry(b).\n";
+
+static int
+run_ddisasm_workload(const char *data_dir, uint32_t workers, int repeat)
+{
+    /* Load 8 CSV files into inline facts buffers */
+    size_t per_buf = SRC_BUFSZ / DDISASM_NRELS;
+    char *bufs[DDISASM_NRELS];
+    int32_t total_facts = 0;
+
+    for (int i = 0; i < DDISASM_NRELS; i++) {
+        bufs[i] = (char *)malloc(per_buf);
+        if (!bufs[i]) {
+            for (int j = 0; j < i; j++)
+                free(bufs[j]);
+            return -1;
+        }
+
+        char path[1024];
+        snprintf(path, sizeof(path), "%s/%s", data_dir, ddisasm_files[i]);
+
+        int32_t count = 0;
+        if (csv_to_inline_facts(path, ddisasm_rels[i], bufs[i], per_buf, &count)
+            != 0) {
+            for (int j = 0; j <= i; j++)
+                free(bufs[j]);
+            return -1;
+        }
+        total_facts += count;
+    }
+
+    /* Build source: decl + facts per EDB, then IDB rules */
+    char *source = (char *)malloc(SRC_BUFSZ);
+    if (!source) {
+        for (int i = 0; i < DDISASM_NRELS; i++)
+            free(bufs[i]);
+        return -1;
+    }
+
+    size_t pos = 0;
+    for (int i = 0; i < DDISASM_NRELS; i++) {
+        int n = snprintf(source + pos, SRC_BUFSZ - pos, "%s%s\n",
+                         ddisasm_decls[i], bufs[i]);
+        if (n < 0 || pos + (size_t)n >= SRC_BUFSZ) {
+            fprintf(stderr, "error: source buffer overflow\n");
+            for (int j = 0; j < DDISASM_NRELS; j++)
+                free(bufs[j]);
+            free(source);
+            return -1;
+        }
+        pos += (size_t)n;
+    }
+    for (int i = 0; i < DDISASM_NRELS; i++)
+        free(bufs[i]);
+
+    /* Append IDB declarations and rules */
+    int n = snprintf(source + pos, SRC_BUFSZ - pos, "%s", ddisasm_rules);
+    if (n < 0 || pos + (size_t)n >= SRC_BUFSZ) {
+        fprintf(stderr, "error: source buffer overflow\n");
+        free(source);
+        return -1;
+    }
+
+    /* Collect timing samples */
+    double *times = (double *)malloc(sizeof(double) * (size_t)repeat);
+    if (!times) {
+        free(source);
+        return -1;
+    }
+
+    int64_t tuples = 0;
+    int64_t peak_rss = -1;
+    int status_ok = 1;
+
+    for (int r = 0; r < repeat; r++) {
+        bench_time_t t0 = bench_time_now();
+        int64_t cnt = 0;
+        int rc = run_pipeline_count(source, workers, &cnt);
+        bench_time_t t1 = bench_time_now();
+
+        times[r] = bench_time_diff_ms(t0, t1);
+
+        if (rc != 0) {
+            status_ok = 0;
+            break;
+        }
+        tuples = cnt;
+    }
+
+    peak_rss = bench_peak_rss_kb();
+
+    if (status_ok) {
+        qsort(times, (size_t)repeat, sizeof(double), bench_cmp_double);
+        double min_ms = times[0];
+        double median_ms = times[repeat / 2];
+        double max_ms = times[repeat - 1];
+
+        printf("ddisasm\t-\t%d\t%u\t%d\t%.1f\t%.1f\t%.1f\t%" PRId64 "\t%" PRId64
+               "\t%s\n",
+               total_facts, workers, repeat, min_ms, median_ms, max_ms,
+               peak_rss, tuples, "OK");
+    } else {
+        printf("ddisasm\t-\t-\t%u\t%d\t-\t-\t-\t-\t-\tFAIL\n", workers, repeat);
+    }
+
+    free(times);
+    free(source);
+    return status_ok ? 0 : -1;
+}
+
+/* ----------------------------------------------------------------
  * Main
  * ---------------------------------------------------------------- */
 
@@ -1228,11 +1417,11 @@ usage(const char *prog)
         stderr,
         "Usage: %s --workload "
         "{tc|reach|cc|sssp|sg|bipartite|andersen|dyck|cspa|csda|galen|"
-        "polonius|all} --data FILE\n"
+        "polonius|ddisasm|all} --data FILE\n"
         "          [--data-weighted FILE] [--data-andersen DIR]\n"
         "          [--data-dyck DIR] [--data-cspa DIR]\n"
         "          [--data-csda DIR] [--data-galen DIR]\n"
-        "          [--data-polonius DIR]\n"
+        "          [--data-polonius DIR] [--data-ddisasm DIR]\n"
         "          [--workers N] [--repeat R]\n"
         "\n"
         "  --data FILE           Unweighted edge CSV (src,dst)\n"
@@ -1245,7 +1434,8 @@ usage(const char *prog)
         "  --data-csda DIR       Directory with nullEdge/edge CSVs\n"
         "  --data-galen DIR      Directory with Galen ontology CSVs\n"
         "  --data-polonius DIR   Directory with Polonius borrow checker "
-        "CSVs\n",
+        "CSVs\n"
+        "  --data-ddisasm DIR    Directory with DDISASM disassembly CSVs\n",
         prog);
 }
 
@@ -1261,6 +1451,7 @@ main(int argc, char **argv)
     const char *data_csda_path = NULL;
     const char *data_galen_path = NULL;
     const char *data_polonius_path = NULL;
+    const char *data_ddisasm_path = NULL;
     uint32_t workers = 1;
     int repeat = 3;
 
@@ -1274,6 +1465,7 @@ main(int argc, char **argv)
         { "data-csda", required_argument, NULL, 'S' },
         { "data-galen", required_argument, NULL, 'G' },
         { "data-polonius", required_argument, NULL, 'P' },
+        { "data-ddisasm", required_argument, NULL, 'I' },
         { "workers", required_argument, NULL, 'j' },
         { "repeat", required_argument, NULL, 'r' },
         { "help", no_argument, NULL, 'h' },
@@ -1281,8 +1473,8 @@ main(int argc, char **argv)
     };
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "w:d:W:A:D:C:S:G:P:j:r:h", long_opts,
-                              NULL))
+    while ((opt = getopt_long(argc, argv, "w:d:W:A:D:C:S:G:P:I:j:r:h",
+                              long_opts, NULL))
            != -1) {
         switch (opt) {
         case 'w':
@@ -1311,6 +1503,9 @@ main(int argc, char **argv)
             break;
         case 'P':
             data_polonius_path = optarg;
+            break;
+        case 'I':
+            data_ddisasm_path = optarg;
             break;
         case 'j':
             workers = (uint32_t)strtoul(optarg, NULL, 10);
@@ -1389,6 +1584,12 @@ main(int argc, char **argv)
             return 1;
         }
         rc = run_polonius_workload(data_polonius_path, workers, repeat);
+    } else if (strcmp(workload, "ddisasm") == 0) {
+        if (!data_ddisasm_path) {
+            fprintf(stderr, "error: ddisasm requires --data-ddisasm DIR\n");
+            return 1;
+        }
+        rc = run_ddisasm_workload(data_ddisasm_path, workers, repeat);
     } else if (strcmp(workload, "all") == 0) {
         for (int i = 0; i < WL_COUNT; i++) {
             if (i == WL_SSSP && !data_weighted_path) {
@@ -1427,6 +1628,11 @@ main(int argc, char **argv)
         }
         if (data_polonius_path) {
             int r = run_polonius_workload(data_polonius_path, workers, repeat);
+            if (r != 0)
+                rc = r;
+        }
+        if (data_ddisasm_path) {
+            int r = run_ddisasm_workload(data_ddisasm_path, workers, repeat);
             if (r != 0)
                 rc = r;
         }
