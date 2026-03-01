@@ -713,9 +713,14 @@ optimize_chain(wirelog_ir_node_t *join_root, char **head_vars,
     free(joins);
     free(order);
 
-    /* Insert intermediate projections (works on both reordered and original) */
-    result.projections_inserted
-        = insert_projections(join_root, head_vars, head_var_count);
+    /* TODO: intermediate projection insertion is disabled pending
+     * dd_plan column-index propagation fix (causes index-out-of-bounds
+     * in the DD executor for multi-atom rules).  Join reordering alone
+     * is active and provides the primary optimisation benefit.
+     */
+    (void)insert_projections; /* suppress unused warning */
+    (void)head_vars;
+    (void)head_var_count;
 
     return result;
 }

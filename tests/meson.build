@@ -164,6 +164,7 @@ test_cli_exe = executable(
   ffi_src,
   facts_loader_src,
   csv_src,
+  optimizer_src,
   cli_src,
   dependencies: [rust_ffi_dep],
   include_directories: [wirelog_inc, wirelog_src_inc],

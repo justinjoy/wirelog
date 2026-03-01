@@ -411,6 +411,90 @@ translate_ir_node(const wirelog_ir_node_t *node, wl_dd_relation_plan_t *rp,
         break;
     }
 
+    case WIRELOG_IR_FLATMAP: {
+        /* FLATMAP = fused FILTER + PROJECT (created by fusion pass).
+         * Emit a FILTER op first, then a MAP op. */
+
+        /* 1. FILTER */
+        if (node->filter_expr) {
+            wl_dd_op_t filt_op;
+            memset(&filt_op, 0, sizeof(filt_op));
+            filt_op.op = WL_DD_FILTER;
+            filt_op.filter_expr = wl_ir_expr_clone(node->filter_expr);
+            if (!filt_op.filter_expr)
+                return -1;
+            if (ctx->count > 0)
+                rewrite_expr_vars(filt_op.filter_expr,
+                                  (const char *const *)ctx->names, ctx->count);
+            int rc = relation_plan_add_op(rp, filt_op);
+            if (rc != 0) {
+                dd_op_free_fields(&filt_op);
+                return rc;
+            }
+        }
+
+        /* 2. MAP (same logic as PROJECT) */
+        op.op = WL_DD_MAP;
+        op.project_count = node->project_count;
+        if (node->project_count > 0 && node->project_indices) {
+            op.project_indices
+                = (uint32_t *)malloc(node->project_count * sizeof(uint32_t));
+            if (!op.project_indices)
+                return -1;
+            memcpy(op.project_indices, node->project_indices,
+                   node->project_count * sizeof(uint32_t));
+        } else if (node->project_count > 0 && node->project_exprs
+                   && ctx->count > 0) {
+            bool has_complex = false;
+            for (uint32_t i = 0; i < node->project_count; i++) {
+                wl_ir_expr_t *e = node->project_exprs[i];
+                if (e && e->type != WL_IR_EXPR_VAR) {
+                    has_complex = true;
+                    break;
+                }
+            }
+
+            op.project_indices
+                = (uint32_t *)malloc(node->project_count * sizeof(uint32_t));
+            if (!op.project_indices)
+                return -1;
+
+            if (has_complex) {
+                op.project_exprs = (wl_ir_expr_t **)calloc(
+                    node->project_count, sizeof(wl_ir_expr_t *));
+                if (!op.project_exprs) {
+                    free(op.project_indices);
+                    return -1;
+                }
+            }
+
+            for (uint32_t i = 0; i < node->project_count; i++) {
+                wl_ir_expr_t *e = node->project_exprs[i];
+                op.project_indices[i] = i;
+
+                if (e && e->type == WL_IR_EXPR_VAR && e->var_name) {
+                    for (uint32_t j = 0; j < ctx->count; j++) {
+                        if (ctx->names[j]
+                            && strcmp(e->var_name, ctx->names[j]) == 0) {
+                            op.project_indices[i] = j;
+                            break;
+                        }
+                    }
+                } else if (e && e->type != WL_IR_EXPR_VAR && has_complex) {
+                    op.project_exprs[i] = wl_ir_expr_clone(e);
+                    if (!op.project_exprs[i]) {
+                        dd_op_free_fields(&op);
+                        return -1;
+                    }
+                    rewrite_expr_vars(op.project_exprs[i],
+                                      (const char *const *)ctx->names,
+                                      ctx->count);
+                }
+            }
+        }
+        break;
+    }
+
     case WIRELOG_IR_UNION: {
         /* UNION -> CONCAT + CONSOLIDATE (two ops) */
         wl_dd_op_t concat_op;

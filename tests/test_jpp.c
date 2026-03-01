@@ -672,17 +672,12 @@ test_jpp_antijoin_preserved(void)
 static void
 test_jpp_intermediate_projection(void)
 {
-    TEST("jpp: intermediate projection drops unused columns");
+    TEST("jpp: intermediate projection disabled (reorder-only mode)");
 
     /*
-     * path(x, z) :- a(x, y), b(y, w), c(w, z).
-     *
-     * After JOIN(a, b): result has {x, y, w}.
-     * For the next join with c, we need w (join key) and x (head).
-     * Variable y is dead after this point.
-     * JPP should insert a PROJECT to drop y.
-     *
-     * projections_inserted should be >= 1.
+     * Projection insertion is currently disabled pending dd_plan
+     * column-index propagation fix.  This test verifies that JPP
+     * succeeds without inserting any projections.
      */
     wirelog_error_t err;
     wirelog_program_t *prog
@@ -707,27 +702,8 @@ test_jpp_intermediate_projection(void)
         return;
     }
 
-    if (stats.projections_inserted == 0) {
-        FAIL("expected projections_inserted > 0");
-        wirelog_program_free(prog);
-        return;
-    }
-
-    /* Verify: a PROJECT node exists between JOIN nodes in the tree */
-    wirelog_ir_node_t *ir = find_relation_ir(prog, "path");
-    if (!ir) {
-        FAIL("no IR for 'path'");
-        wirelog_program_free(prog);
-        return;
-    }
-
-    uint32_t proj_count = count_type_in_tree(ir, WIRELOG_IR_PROJECT);
-    /* There should be at least 2 PROJECTs: head projection + 1 intermediate */
-    if (proj_count < 2) {
-        char buf[64];
-        snprintf(buf, sizeof(buf), "expected >= 2 PROJECT nodes, got %u",
-                 proj_count);
-        FAIL(buf);
+    if (stats.projections_inserted != 0) {
+        FAIL("expected projections_inserted == 0 (disabled)");
         wirelog_program_free(prog);
         return;
     }
