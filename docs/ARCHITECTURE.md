@@ -507,7 +507,7 @@ typedef struct {
 | **Build Integration** | Meson + Cargo | ✅ Implemented | `-Ddd=true`, clippy/fmt/test targets |
 | **CLI Driver** | wirelog-cli binary | ✅ Implemented | .dl file execution, `--workers` flag, 8/8 tests |
 | **Memory** | nanoarrow (mid-term) | Planned | Columnar, Arrow interop |
-| **Allocator** | Region/Arena + system malloc | Planned (Phase 2) | jemalloc evaluated and deferred; see §4.1 ADR |
+| **Allocator** | Region/Arena + system malloc | Planned (Phase 2) | See [Discussion #58](https://github.com/justinjoy/wirelog/discussions/58) |
 | **Threading** | Optional pthreads | Planned | Single-threaded default |
 | **I/O** | CSV + Arrow IPC | Planned | Standard formats |
 
@@ -531,7 +531,6 @@ typedef struct {
 - [ ] Allocation category separation: `WL_ALLOC_INTERNAL` (AST/IR) vs `WL_ALLOC_FFI_TRANSFER` (DD boundary)
 - [ ] Dynamic allocation vs fixed allocation
 - [ ] Memory leak detection strategy
-- [ ] jemalloc re-evaluation condition: Phase 2 benchmark shows system malloc as bottleneck in enterprise path
 
 ### Backend Abstraction
 - [ ] RelationBuffer and Arrow schema relationship
@@ -549,55 +548,6 @@ typedef struct {
 - [ ] Task scheduling strategy
 
 ---
-
-### 4.1 Allocator Decision Record (ADR): jemalloc Evaluation
-
-**Date**: 2026-02-23
-**Status**: Decided — jemalloc not adopted for Phase 0-1
-**Participants**: Planner, Architect, Critic (consensus planning)
-
-**Context**:
-wirelog targets both embedded (ARM/RISC-V, <256MB) and enterprise (x86-64, GB-scale) environments.
-Current C11 codebase has ~35 allocation calls (malloc/calloc/realloc) across 5 files (parser, AST, IR, program).
-Memory-intensive execution is delegated to Differential Dataflow (Rust) via FFI.
-
-**Decision**: Do not adopt jemalloc in Phase 0-1. Design Region/Arena allocator after Phase 2 benchmarks.
-
-**Rationale**:
-
-1. **C11 side handles only query-scale allocations**: wirelog C11 manages parser/optimizer memory only.
-   Data-scale (GB) memory is managed by DD's Rust allocator. jemalloc provides no practical benefit
-   for the C11 layer.
-
-2. **Embedded target conflict**: jemalloc's ~2MB metadata overhead directly conflicts with the
-   500KB-2MB standalone binary target for embedded deployments.
-
-3. **Arena/Region is a better fit**: AST and IR follow a clear "create → use → bulk-free" lifecycle
-   (3 distinct phases: parsing, IR conversion, program metadata). This pattern is ideal for
-   Region-based allocation, not general-purpose allocator replacement.
-
-4. **Premature optimization**: 35 allocation calls in Phase 0 are not a bottleneck. Optimizer passes
-   (Phase 1) will introduce new allocation patterns that must stabilize before designing the allocator.
-
-**Alternatives Considered**:
-
-| Alternative | Verdict | Reason |
-|-------------|---------|--------|
-| jemalloc | Deferred | ~2MB overhead, no benefit for query-scale allocations |
-| mimalloc | Deferred | Smaller than jemalloc but same fundamental mismatch |
-| Self-built Arena | **Preferred** (Phase 2) | Matches AST/IR lifecycle; simplifies error-path cleanup |
-| Region-based allocator | **Preferred** (Phase 2) | Hierarchical regions map to parsing/IR/program phases |
-| System malloc (current) | **Retain** (Phase 0-1) | Sufficient for current scale; no bottleneck evidence |
-| `wl_allocator_t` interface | Phase 1 late | Define after optimizer allocation patterns stabilize |
-| Meson build-time selection | Phase 2+ | `option('allocator', ...)` following existing `embedded`/`threads` pattern |
-
-**Re-evaluation Trigger**: If Phase 2 benchmarks show system malloc as a measurable bottleneck
-in the enterprise path, reconsider jemalloc or mimalloc for that target only.
-
-**Open Items from This Review**:
-- DD FFI memory ownership (copy vs transfer vs shared buffer) affects allocator category design
-- `strdup_safe` exists as 3 independent static copies — consolidate into shared internal utility
-- `WIRELOG_EMBEDDED` build macro is defined but not yet used in C source `#ifdef` guards
 
 ---
 
@@ -622,7 +572,7 @@ in the enterprise path, reconsider jemalloc or mimalloc for that target only.
 |------|---------|---------|
 | 2026-02-22 | 0.1 | Initial draft, layering definition |
 | 2026-02-22 | 0.2 | Phase 0 parser implementation status update (91/91 tests passing) |
-| 2026-02-23 | 0.3 | Add Allocator Decision Record (§4.1): jemalloc evaluated and deferred |
+| 2026-02-23 | 0.3 | Allocator ADR moved to [Discussion #58](https://github.com/justinjoy/wirelog/discussions/58) |
 | 2026-02-24 | 0.4 | IR representation complete (56 tests); Stratification & SCC complete (20 tests); 167 total |
 | 2026-02-24 | 0.5 | DD Plan Translator complete (19 tests); all 8 IR→DD translations; 186 total |
 | 2026-02-24 | 0.6 | Phase 1 Logic Fusion complete (14 tests); in-place FILTER+PROJECT→FLATMAP; 200 total |

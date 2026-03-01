@@ -508,7 +508,7 @@ typedef struct {
 | **빌드 통합** | Meson + Cargo | ✅ 구현됨 | `-Ddd=true`, clippy/fmt/test 타겟 |
 | **CLI Driver** | wirelog-cli 바이너리 | ✅ 구현됨 | .dl 파일 실행, `--workers` 플래그, 8/8 테스트 |
 | **메모리** | nanoarrow (중기) | 계획 | Columnar, Arrow interop |
-| **Allocator** | Region/Arena + system malloc | 계획 (Phase 2) | jemalloc 검토 후 보류; §4.1 ADR 참조 |
+| **Allocator** | Region/Arena + system malloc | 계획 (Phase 2) | [Discussion #58](https://github.com/justinjoy/wirelog/discussions/58) 참조 |
 | **Threading** | Optional pthreads | 계획 | Single-threaded 기본 |
 | **I/O** | CSV + Arrow IPC | 계획 | 표준 포맷 |
 
@@ -532,7 +532,6 @@ typedef struct {
 - [ ] 할당 카테고리 분리: `WL_ALLOC_INTERNAL` (AST/IR) vs `WL_ALLOC_FFI_TRANSFER` (DD 경계)
 - [ ] 동적 할당 vs 고정 할당
 - [ ] 메모리 누수 감지 전략
-- [ ] jemalloc 재검토 조건: Phase 2 벤치마크에서 시스템 malloc이 엔터프라이즈 경로의 병목으로 확인될 경우
 
 ### Backend 추상화
 - [ ] RelationBuffer와 Arrow schema의 관계
@@ -550,55 +549,6 @@ typedef struct {
 - [ ] 작업 스케줄링 전략
 
 ---
-
-### 4.1 Allocator 결정 기록 (ADR): jemalloc 검토
-
-**날짜**: 2026-02-23
-**상태**: 결정됨 — Phase 0-1에서 jemalloc 비도입
-**참여자**: Planner, Architect, Critic (합의 기반 계획)
-
-**배경**:
-wirelog는 임베디드(ARM/RISC-V, <256MB)와 엔터프라이즈(x86-64, GB 규모) 환경을 모두 지원합니다.
-현재 C11 코드베이스는 5개 파일(parser, AST, IR, program)에서 약 35회의 할당 호출(malloc/calloc/realloc)을 수행합니다.
-메모리 집약적 실행은 FFI를 통해 Differential Dataflow(Rust)에 위임됩니다.
-
-**결정**: Phase 0-1에서 jemalloc을 도입하지 않습니다. Phase 2 벤치마크 이후 Region/Arena allocator를 설계합니다.
-
-**근거**:
-
-1. **C11 측은 쿼리 규모 할당만 담당**: wirelog C11은 파서/옵티마이저 메모리만 관리합니다.
-   데이터 규모(GB)의 메모리는 DD의 Rust allocator가 관리하므로, jemalloc은 C11 레이어에서
-   실질적 이점이 없습니다.
-
-2. **임베디드 타겟과 충돌**: jemalloc의 ~2MB 메타데이터 오버헤드는 임베디드 배포의
-   500KB-2MB 독립 바이너리 목표와 직접 충돌합니다.
-
-3. **Arena/Region이 더 적합**: AST와 IR은 명확한 "생성 → 사용 → 일괄 해제" 생애주기를
-   따릅니다(파싱, IR 변환, 프로그램 메타데이터의 3단계). 이 패턴은 범용 allocator 교체가
-   아닌 Region 기반 할당에 이상적입니다.
-
-4. **시기상조 최적화**: Phase 0의 35회 할당 호출은 병목이 아닙니다. 옵티마이저 패스(Phase 1)가
-   새로운 할당 패턴을 도입할 것이며, allocator 설계 전에 이 패턴이 안정화되어야 합니다.
-
-**검토된 대안**:
-
-| 대안 | 판정 | 이유 |
-|------|------|------|
-| jemalloc | 보류 | ~2MB 오버헤드, 쿼리 규모 할당에 이점 없음 |
-| mimalloc | 보류 | jemalloc보다 작지만 근본적 부적합은 동일 |
-| 자체 Arena 구현 | **선호** (Phase 2) | AST/IR 생애주기에 부합; 에러 경로 정리 단순화 |
-| Region 기반 allocator | **선호** (Phase 2) | 계층적 Region이 파싱/IR/프로그램 단계에 대응 |
-| 시스템 malloc (현재) | **유지** (Phase 0-1) | 현재 규모에 충분; 병목 증거 없음 |
-| `wl_allocator_t` 인터페이스 | Phase 1 후반 | 옵티마이저 할당 패턴 안정화 후 정의 |
-| Meson 빌드 시점 선택 | Phase 2+ | 기존 `embedded`/`threads` 옵션 패턴을 따르는 `option('allocator', ...)` |
-
-**재검토 조건**: Phase 2 벤치마크에서 시스템 malloc이 엔터프라이즈 경로에서 측정 가능한
-병목으로 확인되면, 해당 타겟에 한해 jemalloc 또는 mimalloc을 재검토합니다.
-
-**이번 리뷰에서 도출된 미결 항목**:
-- DD FFI 메모리 소유권(copy vs transfer vs shared buffer)이 allocator 카테고리 설계에 영향
-- `strdup_safe`가 3곳에 독립적으로 정의되어 있음 — 공유 내부 유틸리티로 통합 필요
-- `WIRELOG_EMBEDDED` 빌드 매크로가 정의되어 있으나 C 소스의 `#ifdef` 가드에서 아직 미사용
 
 ---
 
@@ -623,7 +573,7 @@ wirelog는 임베디드(ARM/RISC-V, <256MB)와 엔터프라이즈(x86-64, GB 규
 |------|------|------|
 | 2026-02-22 | 0.1 | 초안 작성, 레이어링 정의 |
 | 2026-02-22 | 0.2 | Phase 0 parser 구현 상태 업데이트 (91/91 tests passing) |
-| 2026-02-23 | 0.3 | Allocator 결정 기록(§4.1 ADR) 추가: jemalloc 검토 후 보류 결정 |
+| 2026-02-23 | 0.3 | Allocator ADR을 [Discussion #58](https://github.com/justinjoy/wirelog/discussions/58)로 이동 |
 | 2026-02-24 | 0.4 | IR 표현 완료 (56 tests); Stratification & SCC 완료 (20 tests); 167 total |
 | 2026-02-24 | 0.5 | DD Plan Translator 완료 (19 tests); 전체 8가지 IR→DD 변환; 186 total |
 | 2026-02-24 | 0.6 | Phase 1 Logic Fusion 완료 (14 tests); in-place FILTER+PROJECT→FLATMAP; 200 total |
