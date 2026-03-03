@@ -22,17 +22,17 @@ extern "C" {
 #include "lexer.h"
 
 /**
- * wl_parse_string:
+ * wl_parser_parse_string:
  * @source: Datalog program text
  * @error_buf: (out) (optional): Buffer for error message
  * @error_buf_size: Size of error buffer
  *
  * Parse a Datalog program from a string.
  *
- * Returns: (transfer full): AST root (WL_NODE_PROGRAM), or NULL on error
+ * Returns: (transfer full): AST root (WL_PARSER_AST_NODE_PROGRAM), or NULL on error
  */
-wl_ast_node_t *
-wl_parse_string(const char *source, char *error_buf, size_t error_buf_size);
+wl_parser_ast_node_t *
+wl_parser_parse_string(const char *source, char *error_buf, size_t error_buf_size);
 
 #ifdef __cplusplus
 }
