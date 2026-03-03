@@ -35,6 +35,7 @@ use crate::dataflow::build_relation_plan;
 use crate::plan_reader::SafePlan;
 
 type Row = Vec<i64>;
+type SnapshotState = HashMap<String, HashMap<Row, isize>>;
 
 /* ======================================================================== */
 /* Delta Callback                                                           */
@@ -59,6 +60,8 @@ unsafe impl Sync for DeltaCallbackInfo {}
 enum SessionCommand {
     Insert(String, Vec<Row>),
     Step(mpsc::Sender<Result<(), String>>),
+    Remove(String, Vec<Row>),
+    Snapshot(mpsc::Sender<Result<HashMap<String, Vec<Row>>, String>>),
     Shutdown,
 }
 
@@ -86,6 +89,7 @@ impl DdSession {
         let cmd_rx = Arc::new(Mutex::new(cmd_rx));
         let delta_callback: Arc<Mutex<Option<DeltaCallbackInfo>>> = Arc::new(Mutex::new(None));
         let delta_cb = delta_callback.clone();
+        let snapshot_worker: Arc<Mutex<SnapshotState>> = Arc::new(Mutex::new(HashMap::new()));
 
         let worker_thread = thread::spawn(move || {
             timely::execute_directly(move |worker| {
@@ -112,10 +116,20 @@ impl DdSession {
 
                             let rel_name = rel_plan.name.clone();
                             let delta_cb_clone = delta_cb.clone();
+                            let state_clone = snapshot_worker.clone();
 
                             coll.inspect(move |&(ref row, _time, diff)| {
                                 if diff == 0 {
                                     return;
+                                }
+                                {
+                                    let mut state = state_clone.lock().unwrap();
+                                    let rel_state = state.entry(rel_name.clone()).or_default();
+                                    let entry = rel_state.entry(row.clone()).or_insert(0);
+                                    *entry += diff;
+                                    if *entry == 0 {
+                                        rel_state.remove(row);
+                                    }
                                 }
                                 let cb_guard = delta_cb_clone.lock().unwrap();
                                 if let Some(ref cb_info) = *cb_guard {
@@ -151,6 +165,13 @@ impl DdSession {
                                 }
                             }
                         }
+                        Ok(SessionCommand::Remove(rel, rows)) => {
+                            if let Some(input) = inputs.get_mut(&rel) {
+                                for row in rows {
+                                    input.remove(row);
+                                }
+                            }
+                        }
                         Ok(SessionCommand::Step(reply_tx)) => {
                             for input in inputs.values_mut() {
                                 input.advance_to(next_epoch);
@@ -159,6 +180,26 @@ impl DdSession {
                             worker.step_while(|| probe.less_than(&next_epoch));
                             next_epoch += 1;
                             let _ = reply_tx.send(Ok(()));
+                        }
+                        Ok(SessionCommand::Snapshot(reply_tx)) => {
+                            let state = snapshot_worker.lock().unwrap();
+                            let result: HashMap<String, Vec<Row>> = state
+                                .iter()
+                                .map(|(rel, rows)| {
+                                    let live: Vec<Row> = rows
+                                        .iter()
+                                        .filter_map(|(row, mult)| {
+                                            if *mult > 0 {
+                                                Some(row.clone())
+                                            } else {
+                                                None
+                                            }
+                                        })
+                                        .collect();
+                                    (rel.clone(), live)
+                                })
+                                .collect();
+                            let _ = reply_tx.send(Ok(result));
                         }
                         Ok(SessionCommand::Shutdown) | Err(_) => break,
                     }
@@ -189,6 +230,24 @@ impl DdSession {
         reply_rx
             .recv()
             .map_err(|_| "failed to receive step result".to_string())?
+    }
+
+    /// Remove rows from an EDB relation (retraction).
+    pub fn session_remove(&self, relation: String, rows: Vec<Row>) -> Result<(), String> {
+        self.cmd_tx
+            .send(SessionCommand::Remove(relation, rows))
+            .map_err(|_| "session worker thread has exited".to_string())
+    }
+
+    /// Return the current state of all output relations.
+    pub fn session_snapshot(&self) -> Result<HashMap<String, Vec<Row>>, String> {
+        let (reply_tx, reply_rx) = mpsc::channel();
+        self.cmd_tx
+            .send(SessionCommand::Snapshot(reply_tx))
+            .map_err(|_| "session worker thread has exited".to_string())?;
+        reply_rx
+            .recv()
+            .map_err(|_| "failed to receive snapshot result".to_string())?
     }
 
     /// Set or clear the delta callback.

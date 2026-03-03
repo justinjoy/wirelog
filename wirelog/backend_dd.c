@@ -108,13 +108,12 @@ static int
 dd_session_remove(wl_session_t *session, const char *relation,
                   const int64_t *data, uint32_t num_rows, uint32_t num_cols)
 {
-    /* Insert-only MVP: remove is not supported */
-    (void)session;
-    (void)relation;
-    (void)data;
-    (void)num_rows;
-    (void)num_cols;
-    return -1;
+    wl_dd_session_t *s = (wl_dd_session_t *)session;
+    if (!s || !s->persistent)
+        return -1;
+
+    return wl_dd_session_remove(s->persistent, relation, data, num_rows,
+                                num_cols);
 }
 
 static int
@@ -144,11 +143,11 @@ dd_session_snapshot(wl_session_t *session, wl_on_tuple_fn callback,
                     void *user_data)
 {
     wl_dd_session_t *s = (wl_dd_session_t *)session;
-    if (!s || !s->worker || !s->plan)
+    if (!s || !s->persistent)
         return -1;
 
-    return wl_dd_execute_cb(s->plan, s->worker, (wl_dd_on_tuple_fn)callback,
-                            user_data);
+    return wl_dd_session_snapshot(s->persistent, (wl_dd_on_tuple_fn)callback,
+                                  user_data);
 }
 
 static const wl_compute_backend_t dd_backend_vtable = {

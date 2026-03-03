@@ -78,6 +78,32 @@ collect_delta(const char *relation, const int64_t *row, uint32_t ncols,
 }
 
 /* ======================================================================== */
+/* Tuple Collector (snapshot - no diff)                                    */
+/* ======================================================================== */
+
+typedef struct {
+    int count;
+    char relations[MAX_DELTAS][64];
+    int64_t rows[MAX_DELTAS][MAX_COLS];
+    uint32_t ncols[MAX_DELTAS];
+} tuple_collector_t;
+
+static void
+collect_tuple(const char *relation, const int64_t *row, uint32_t ncols,
+              void *user_data)
+{
+    tuple_collector_t *c = (tuple_collector_t *)user_data;
+    if (c->count >= MAX_DELTAS)
+        return;
+    int idx = c->count++;
+    strncpy(c->relations[idx], relation, 63);
+    c->relations[idx][63] = '\0';
+    c->ncols[idx] = ncols;
+    for (uint32_t i = 0; i < ncols && i < MAX_COLS; i++)
+        c->rows[idx][i] = row[i];
+}
+
+/* ======================================================================== */
 /* Delta Query Helpers                                                      */
 /* ======================================================================== */
 
@@ -100,6 +126,28 @@ has_delta(const delta_collector_t *c, const char *relation,
         if (strcmp(c->relations[i], relation) != 0)
             continue;
         if (c->ncols[i] != ncols || c->diffs[i] != diff)
+            continue;
+        bool match = true;
+        for (uint32_t j = 0; j < ncols; j++) {
+            if (c->rows[i][j] != expected[j]) {
+                match = false;
+                break;
+            }
+        }
+        if (match)
+            return true;
+    }
+    return false;
+}
+
+static bool
+has_tuple(const tuple_collector_t *c, const char *relation,
+          const int64_t *expected, uint32_t ncols)
+{
+    for (int i = 0; i < c->count; i++) {
+        if (strcmp(c->relations[i], relation) != 0)
+            continue;
+        if (c->ncols[i] != ncols)
             continue;
         bool match = true;
         for (uint32_t j = 0; j < ncols; j++) {
@@ -477,13 +525,20 @@ test_session_step_no_change(void)
     PASS();
 }
 
+/* ======================================================================== */
+/* RED Tests: remove and snapshot (require TASK 1-3 for GREEN)             */
+/* ======================================================================== */
+
 /*
- * Test: session_remove returns -1 (not supported in insert-only MVP).
+ * Test: remove a tuple and step produces diff=-1 delta.
+ *
+ * RED: currently fails because dd_session_remove returns -1 (not implemented).
+ * GREEN: after TASK 2+3 wire wl_dd_session_remove through the vtable.
  */
 static void
-test_session_remove_returns_error(void)
+test_session_remove_single_delta(void)
 {
-    TEST("session: remove returns error");
+    TEST("session: remove tuple produces diff=-1 delta");
 
     wl_ffi_dd_plan_t *dd_plan = NULL;
     wl_ffi_plan_t *ffi = ffi_plan_from_source(".decl a(x: int32)\n"
@@ -504,17 +559,350 @@ test_session_remove_returns_error(void)
         return;
     }
 
-    int64_t data[] = { 1 };
-    rc = wl_session_remove(session, "a", data, 1, 1);
+    delta_collector_t deltas;
+    memset(&deltas, 0, sizeof(deltas));
+    wl_session_set_delta_cb(session, collect_delta, &deltas);
+
+    /* Insert a=(1) and step: establishes r(1) */
+    int64_t a_data[] = { 1 };
+    rc = wl_session_insert(session, "a", a_data, 1, 1);
+    if (rc != 0) {
+        wl_session_destroy(session);
+        wl_ffi_plan_free(ffi);
+        wl_ffi_dd_plan_free(dd_plan);
+        FAIL("insert failed");
+        return;
+    }
+    rc = wl_session_step(session);
+    if (rc != 0) {
+        wl_session_destroy(session);
+        wl_ffi_plan_free(ffi);
+        wl_ffi_dd_plan_free(dd_plan);
+        FAIL("first step failed");
+        return;
+    }
+
+    /* Reset and remove a=(1) */
+    memset(&deltas, 0, sizeof(deltas));
+    rc = wl_session_remove(session, "a", a_data, 1, 1);
+    if (rc != 0) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "remove returned %d (expected 0)", rc);
+        wl_session_destroy(session);
+        wl_ffi_plan_free(ffi);
+        wl_ffi_dd_plan_free(dd_plan);
+        FAIL(msg);
+        return;
+    }
+
+    /* Step: should produce r(1) diff=-1 */
+    rc = wl_session_step(session);
+    if (rc != 0) {
+        wl_session_destroy(session);
+        wl_ffi_plan_free(ffi);
+        wl_ffi_dd_plan_free(dd_plan);
+        FAIL("second step failed");
+        return;
+    }
+
+    int64_t expected[] = { 1 };
+    if (!has_delta(&deltas, "r", expected, 1, -1)) {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "expected r(1) diff=-1, got %d total deltas",
+                 deltas.count);
+        wl_session_destroy(session);
+        wl_ffi_plan_free(ffi);
+        wl_ffi_dd_plan_free(dd_plan);
+        FAIL(msg);
+        return;
+    }
+
+    if (count_deltas(&deltas, "r", -1) != 1) {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "expected exactly 1 retraction, got %d",
+                 count_deltas(&deltas, "r", -1));
+        wl_session_destroy(session);
+        wl_ffi_plan_free(ffi);
+        wl_ffi_dd_plan_free(dd_plan);
+        FAIL(msg);
+        return;
+    }
+
     wl_session_destroy(session);
     wl_ffi_plan_free(ffi);
     wl_ffi_dd_plan_free(dd_plan);
+    PASS();
+}
 
-    if (rc != 0) {
-        PASS();
-    } else {
-        FAIL("expected remove to return error");
+/*
+ * Test: remove of non-existent tuple is a no-op (no crash, rc=0).
+ *
+ * RED: currently fails because dd_session_remove returns -1.
+ * GREEN: after TASK 2+3 remove returns 0 and produces no phantom deltas.
+ */
+static void
+test_session_remove_nonexistent(void)
+{
+    TEST("session: remove non-existent tuple is no-op");
+
+    wl_ffi_dd_plan_t *dd_plan = NULL;
+    wl_ffi_plan_t *ffi = ffi_plan_from_source(".decl a(x: int32)\n"
+                                              ".decl r(x: int32)\n"
+                                              "r(x) :- a(x).\n",
+                                              &dd_plan);
+    if (!ffi) {
+        FAIL("could not generate FFI plan");
+        return;
     }
+
+    wl_session_t *session = NULL;
+    int rc = wl_session_create(wl_backend_dd(), ffi, 1, &session);
+    if (rc != 0 || !session) {
+        wl_ffi_plan_free(ffi);
+        wl_ffi_dd_plan_free(dd_plan);
+        FAIL("session_create failed");
+        return;
+    }
+
+    /* Remove a=(99) which was never inserted */
+    int64_t a_data[] = { 99 };
+    rc = wl_session_remove(session, "a", a_data, 1, 1);
+    if (rc != 0) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "remove returned %d (expected 0)", rc);
+        wl_session_destroy(session);
+        wl_ffi_plan_free(ffi);
+        wl_ffi_dd_plan_free(dd_plan);
+        FAIL(msg);
+        return;
+    }
+
+    wl_session_destroy(session);
+    wl_ffi_plan_free(ffi);
+    wl_ffi_dd_plan_free(dd_plan);
+    PASS();
+}
+
+/*
+ * Test: snapshot on empty session returns 0 tuples with rc=0.
+ */
+static void
+test_session_snapshot_empty(void)
+{
+    TEST("session: snapshot of empty session returns 0 tuples");
+
+    wl_ffi_dd_plan_t *dd_plan = NULL;
+    wl_ffi_plan_t *ffi = ffi_plan_from_source(".decl a(x: int32)\n"
+                                              ".decl r(x: int32)\n"
+                                              "r(x) :- a(x).\n",
+                                              &dd_plan);
+    if (!ffi) {
+        FAIL("could not generate FFI plan");
+        return;
+    }
+
+    wl_session_t *session = NULL;
+    int rc = wl_session_create(wl_backend_dd(), ffi, 1, &session);
+    if (rc != 0 || !session) {
+        wl_ffi_plan_free(ffi);
+        wl_ffi_dd_plan_free(dd_plan);
+        FAIL("session_create failed");
+        return;
+    }
+
+    tuple_collector_t tuples;
+    memset(&tuples, 0, sizeof(tuples));
+    rc = wl_session_snapshot(session, collect_tuple, &tuples);
+    if (rc != 0) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "snapshot returned %d (expected 0)", rc);
+        wl_session_destroy(session);
+        wl_ffi_plan_free(ffi);
+        wl_ffi_dd_plan_free(dd_plan);
+        FAIL(msg);
+        return;
+    }
+
+    if (tuples.count != 0) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "expected 0 tuples, got %d", tuples.count);
+        wl_session_destroy(session);
+        wl_ffi_plan_free(ffi);
+        wl_ffi_dd_plan_free(dd_plan);
+        FAIL(msg);
+        return;
+    }
+
+    wl_session_destroy(session);
+    wl_ffi_plan_free(ffi);
+    wl_ffi_dd_plan_free(dd_plan);
+    PASS();
+}
+
+/*
+ * Test: snapshot after insert+step reflects current derived state.
+ *
+ * RED: currently fails because dd_session_snapshot uses empty batch worker.
+ * GREEN: after TASK 2+3 snapshot reads from persistent session state.
+ */
+static void
+test_session_snapshot_after_insert(void)
+{
+    TEST("session: snapshot reflects current derived state");
+
+    wl_ffi_dd_plan_t *dd_plan = NULL;
+    wl_ffi_plan_t *ffi
+        = ffi_plan_from_source(".decl a(x: int32, y: int32)\n"
+                               ".decl b(y: int32, z: int32)\n"
+                               ".decl r(x: int32, y: int32, z: int32)\n"
+                               "r(x, y, z) :- a(x, y), b(y, z).\n",
+                               &dd_plan);
+    if (!ffi) {
+        FAIL("could not generate FFI plan");
+        return;
+    }
+
+    wl_session_t *session = NULL;
+    int rc = wl_session_create(wl_backend_dd(), ffi, 1, &session);
+    if (rc != 0 || !session) {
+        wl_ffi_plan_free(ffi);
+        wl_ffi_dd_plan_free(dd_plan);
+        FAIL("session_create failed");
+        return;
+    }
+
+    /* Insert a=(1,2), b=(2,3) and step */
+    int64_t a_data[] = { 1, 2 };
+    int64_t b_data[] = { 2, 3 };
+    wl_session_insert(session, "a", a_data, 1, 2);
+    wl_session_insert(session, "b", b_data, 1, 2);
+    rc = wl_session_step(session);
+    if (rc != 0) {
+        wl_session_destroy(session);
+        wl_ffi_plan_free(ffi);
+        wl_ffi_dd_plan_free(dd_plan);
+        FAIL("step failed");
+        return;
+    }
+
+    /* Snapshot: should contain r(1,2,3) */
+    tuple_collector_t tuples;
+    memset(&tuples, 0, sizeof(tuples));
+    rc = wl_session_snapshot(session, collect_tuple, &tuples);
+    if (rc != 0) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "snapshot returned %d (expected 0)", rc);
+        wl_session_destroy(session);
+        wl_ffi_plan_free(ffi);
+        wl_ffi_dd_plan_free(dd_plan);
+        FAIL(msg);
+        return;
+    }
+
+    int64_t expected[] = { 1, 2, 3 };
+    if (!has_tuple(&tuples, "r", expected, 3)) {
+        char msg[128];
+        snprintf(msg, sizeof(msg),
+                 "expected r(1,2,3) in snapshot, got %d tuples total",
+                 tuples.count);
+        wl_session_destroy(session);
+        wl_ffi_plan_free(ffi);
+        wl_ffi_dd_plan_free(dd_plan);
+        FAIL(msg);
+        return;
+    }
+
+    if (tuples.count != 1) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "expected exactly 1 tuple, got %d",
+                 tuples.count);
+        wl_session_destroy(session);
+        wl_ffi_plan_free(ffi);
+        wl_ffi_dd_plan_free(dd_plan);
+        FAIL(msg);
+        return;
+    }
+
+    wl_session_destroy(session);
+    wl_ffi_plan_free(ffi);
+    wl_ffi_dd_plan_free(dd_plan);
+    PASS();
+}
+
+/*
+ * Test: duplicate insert of the same tuple produces exactly one positive delta.
+ * DD set semantics via consolidate should not double-count.
+ */
+static void
+test_session_duplicate_insert(void)
+{
+    TEST("session: duplicate insert produces single positive delta");
+
+    wl_ffi_dd_plan_t *dd_plan = NULL;
+    wl_ffi_plan_t *ffi = ffi_plan_from_source(".decl a(x: int32)\n"
+                                              ".decl r(x: int32)\n"
+                                              "r(x) :- a(x).\n",
+                                              &dd_plan);
+    if (!ffi) {
+        FAIL("could not generate FFI plan");
+        return;
+    }
+
+    wl_session_t *session = NULL;
+    int rc = wl_session_create(wl_backend_dd(), ffi, 1, &session);
+    if (rc != 0 || !session) {
+        wl_ffi_plan_free(ffi);
+        wl_ffi_dd_plan_free(dd_plan);
+        FAIL("session_create failed");
+        return;
+    }
+
+    delta_collector_t deltas;
+    memset(&deltas, 0, sizeof(deltas));
+    wl_session_set_delta_cb(session, collect_delta, &deltas);
+
+    /* Insert a=(5) twice before stepping */
+    int64_t a_data[] = { 5 };
+    wl_session_insert(session, "a", a_data, 1, 1);
+    wl_session_insert(session, "a", a_data, 1, 1);
+
+    rc = wl_session_step(session);
+    if (rc != 0) {
+        wl_session_destroy(session);
+        wl_ffi_plan_free(ffi);
+        wl_ffi_dd_plan_free(dd_plan);
+        FAIL("step failed");
+        return;
+    }
+
+    int64_t expected[] = { 5 };
+    if (!has_delta(&deltas, "r", expected, 1, +1)) {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "expected r(5) diff=+1, got %d deltas total",
+                 deltas.count);
+        wl_session_destroy(session);
+        wl_ffi_plan_free(ffi);
+        wl_ffi_dd_plan_free(dd_plan);
+        FAIL(msg);
+        return;
+    }
+
+    if (count_deltas(&deltas, "r", +1) != 1) {
+        char msg[128];
+        snprintf(msg, sizeof(msg),
+                 "expected exactly 1 positive delta (set semantics), got %d",
+                 count_deltas(&deltas, "r", +1));
+        wl_session_destroy(session);
+        wl_ffi_plan_free(ffi);
+        wl_ffi_dd_plan_free(dd_plan);
+        FAIL(msg);
+        return;
+    }
+
+    wl_session_destroy(session);
+    wl_ffi_plan_free(ffi);
+    wl_ffi_dd_plan_free(dd_plan);
+    PASS();
 }
 
 /* ======================================================================== */
@@ -531,7 +919,12 @@ main(void)
     test_session_step_initial_delta();
     test_session_step_incremental_delta();
     test_session_step_no_change();
-    test_session_remove_returns_error();
+    /* RED: the following tests require TASK 2+3 (FFI bridge + C vtable) */
+    test_session_remove_single_delta();
+    test_session_remove_nonexistent();
+    test_session_snapshot_empty();
+    test_session_snapshot_after_insert();
+    test_session_duplicate_insert();
 
     printf("\n  %d tests: %d passed, %d failed\n", tests_run, tests_passed,
            tests_failed);

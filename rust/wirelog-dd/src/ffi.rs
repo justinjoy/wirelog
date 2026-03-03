@@ -398,6 +398,101 @@ pub unsafe extern "C" fn wl_dd_session_set_delta_cb(
     }
 }
 
+/// Retract facts from a persistent DD session.
+///
+/// # Safety
+/// - `session` must be a valid pointer from `wl_dd_session_create`.
+/// - `relation` must be a valid null-terminated C string.
+/// - `data` must point to `num_rows * num_cols` contiguous i64 values.
+///
+/// Returns:
+///    0: Success.
+///   -1: Remove failed (worker thread exited).
+///   -2: Invalid arguments.
+#[no_mangle]
+pub unsafe extern "C" fn wl_dd_session_remove(
+    session: *mut WlDdPersistentSession,
+    relation: *const c_char,
+    data: *const i64,
+    num_rows: u32,
+    num_cols: u32,
+) -> c_int {
+    if session.is_null() || relation.is_null() {
+        return -2;
+    }
+    if num_cols == 0 {
+        return -2;
+    }
+    if num_rows == 0 {
+        return 0;
+    }
+    if data.is_null() {
+        return -2;
+    }
+
+    let session = &*session;
+    let rel_name = match CStr::from_ptr(relation).to_str() {
+        Ok(s) => s.to_owned(),
+        Err(_) => return -2,
+    };
+
+    let total = (num_rows as usize) * (num_cols as usize);
+    let data_slice = std::slice::from_raw_parts(data, total);
+    let rows: Vec<Vec<i64>> = data_slice
+        .chunks_exact(num_cols as usize)
+        .map(|chunk| chunk.to_vec())
+        .collect();
+
+    match session.inner.session_remove(rel_name, rows) {
+        Ok(()) => 0,
+        Err(_) => -1,
+    }
+}
+
+/// Emit the current state of all IDB output relations via callback.
+///
+/// Unlike step(), this does not advance the epoch.
+///
+/// # Safety
+/// - `session` must be a valid pointer from `wl_dd_session_create`.
+/// - `on_tuple` must be a valid function pointer (or NULL to discard results).
+/// - `user_data` is passed through to the callback unchanged.
+///
+/// Returns:
+///    0: Success.
+///   -1: Snapshot failed.
+///   -2: Invalid arguments.
+#[no_mangle]
+pub unsafe extern "C" fn wl_dd_session_snapshot(
+    session: *mut WlDdPersistentSession,
+    on_tuple: WlDdOnTupleFn,
+    user_data: *mut c_void,
+) -> c_int {
+    if session.is_null() {
+        return -2;
+    }
+
+    let session = &*session;
+    let state = match session.inner.session_snapshot() {
+        Ok(s) => s,
+        Err(_) => return -1,
+    };
+
+    if let Some(cb) = on_tuple {
+        for (rel_name, rows) in &state {
+            let c_rel = match CString::new(rel_name.as_str()) {
+                Ok(s) => s,
+                Err(_) => return -1,
+            };
+            for row in rows {
+                cb(c_rel.as_ptr(), row.as_ptr(), row.len() as u32, user_data);
+            }
+        }
+    }
+
+    0
+}
+
 /* ======================================================================== */
 /* Tests                                                                    */
 /* ======================================================================== */

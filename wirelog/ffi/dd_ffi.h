@@ -744,4 +744,42 @@ void
 wl_dd_session_set_delta_cb(wl_dd_persistent_session_t *session,
                            wl_dd_on_delta_fn on_delta, void *user_data);
 
+/**
+ * wl_dd_session_remove:
+ * @session:   (borrow): Active session handle.
+ * @relation:  (borrow): Null-terminated EDB relation name.
+ * @data:      (borrow): Flat row-major array of int64_t values.
+ * @num_rows:  Number of rows to retract.
+ * @num_cols:  Number of columns per row.
+ *
+ * Retract facts from the session.  Facts are buffered until the next
+ * wl_dd_session_step() call.
+ *
+ * Returns:
+ *    0: Success.
+ *   -1: Remove failed.
+ *   -2: Invalid arguments.
+ */
+int
+wl_dd_session_remove(wl_dd_persistent_session_t *session, const char *relation,
+                     const int64_t *data, uint32_t num_rows, uint32_t num_cols);
+
+/**
+ * wl_dd_session_snapshot:
+ * @session:   (borrow): Active session handle.
+ * @on_tuple:  Callback for result delivery.  May be NULL (results discarded).
+ * @user_data: Opaque pointer passed through to @on_tuple.
+ *
+ * Emit the current complete state of all IDB output relations via callback.
+ * Unlike wl_dd_session_step(), this does not advance the epoch.
+ *
+ * Returns:
+ *    0: Success.
+ *   -1: Snapshot failed.
+ *   -2: Invalid arguments.
+ */
+int
+wl_dd_session_snapshot(wl_dd_persistent_session_t *session,
+                       wl_dd_on_tuple_fn on_tuple, void *user_data);
+
 #endif /* WIRELOG_DD_FFI_H */
