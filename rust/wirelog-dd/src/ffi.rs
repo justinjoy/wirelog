@@ -220,6 +220,185 @@ pub unsafe extern "C" fn wl_dd_execute_cb(
 }
 
 /* ======================================================================== */
+/* Persistent Session FFI                                                   */
+/* ======================================================================== */
+
+use crate::session::{DdSession, DeltaCallbackInfo};
+
+/// Opaque persistent session handle exposed to C.
+pub struct WlDdPersistentSession {
+    inner: DdSession,
+}
+
+/// Delta callback type: fired for insertions (diff=+1) and retractions (diff=-1).
+pub type WlDdOnDeltaFn = Option<
+    unsafe extern "C" fn(
+        relation: *const c_char,
+        row: *const i64,
+        ncols: u32,
+        diff: i32,
+        user_data: *mut c_void,
+    ),
+>;
+
+/// Create a persistent DD session.
+///
+/// # Safety
+/// Called from C across FFI boundary.
+///
+/// Returns:
+///    0: Success.  *out is set to the session handle.
+///   -1: Execution error or num_workers > 1.
+///   -2: Invalid arguments (NULL pointers).
+#[no_mangle]
+pub unsafe extern "C" fn wl_dd_session_create(
+    plan: *const WlFfiPlan,
+    num_workers: u32,
+    out: *mut *mut WlDdPersistentSession,
+) -> c_int {
+    if plan.is_null() || out.is_null() {
+        return -2;
+    }
+    if num_workers > 1 {
+        return -1; // MVP: single worker only
+    }
+
+    let safe_plan = match read_plan(plan) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("[wirelog-dd] read_plan error: {:?}", e);
+            return -1;
+        }
+    };
+
+    let edb_names = safe_plan.edb_relations.clone();
+
+    let session = match DdSession::new(safe_plan, edb_names) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[wirelog-dd] session error: {}", e);
+            return -1;
+        }
+    };
+
+    let persistent = Box::new(WlDdPersistentSession { inner: session });
+    *out = Box::into_raw(persistent);
+    0
+}
+
+/// Destroy a persistent DD session.
+///
+/// # Safety
+/// `session` must be a pointer returned by `wl_dd_session_create`, or NULL.
+#[no_mangle]
+pub unsafe extern "C" fn wl_dd_session_destroy(session: *mut WlDdPersistentSession) {
+    if !session.is_null() {
+        drop(Box::from_raw(session));
+    }
+}
+
+/// Insert facts into a persistent DD session.
+///
+/// # Safety
+/// - `session` must be a valid pointer from `wl_dd_session_create`.
+/// - `relation` must be a valid null-terminated C string.
+/// - `data` must point to `num_rows * num_cols` contiguous i64 values.
+///
+/// Returns:
+///    0: Success.
+///   -1: Insert failed (worker thread exited).
+///   -2: Invalid arguments.
+#[no_mangle]
+pub unsafe extern "C" fn wl_dd_session_insert(
+    session: *mut WlDdPersistentSession,
+    relation: *const c_char,
+    data: *const i64,
+    num_rows: u32,
+    num_cols: u32,
+) -> c_int {
+    if session.is_null() || relation.is_null() {
+        return -2;
+    }
+    if num_cols == 0 {
+        return -2;
+    }
+    if num_rows == 0 {
+        return 0;
+    }
+    if data.is_null() {
+        return -2;
+    }
+
+    let session = &*session;
+    let rel_name = match CStr::from_ptr(relation).to_str() {
+        Ok(s) => s,
+        Err(_) => return -2,
+    };
+
+    let total = (num_rows as usize) * (num_cols as usize);
+    let data_slice = std::slice::from_raw_parts(data, total);
+    let rows: Vec<Vec<i64>> = data_slice
+        .chunks_exact(num_cols as usize)
+        .map(|chunk| chunk.to_vec())
+        .collect();
+
+    match session.inner.insert(rel_name, rows) {
+        Ok(()) => 0,
+        Err(_) => -1,
+    }
+}
+
+/// Advance the session by one epoch.
+///
+/// # Safety
+/// `session` must be a valid pointer from `wl_dd_session_create`.
+///
+/// Returns:
+///    0: Success.
+///   -1: Step failed.
+///   -2: Invalid arguments.
+#[no_mangle]
+pub unsafe extern "C" fn wl_dd_session_step(session: *mut WlDdPersistentSession) -> c_int {
+    if session.is_null() {
+        return -2;
+    }
+    let session = &*session;
+    match session.inner.step() {
+        Ok(()) => 0,
+        Err(_) => -1,
+    }
+}
+
+/// Set or clear the delta callback on a persistent session.
+///
+/// # Safety
+/// - `session` must be a valid pointer from `wl_dd_session_create`.
+/// - `on_delta` function pointer (or NULL to clear the callback).
+/// - `user_data` is passed through to the callback unchanged.
+#[no_mangle]
+pub unsafe extern "C" fn wl_dd_session_set_delta_cb(
+    session: *mut WlDdPersistentSession,
+    on_delta: WlDdOnDeltaFn,
+    user_data: *mut c_void,
+) {
+    if session.is_null() {
+        return;
+    }
+    let session = &*session;
+    match on_delta {
+        Some(cb) => {
+            session.inner.set_delta_callback(Some(DeltaCallbackInfo {
+                callback: cb,
+                user_data,
+            }));
+        }
+        None => {
+            session.inner.set_delta_callback(None);
+        }
+    }
+}
+
+/* ======================================================================== */
 /* Tests                                                                    */
 /* ======================================================================== */
 

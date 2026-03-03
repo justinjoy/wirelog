@@ -629,4 +629,119 @@ wl_ffi_plan_free(wl_ffi_plan_t *plan);
 int
 wl_ffi_expr_serialize(const struct wl_ir_expr *expr, wl_ffi_expr_buffer_t *out);
 
+/* ======================================================================== */
+/* Persistent Session Handle (opaque)                                       */
+/* ======================================================================== */
+
+/**
+ * wl_dd_persistent_session_t:
+ *
+ * Opaque handle to a persistent Differential Dataflow session.
+ * Created by Rust, passed to C as an opaque pointer.
+ *
+ * A persistent session keeps the DD dataflow alive across multiple
+ * step() calls, supporting insert-only incremental updates on
+ * non-recursive programs.
+ */
+typedef struct wl_dd_persistent_session wl_dd_persistent_session_t;
+
+/* ======================================================================== */
+/* Delta Callback                                                           */
+/* ======================================================================== */
+
+/**
+ * wl_dd_on_delta_fn:
+ *
+ * Callback invoked when a tuple is inserted or retracted in a
+ * persistent session step.
+ *
+ * @relation:  Null-terminated output relation name.
+ * @row:       Array of int64_t values (length = @ncols).
+ * @ncols:     Number of columns in the row.
+ * @diff:      +1 for insertion, -1 for retraction.
+ * @user_data: Opaque pointer passed through from the caller.
+ */
+typedef void (*wl_dd_on_delta_fn)(const char *relation, const int64_t *row,
+                                  uint32_t ncols, int32_t diff,
+                                  void *user_data);
+
+/* ======================================================================== */
+/* Persistent Session FFI Entry Points (Rust-exported)                      */
+/* ======================================================================== */
+
+/**
+ * wl_dd_session_create:
+ * @plan:        (borrow): FFI plan for the dataflow.  Must not be NULL.
+ * @num_workers: Number of worker threads.  Must be 1 (MVP restriction).
+ * @out:         (out): On success, receives the persistent session handle.
+ *
+ * Create a persistent DD session with a background worker thread.
+ * The session keeps the dataflow alive for incremental step() calls.
+ *
+ * Returns:
+ *    0: Success.  *out is set to the session handle.
+ *   -1: Execution error or num_workers > 1.
+ *   -2: Invalid arguments (NULL pointers).
+ */
+int
+wl_dd_session_create(const wl_ffi_plan_t *plan, uint32_t num_workers,
+                     wl_dd_persistent_session_t **out);
+
+/**
+ * wl_dd_session_destroy:
+ * @session: (transfer full): Session handle to destroy (NULL-safe).
+ *
+ * Destroy a persistent DD session and shut down its background thread.
+ */
+void
+wl_dd_session_destroy(wl_dd_persistent_session_t *session);
+
+/**
+ * wl_dd_session_insert:
+ * @session:   (borrow): Active session handle.
+ * @relation:  (borrow): Null-terminated EDB relation name.
+ * @data:      (borrow): Flat row-major array of int64_t values.
+ * @num_rows:  Number of rows.
+ * @num_cols:  Number of columns per row.
+ *
+ * Insert facts into the session.  Facts are buffered until the next
+ * wl_dd_session_step() call.
+ *
+ * Returns:
+ *    0: Success.
+ *   -1: Insert failed.
+ *   -2: Invalid arguments.
+ */
+int
+wl_dd_session_insert(wl_dd_persistent_session_t *session, const char *relation,
+                     const int64_t *data, uint32_t num_rows, uint32_t num_cols);
+
+/**
+ * wl_dd_session_step:
+ * @session: (borrow): Active session handle.
+ *
+ * Advance the session by one epoch, processing all pending inserts
+ * and firing the delta callback for new derivations.
+ *
+ * Returns:
+ *    0: Success.
+ *   -1: Step failed.
+ *   -2: Invalid arguments.
+ */
+int
+wl_dd_session_step(wl_dd_persistent_session_t *session);
+
+/**
+ * wl_dd_session_set_delta_cb:
+ * @session:   (borrow): Active session handle.
+ * @on_delta:  Delta callback function (NULL to clear).
+ * @user_data: Opaque pointer passed through to @on_delta.
+ *
+ * Register a callback for receiving incremental updates on output
+ * relations as the session advances via wl_dd_session_step.
+ */
+void
+wl_dd_session_set_delta_cb(wl_dd_persistent_session_t *session,
+                           wl_dd_on_delta_fn on_delta, void *user_data);
+
 #endif /* WIRELOG_DD_FFI_H */

@@ -27,18 +27,20 @@
 #include <stdlib.h>
 
 /**
- * DD-specific session state bounding the base wl_session_t.
+ * DD-specific session state embedding the base wl_session_t.
+ *
+ * Uses a persistent Rust-side session for incremental insert/step/delta,
+ * and a batch worker for snapshot execution.
  */
 typedef struct {
     wl_session_t base;
 
-    /* DD FFI specific state */
+    /* Persistent session (Rust-side) for incremental operations */
+    wl_dd_persistent_session_t *persistent;
+
+    /* Batch worker and plan for snapshot execution */
     wl_dd_worker_t *worker;
     const wl_ffi_plan_t *plan;
-
-    /* For incremental/delta callbacks, if DD supports it later */
-    wl_on_delta_fn delta_cb;
-    void *delta_user_data;
 } wl_dd_session_t;
 
 static int
@@ -46,21 +48,30 @@ dd_session_create(const wl_ffi_plan_t *plan, uint32_t num_workers,
                   wl_session_t **out)
 {
     wl_dd_session_t *s;
+    wl_dd_persistent_session_t *persistent = NULL;
     wl_dd_worker_t *worker;
+    int rc;
 
     if (!plan || !out)
         return -1;
 
-    worker = wl_dd_worker_create(num_workers);
-    if (!worker)
-        return -1;
+    /* Create persistent session (Rust-side) */
+    rc = wl_dd_session_create(plan, num_workers, &persistent);
+    if (rc != 0)
+        return rc;
 
-    s = (wl_dd_session_t *)calloc(1, sizeof(wl_dd_session_t));
+    /* Create batch worker for snapshot */
+    worker = wl_dd_worker_create(num_workers);
+
+    s = (wl_dd_session_t *)calloc(1, sizeof(*s));
     if (!s) {
-        wl_dd_worker_destroy(worker);
+        wl_dd_session_destroy(persistent);
+        if (worker)
+            wl_dd_worker_destroy(worker);
         return -1;
     }
 
+    s->persistent = persistent;
     s->worker = worker;
     s->plan = plan;
 
@@ -73,9 +84,10 @@ dd_session_destroy(wl_session_t *session)
 {
     wl_dd_session_t *s = (wl_dd_session_t *)session;
     if (s) {
-        if (s->worker) {
+        if (s->persistent)
+            wl_dd_session_destroy(s->persistent);
+        if (s->worker)
             wl_dd_worker_destroy(s->worker);
-        }
         free(s);
     }
 }
@@ -85,19 +97,18 @@ dd_session_insert(wl_session_t *session, const char *relation,
                   const int64_t *data, uint32_t num_rows, uint32_t num_cols)
 {
     wl_dd_session_t *s = (wl_dd_session_t *)session;
-    if (!s || !s->worker)
+    if (!s || !s->persistent)
         return -1;
 
-    /* The DD backend expects data insertion via wl_dd_load_edb */
-    return wl_dd_load_edb(s->worker, relation, data, num_rows, num_cols);
+    return wl_dd_session_insert(s->persistent, relation, data, num_rows,
+                                num_cols);
 }
 
 static int
 dd_session_remove(wl_session_t *session, const char *relation,
                   const int64_t *data, uint32_t num_rows, uint32_t num_cols)
 {
-    /* The DD backend currently doesn't expose a remove API in dd_ffi.h
-     * Once it does, this will map to it. Returning error for now. */
+    /* Insert-only MVP: remove is not supported */
     (void)session;
     (void)relation;
     (void)data;
@@ -109,10 +120,11 @@ dd_session_remove(wl_session_t *session, const char *relation,
 static int
 dd_session_step(wl_session_t *session)
 {
-    /* The DD backend batch mode executes and returns everything in wl_dd_execute_cb.
-     * We don't have an incremental step function exposed via FFI yet. */
-    (void)session;
-    return -1; /* Not supported in DD backend natively yet */
+    wl_dd_session_t *s = (wl_dd_session_t *)session;
+    if (!s || !s->persistent)
+        return -1;
+
+    return wl_dd_session_step(s->persistent);
 }
 
 static void
@@ -120,10 +132,11 @@ dd_session_set_delta_cb(wl_session_t *session, wl_on_delta_fn callback,
                         void *user_data)
 {
     wl_dd_session_t *s = (wl_dd_session_t *)session;
-    if (s) {
-        s->delta_cb = callback;
-        s->delta_user_data = user_data;
-    }
+    if (!s || !s->persistent)
+        return;
+
+    wl_dd_session_set_delta_cb(s->persistent, (wl_dd_on_delta_fn)callback,
+                               user_data);
 }
 
 static int

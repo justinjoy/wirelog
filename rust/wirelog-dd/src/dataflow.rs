@@ -433,7 +433,7 @@ where
 ///
 /// Translates the sequence of SafeOp instructions into chained DD
 /// operators, returning the final Collection.
-fn build_relation_plan<G: Scope>(
+pub(crate) fn build_relation_plan<G: Scope>(
     rel_plan: &SafeRelationPlan,
     collections: &HashMap<String, VecCollection<G, Row>>,
 ) -> VecCollection<G, Row>
