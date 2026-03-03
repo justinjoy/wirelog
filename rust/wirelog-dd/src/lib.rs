@@ -17,6 +17,7 @@ mod expr;
 mod ffi;
 pub mod ffi_types;
 mod plan_reader;
+mod session;
 
 // Re-export FFI entry points (they are #[no_mangle] extern "C")
 pub use ffi::*;
