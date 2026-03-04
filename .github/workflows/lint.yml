@@ -2,9 +2,9 @@ name: Lint
 
 on:
   push:
-    branches: [main]
+    branches: [main, next/pure-c11]
   pull_request:
-    branches: [main]
+    branches: [main, next/pure-c11]
   workflow_call:
 
 permissions:

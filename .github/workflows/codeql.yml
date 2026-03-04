@@ -2,7 +2,7 @@ name: CodeQL
 
 on:
   push:
-    branches: [main]
+    branches: [main, next/pure-c11]
     paths:
       - 'wirelog/**'
       - 'tests/**'
@@ -10,7 +10,7 @@ on:
       - '.github/codeql/**'
       - '.github/workflows/codeql.yml'
   pull_request:
-    branches: [main]
+    branches: [main, next/pure-c11]
     paths:
       - 'wirelog/**'
       - 'tests/**'
