@@ -142,6 +142,39 @@ test('sip', test_sip_exe)
 #
 # These are deferred to Phase 2A when the columnar backend is implemented.
 
+# ============================================================================
+# Columnar Backend Session Tests (no Rust required)
+# ============================================================================
+
+columnar_backend_src = files(
+  '../wirelog/backend/columnar_nanoarrow.c',
+  '../wirelog/ffi/dd_marshal.c',
+)
+
+test_session_columnar_exe = executable(
+  'test_session_columnar',
+  files('test_session_columnar.c'),
+  parser_src,
+  ir_src,
+  columnar_backend_src,
+  include_directories: [wirelog_inc, wirelog_src_inc],
+  dependencies: [nanoarrow_dep],
+)
+
+test('session_columnar', test_session_columnar_exe)
+
+test_delta_callback_exe = executable(
+  'test_delta_callback',
+  files('test_delta_callback.c'),
+  parser_src,
+  ir_src,
+  columnar_backend_src,
+  include_directories: [wirelog_inc, wirelog_src_inc],
+  dependencies: [nanoarrow_dep],
+)
+
+test('delta_callback', test_delta_callback_exe)
+
 csv_src = files(
   '../wirelog/io/csv_reader.c',
 )
