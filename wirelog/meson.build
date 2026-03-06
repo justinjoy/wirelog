@@ -5,23 +5,20 @@
 #Parser Module
 #== == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == ==
 
-wirelog_parser_src
-    = files('parser/lexer.c', 'parser/ast.c', 'parser/parser.c', )
+wirelog_parser_src = files('parser/lexer.c', 'parser/ast.c', 'parser/parser.c', )
 
 #== == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == ==
 #IR Module
 #== == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == ==
 
-        wirelog_ir_src
-    = files('ir/ir.c', 'ir/program.c', 'ir/stratify.c', 'ir/api.c', 'intern.c',
-            'session.c', )
+wirelog_ir_src = files('ir/ir.c', 'ir/program.c', 'ir/stratify.c', 'ir/api.c', 'intern.c',
+                        'session.c', )
 
 #== == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == ==
 #Optimizer Module
 #== == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == ==
 
-        wirelog_optimizer_src
-    = files('passes/fusion.c', 'passes/jpp.c', 'passes/sip.c', )
+wirelog_optimizer_src = files('passes/fusion.c', 'passes/jpp.c', 'passes/sip.c', )
 
 #== == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == ==
 #Pure C11 Backend(Columnar Nanoarrow Only)
@@ -34,19 +31,16 @@ wirelog_parser_src
 #Arena Allocator Module
 #== == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == ==
 
-        wirelog_arena_src
-    = files('arena/arena.c', )
+wirelog_arena_src = files('arena/arena.c', )
 
 #== == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == ==
 #Columnar Backend Module(Phase 2A)
 #== == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == ==
 
-        wirelog_backend_src
-    = files('backend/columnar_nanoarrow.c', )
+wirelog_backend_src = files('backend/columnar_nanoarrow.c', )
 
 #== == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == ==
 #I / O Module
 #== == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == ==
 
-        wirelog_io_src
-    = files('io/csv_reader.c', )
+wirelog_io_src = files('io/csv_reader.c', )
