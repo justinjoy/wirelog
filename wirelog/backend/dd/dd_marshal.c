@@ -233,7 +233,7 @@ marshal_op(const wl_dd_op_t *src, wl_plan_op_t *dst)
     memset(dst, 0, sizeof(*dst));
 
     switch (src->op) {
-    case WL_FFI_DD_VARIABLE:
+    case WL_DD_VARIABLE:
         dst->op = WL_PLAN_OP_VARIABLE;
         if (src->relation_name) {
             char *s = strdup_safe(src->relation_name);
@@ -243,7 +243,7 @@ marshal_op(const wl_dd_op_t *src, wl_plan_op_t *dst)
         }
         break;
 
-    case WL_FFI_DD_MAP:
+    case WL_DD_MAP:
         dst->op = WL_PLAN_OP_MAP;
         dst->project_count = src->project_count;
         if (src->project_count > 0 && src->project_indices) {
@@ -279,7 +279,7 @@ marshal_op(const wl_dd_op_t *src, wl_plan_op_t *dst)
         }
         break;
 
-    case WL_FFI_DD_FILTER:
+    case WL_DD_FILTER:
         dst->op = WL_PLAN_OP_FILTER;
         if (src->filter_expr) {
             int rc
@@ -289,7 +289,7 @@ marshal_op(const wl_dd_op_t *src, wl_plan_op_t *dst)
         }
         break;
 
-    case WL_FFI_DD_JOIN:
+    case WL_DD_JOIN:
         dst->op = WL_PLAN_OP_JOIN;
         if (src->right_relation) {
             char *s = strdup_safe(src->right_relation);
@@ -349,7 +349,7 @@ marshal_op(const wl_dd_op_t *src, wl_plan_op_t *dst)
         }
         break;
 
-    case WL_FFI_DD_ANTIJOIN:
+    case WL_DD_ANTIJOIN:
         dst->op = WL_PLAN_OP_ANTIJOIN;
         if (src->right_relation) {
             char *s = strdup_safe(src->right_relation);
@@ -416,7 +416,7 @@ marshal_op(const wl_dd_op_t *src, wl_plan_op_t *dst)
         }
         break;
 
-    case WL_FFI_DD_REDUCE:
+    case WL_DD_REDUCE:
         dst->op = WL_PLAN_OP_REDUCE;
         dst->agg_fn = src->agg_fn;
         dst->group_by_count = src->group_by_count;
@@ -431,15 +431,15 @@ marshal_op(const wl_dd_op_t *src, wl_plan_op_t *dst)
         }
         break;
 
-    case WL_FFI_DD_CONCAT:
+    case WL_DD_CONCAT:
         dst->op = WL_PLAN_OP_CONCAT;
         break;
 
-    case WL_FFI_DD_CONSOLIDATE:
+    case WL_DD_CONSOLIDATE:
         dst->op = WL_PLAN_OP_CONSOLIDATE;
         break;
 
-    case WL_FFI_DD_SEMIJOIN:
+    case WL_DD_SEMIJOIN:
         dst->op = WL_PLAN_OP_SEMIJOIN;
         if (src->right_relation) {
             char *s = strdup_safe(src->right_relation);

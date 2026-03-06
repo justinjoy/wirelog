@@ -212,7 +212,7 @@ translate_ir_node(const wirelog_ir_node_t *node, wl_dd_relation_plan_t *rp,
 
     switch (node->type) {
     case WIRELOG_IR_SCAN:
-        op.op = WL_FFI_DD_VARIABLE;
+        op.op = WL_DD_VARIABLE;
         if (node->relation_name)
             op.relation_name = strdup_safe(node->relation_name);
         /* Update column context from SCAN's declared variable names */
@@ -225,7 +225,7 @@ translate_ir_node(const wirelog_ir_node_t *node, wl_dd_relation_plan_t *rp,
         break;
 
     case WIRELOG_IR_FILTER:
-        op.op = WL_FFI_DD_FILTER;
+        op.op = WL_DD_FILTER;
         if (node->filter_expr) {
             op.filter_expr = wl_ir_expr_clone(node->filter_expr);
             if (!op.filter_expr)
@@ -238,7 +238,7 @@ translate_ir_node(const wirelog_ir_node_t *node, wl_dd_relation_plan_t *rp,
         break;
 
     case WIRELOG_IR_PROJECT:
-        op.op = WL_FFI_DD_MAP;
+        op.op = WL_DD_MAP;
         op.project_count = node->project_count;
         if (node->project_count > 0 && node->project_indices) {
             /* Use explicit index mapping */
@@ -307,7 +307,7 @@ translate_ir_node(const wirelog_ir_node_t *node, wl_dd_relation_plan_t *rp,
         break;
 
     case WIRELOG_IR_JOIN:
-        op.op = WL_FFI_DD_JOIN;
+        op.op = WL_DD_JOIN;
         /* Right relation name from second child (walk through FILTERs) */
         if (node->child_count >= 2 && node->children[1]) {
             const wirelog_ir_node_t *scan
@@ -365,7 +365,7 @@ translate_ir_node(const wirelog_ir_node_t *node, wl_dd_relation_plan_t *rp,
         break;
 
     case WIRELOG_IR_ANTIJOIN:
-        op.op = WL_FFI_DD_ANTIJOIN;
+        op.op = WL_DD_ANTIJOIN;
         if (node->child_count >= 2 && node->children[1]) {
             const wirelog_ir_node_t *right = node->children[1];
             const wirelog_ir_node_t *scan = find_scan_in_chain(right);
@@ -434,7 +434,7 @@ translate_ir_node(const wirelog_ir_node_t *node, wl_dd_relation_plan_t *rp,
         if (map_count > 0) {
             wl_dd_op_t map_op;
             memset(&map_op, 0, sizeof(map_op));
-            map_op.op = WL_FFI_DD_MAP;
+            map_op.op = WL_DD_MAP;
             map_op.project_count = map_count;
             map_op.project_indices
                 = (uint32_t *)calloc(map_count, sizeof(uint32_t));
@@ -492,7 +492,7 @@ translate_ir_node(const wirelog_ir_node_t *node, wl_dd_relation_plan_t *rp,
         }
 
         /* REDUCE with sequential group_by_indices (MAP already reordered) */
-        op.op = WL_FFI_DD_REDUCE;
+        op.op = WL_DD_REDUCE;
         op.agg_fn = node->agg_fn;
         op.group_by_count = node->group_by_count;
         if (node->group_by_count > 0) {
@@ -514,7 +514,7 @@ translate_ir_node(const wirelog_ir_node_t *node, wl_dd_relation_plan_t *rp,
         if (node->filter_expr) {
             wl_dd_op_t filt_op;
             memset(&filt_op, 0, sizeof(filt_op));
-            filt_op.op = WL_FFI_DD_FILTER;
+            filt_op.op = WL_DD_FILTER;
             filt_op.filter_expr = wl_ir_expr_clone(node->filter_expr);
             if (!filt_op.filter_expr)
                 return -1;
@@ -529,7 +529,7 @@ translate_ir_node(const wirelog_ir_node_t *node, wl_dd_relation_plan_t *rp,
         }
 
         /* 2. MAP (same logic as PROJECT) */
-        op.op = WL_FFI_DD_MAP;
+        op.op = WL_DD_MAP;
         op.project_count = node->project_count;
         if (node->project_count > 0 && node->project_indices) {
             op.project_indices
@@ -591,7 +591,7 @@ translate_ir_node(const wirelog_ir_node_t *node, wl_dd_relation_plan_t *rp,
     }
 
     case WIRELOG_IR_SEMIJOIN:
-        op.op = WL_FFI_DD_SEMIJOIN;
+        op.op = WL_DD_SEMIJOIN;
         if (node->child_count >= 2 && node->children[1]) {
             const wirelog_ir_node_t *scan
                 = find_scan_in_chain(node->children[1]);
@@ -640,14 +640,14 @@ translate_ir_node(const wirelog_ir_node_t *node, wl_dd_relation_plan_t *rp,
         /* UNION -> CONCAT + CONSOLIDATE (two ops) */
         wl_dd_op_t concat_op;
         memset(&concat_op, 0, sizeof(concat_op));
-        concat_op.op = WL_FFI_DD_CONCAT;
+        concat_op.op = WL_DD_CONCAT;
         int rc = relation_plan_add_op(rp, concat_op);
         if (rc != 0)
             return rc;
 
         wl_dd_op_t consol_op;
         memset(&consol_op, 0, sizeof(consol_op));
-        consol_op.op = WL_FFI_DD_CONSOLIDATE;
+        consol_op.op = WL_DD_CONSOLIDATE;
         return relation_plan_add_op(rp, consol_op);
     }
 
@@ -796,7 +796,7 @@ wl_dd_plan_generate(const struct wirelog_program *prog, wl_dd_plan_t **out)
             const wl_dd_relation_plan_t *rp = &plan->strata[s].relations[r];
             for (uint32_t o = 0; o < rp->op_count; o++) {
                 const wl_dd_op_t *op = &rp->ops[o];
-                if (op->op != WL_FFI_DD_REDUCE)
+                if (op->op != WL_DD_REDUCE)
                     continue;
                 if (op->agg_fn == WIRELOG_AGG_COUNT) {
                     fprintf(stderr,
@@ -868,23 +868,23 @@ const char *
 wl_dd_op_type_str(wl_dd_op_type_t type)
 {
     switch (type) {
-    case WL_FFI_DD_VARIABLE:
+    case WL_DD_VARIABLE:
         return "VARIABLE";
-    case WL_FFI_DD_MAP:
+    case WL_DD_MAP:
         return "MAP";
-    case WL_FFI_DD_FILTER:
+    case WL_DD_FILTER:
         return "FILTER";
-    case WL_FFI_DD_JOIN:
+    case WL_DD_JOIN:
         return "JOIN";
-    case WL_FFI_DD_ANTIJOIN:
+    case WL_DD_ANTIJOIN:
         return "ANTIJOIN";
-    case WL_FFI_DD_REDUCE:
+    case WL_DD_REDUCE:
         return "REDUCE";
-    case WL_FFI_DD_CONCAT:
+    case WL_DD_CONCAT:
         return "CONCAT";
-    case WL_FFI_DD_CONSOLIDATE:
+    case WL_DD_CONSOLIDATE:
         return "CONSOLIDATE";
-    case WL_FFI_DD_SEMIJOIN:
+    case WL_DD_SEMIJOIN:
         return "SEMIJOIN";
     }
     return "UNKNOWN";

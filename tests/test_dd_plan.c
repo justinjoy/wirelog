@@ -112,17 +112,17 @@ test_op_type_str(void)
 {
     TEST("DD op type str: all types have names");
 
-    if (strcmp(wl_dd_op_type_str(WL_FFI_DD_VARIABLE), "VARIABLE") != 0) {
+    if (strcmp(wl_dd_op_type_str(WL_DD_VARIABLE), "VARIABLE") != 0) {
         FAIL("VARIABLE name wrong");
         return;
     }
 
-    if (strcmp(wl_dd_op_type_str(WL_FFI_DD_JOIN), "JOIN") != 0) {
+    if (strcmp(wl_dd_op_type_str(WL_DD_JOIN), "JOIN") != 0) {
         FAIL("JOIN name wrong");
         return;
     }
 
-    if (strcmp(wl_dd_op_type_str(WL_FFI_DD_CONSOLIDATE), "CONSOLIDATE") != 0) {
+    if (strcmp(wl_dd_op_type_str(WL_DD_CONSOLIDATE), "CONSOLIDATE") != 0) {
         FAIL("CONSOLIDATE name wrong");
         return;
     }
@@ -225,7 +225,7 @@ test_plan_simple_scan(void)
             wl_dd_relation_plan_t *rp = &plan->strata[s].relations[r];
             if (strcmp(rp->name, "r") == 0) {
                 /* First op should be VARIABLE("a") */
-                if (rp->op_count >= 1 && rp->ops[0].op == WL_FFI_DD_VARIABLE
+                if (rp->op_count >= 1 && rp->ops[0].op == WL_DD_VARIABLE
                     && rp->ops[0].relation_name
                     && strcmp(rp->ops[0].relation_name, "a") == 0) {
                     found_var = true;
@@ -387,7 +387,7 @@ test_plan_filter(void)
     /* Check that a FILTER op exists with non-NULL filter_expr */
     bool found_filter = false;
     for (uint32_t i = 0; i < rp->op_count; i++) {
-        if (rp->ops[i].op == WL_FFI_DD_FILTER) {
+        if (rp->ops[i].op == WL_DD_FILTER) {
             if (rp->ops[i].filter_expr != NULL)
                 found_filter = true;
             else {
@@ -448,7 +448,7 @@ test_plan_project(void)
     /* IR tree: PROJECT(SCAN) -> post-order: VARIABLE, MAP */
     bool found_map = false;
     for (uint32_t i = 0; i < rp->op_count; i++) {
-        if (rp->ops[i].op == WL_FFI_DD_MAP) {
+        if (rp->ops[i].op == WL_DD_MAP) {
             if (rp->ops[i].project_count > 0)
                 found_map = true;
             else {
@@ -517,21 +517,21 @@ test_plan_filter_project(void)
         return;
     }
 
-    if (rp->ops[0].op != WL_FFI_DD_VARIABLE) {
+    if (rp->ops[0].op != WL_DD_VARIABLE) {
         wl_dd_plan_free(plan);
         wirelog_program_free(prog);
         FAIL("op[0] should be VARIABLE");
         return;
     }
 
-    if (rp->ops[1].op != WL_FFI_DD_FILTER || rp->ops[1].filter_expr == NULL) {
+    if (rp->ops[1].op != WL_DD_FILTER || rp->ops[1].filter_expr == NULL) {
         wl_dd_plan_free(plan);
         wirelog_program_free(prog);
         FAIL("op[1] should be FILTER with non-NULL filter_expr");
         return;
     }
 
-    if (rp->ops[2].op != WL_FFI_DD_MAP || rp->ops[2].project_count == 0) {
+    if (rp->ops[2].op != WL_DD_MAP || rp->ops[2].project_count == 0) {
         wl_dd_plan_free(plan);
         wirelog_program_free(prog);
         FAIL("op[2] should be MAP with project_count > 0");
@@ -586,7 +586,7 @@ test_plan_join(void)
      * Post-order: VARIABLE(a), VARIABLE(b), JOIN, MAP */
     bool found_join = false;
     for (uint32_t i = 0; i < rp->op_count; i++) {
-        if (rp->ops[i].op == WL_FFI_DD_JOIN) {
+        if (rp->ops[i].op == WL_DD_JOIN) {
             if (rp->ops[i].key_count < 1) {
                 wl_dd_plan_free(plan);
                 wirelog_program_free(prog);
@@ -658,7 +658,7 @@ test_plan_join_keys(void)
 
     /* Find JOIN op and check keys */
     for (uint32_t i = 0; i < rp->op_count; i++) {
-        if (rp->ops[i].op == WL_FFI_DD_JOIN) {
+        if (rp->ops[i].op == WL_DD_JOIN) {
             if (rp->ops[i].key_count != 1 || !rp->ops[i].left_keys
                 || !rp->ops[i].right_keys) {
                 wl_dd_plan_free(plan);
@@ -735,9 +735,9 @@ test_plan_union(void)
     bool found_concat = false;
     bool found_consolidate = false;
     for (uint32_t i = 0; i < rp->op_count; i++) {
-        if (rp->ops[i].op == WL_FFI_DD_CONCAT)
+        if (rp->ops[i].op == WL_DD_CONCAT)
             found_concat = true;
-        if (rp->ops[i].op == WL_FFI_DD_CONSOLIDATE)
+        if (rp->ops[i].op == WL_DD_CONSOLIDATE)
             found_consolidate = true;
     }
 
@@ -797,7 +797,7 @@ test_plan_antijoin(void)
     /* PROJECT(ANTIJOIN(SCAN_a, SCAN_b)) */
     bool found_antijoin = false;
     for (uint32_t i = 0; i < rp->op_count; i++) {
-        if (rp->ops[i].op == WL_FFI_DD_ANTIJOIN) {
+        if (rp->ops[i].op == WL_DD_ANTIJOIN) {
             if (!rp->ops[i].right_relation) {
                 wl_dd_plan_free(plan);
                 wirelog_program_free(prog);
@@ -863,7 +863,7 @@ test_plan_aggregate(void)
     /* AGGREGATE(SCAN) -> VARIABLE, REDUCE */
     bool found_reduce = false;
     for (uint32_t i = 0; i < rp->op_count; i++) {
-        if (rp->ops[i].op == WL_FFI_DD_REDUCE) {
+        if (rp->ops[i].op == WL_DD_REDUCE) {
             if (rp->ops[i].group_by_count == 0) {
                 wl_dd_plan_free(plan);
                 wirelog_program_free(prog);
@@ -1080,7 +1080,7 @@ test_plan_head_arith_simple(void)
      * Column 1 (y + 1) is arithmetic -> must have a non-NULL expression. */
     bool found_map_with_exprs = false;
     for (uint32_t i = 0; i < rp->op_count; i++) {
-        if (rp->ops[i].op == WL_FFI_DD_MAP) {
+        if (rp->ops[i].op == WL_DD_MAP) {
             if (rp->ops[i].project_exprs != NULL
                 && rp->ops[i].project_count == 2) {
                 /* Column 1 must have an arithmetic expression */
@@ -1141,7 +1141,7 @@ test_plan_head_arith_preserves_simple(void)
     /* Simple variable-only head should NOT have project_exprs.
      * It should use the existing index-only path. */
     for (uint32_t i = 0; i < rp->op_count; i++) {
-        if (rp->ops[i].op == WL_FFI_DD_MAP) {
+        if (rp->ops[i].op == WL_DD_MAP) {
             if (rp->ops[i].project_exprs != NULL) {
                 wl_dd_plan_free(plan);
                 wirelog_program_free(prog);
@@ -1194,7 +1194,7 @@ test_plan_head_arith_rewrite_vars(void)
      * expression's variable child has been rewritten to "col1" (y is
      * column index 1 in the SCAN). */
     for (uint32_t i = 0; i < rp->op_count; i++) {
-        if (rp->ops[i].op == WL_FFI_DD_MAP
+        if (rp->ops[i].op == WL_DD_MAP
             && rp->ops[i].project_exprs != NULL) {
             wl_ir_expr_t *arith = rp->ops[i].project_exprs[1];
             if (!arith || arith->type != WL_IR_EXPR_ARITH
