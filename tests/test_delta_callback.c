@@ -13,8 +13,10 @@
  *   Delta callbacks: +1 for each new tc tuple
  */
 
-#include "../wirelog/backend.h"
+#include "../wirelog/backend/columnar_nanoarrow.h"
+#include "../wirelog/ffi/dd_ffi.h"
 #include "../wirelog/session.h"
+#include "../wirelog/wirelog-parser.h"
 #include "../wirelog/wirelog.h"
 
 #include <stdio.h>
@@ -32,6 +34,35 @@ static int tests_failed = 0;
 #define TEST(name) do { tests_run++; printf("  [%d] %s", tests_run, name); } while (0)
 #define PASS() do { tests_passed++; printf(" ... PASS\n"); } while (0)
 #define FAIL(msg) do { tests_failed++; printf(" ... FAIL: %s\n", (msg)); } while (0)
+
+/* ======================================================================== */
+/* Plan Helper                                                             */
+/* ======================================================================== */
+
+static wl_ffi_plan_t *
+ffi_plan_from_source(const char *src, wl_ffi_dd_plan_t **dd_plan_out)
+{
+    wirelog_error_t err;
+    wirelog_program_t *prog = wirelog_parse_string(src, &err);
+    if (!prog)
+        return NULL;
+
+    wl_ffi_dd_plan_t *dd_plan = NULL;
+    int rc = wl_ffi_dd_plan_generate(prog, &dd_plan);
+    wirelog_program_free(prog);
+    if (rc != 0)
+        return NULL;
+
+    wl_ffi_plan_t *ffi = NULL;
+    rc = wl_dd_marshal_plan(dd_plan, &ffi);
+    if (rc != 0) {
+        wl_ffi_dd_plan_free(dd_plan);
+        return NULL;
+    }
+
+    *dd_plan_out = dd_plan;
+    return ffi;
+}
 
 /* ======================================================================== */
 /* Delta Callback Collection                                               */
@@ -89,17 +120,62 @@ test_delta_callback_invoked(void)
 {
     TEST("Delta callback invoked on step()");
 
-    /* Placeholder: In full Phase 2A, would:
-       1. Parse a test program (tc/reach/agg)
-       2. Create columnar session
-       3. Register delta callback via col_session_set_delta_cb
-       4. Insert EDB facts
-       5. Call session_step()
-       6. Verify callback was invoked with correct tuples
-    */
+    /* Program: r(x) :- a(x).  EDB: a={42}  Expected delta: r(42) diff=+1 */
+    wl_ffi_dd_plan_t *dd_plan = NULL;
+    wl_ffi_plan_t *ffi = ffi_plan_from_source(".decl a(x: int32)\n"
+                                              ".decl r(x: int32)\n"
+                                              "r(x) :- a(x).\n",
+                                              &dd_plan);
+    if (!ffi) {
+        FAIL("could not generate FFI plan");
+        return 1;
+    }
 
-    /* Skipped: Phase 2A implementation in progress */
-    printf(" ... SKIP (Phase 2A in progress)\n");
+    wl_session_t *session = NULL;
+    int rc = wl_session_create(wl_backend_columnar(), ffi, 1, &session);
+    if (rc != 0 || !session) {
+        wl_ffi_plan_free(ffi);
+        wl_ffi_dd_plan_free(dd_plan);
+        FAIL("session_create failed");
+        return 1;
+    }
+
+    delta_collector_t deltas;
+    memset(&deltas, 0, sizeof(deltas));
+    wl_session_set_delta_cb(session, collect_delta, &deltas);
+
+    int64_t a_data[] = { 42 };
+    wl_session_insert(session, "a", a_data, 1, 1);
+    rc = wl_session_step(session);
+
+    wl_session_destroy(session);
+    wl_ffi_plan_free(ffi);
+    wl_ffi_dd_plan_free(dd_plan);
+
+    if (rc != 0) {
+        FAIL("session_step returned non-zero");
+        return 1;
+    }
+    if (deltas.count == 0) {
+        FAIL("no delta callbacks fired");
+        return 1;
+    }
+    /* Find r(42) diff=+1 */
+    bool found = false;
+    for (int i = 0; i < deltas.count; i++) {
+        if (strcmp(deltas.relations[i], "r") == 0 &&
+            deltas.ncols[i] == 1 &&
+            deltas.rows[i][0] == 42 &&
+            deltas.diffs[i] == 1) {
+            found = true;
+            break;
+        }
+    }
+    if (!found) {
+        FAIL("expected delta r(42) diff=+1 not found");
+        return 1;
+    }
+    PASS();
     return 0;
 }
 
@@ -119,14 +195,88 @@ test_delta_set_difference(void)
 {
     TEST("Delta set difference (full re-eval + diff)");
 
-    /* Placeholder for Phase 2A feature validation
-       Real test would:
-       1. Run stratum evaluation twice
-       2. Verify delta = (result2 - result1)
-       3. Check all callbacks match expected diff
-    */
+    /*
+     * Step 1: insert a(1) → delta fires r(1) diff=+1
+     * Step 2: insert a(2) → delta fires r(2) diff=+1, NOT r(1) again
+     */
+    wl_ffi_dd_plan_t *dd_plan = NULL;
+    wl_ffi_plan_t *ffi = ffi_plan_from_source(".decl a(x: int32)\n"
+                                              ".decl r(x: int32)\n"
+                                              "r(x) :- a(x).\n",
+                                              &dd_plan);
+    if (!ffi) {
+        FAIL("could not generate FFI plan");
+        return 1;
+    }
 
-    printf(" ... SKIP (Phase 2A in progress)\n");
+    wl_session_t *session = NULL;
+    int rc = wl_session_create(wl_backend_columnar(), ffi, 1, &session);
+    if (rc != 0 || !session) {
+        wl_ffi_plan_free(ffi);
+        wl_ffi_dd_plan_free(dd_plan);
+        FAIL("session_create failed");
+        return 1;
+    }
+
+    delta_collector_t deltas;
+    memset(&deltas, 0, sizeof(deltas));
+    wl_session_set_delta_cb(session, collect_delta, &deltas);
+
+    /* Step 1: a(1) */
+    int64_t a1[] = { 1 };
+    wl_session_insert(session, "a", a1, 1, 1);
+    wl_session_step(session);
+    int count_after_step1 = deltas.count;
+
+    /* Step 2: a(2) */
+    int64_t a2[] = { 2 };
+    wl_session_insert(session, "a", a2, 1, 1);
+    rc = wl_session_step(session);
+
+    wl_session_destroy(session);
+    wl_ffi_plan_free(ffi);
+    wl_ffi_dd_plan_free(dd_plan);
+
+    if (rc != 0) {
+        FAIL("session_step returned non-zero");
+        return 1;
+    }
+
+    /* Step 1 must have fired r(1) */
+    bool found_r1_step1 = false;
+    for (int i = 0; i < count_after_step1; i++) {
+        if (strcmp(deltas.relations[i], "r") == 0 &&
+            deltas.ncols[i] == 1 && deltas.rows[i][0] == 1 &&
+            deltas.diffs[i] == 1) {
+            found_r1_step1 = true;
+            break;
+        }
+    }
+    if (!found_r1_step1) {
+        FAIL("expected r(1) diff=+1 after step 1");
+        return 1;
+    }
+
+    /* Step 2 must have fired r(2) but not r(1) again */
+    bool found_r2 = false;
+    bool found_r1_again = false;
+    for (int i = count_after_step1; i < deltas.count; i++) {
+        if (strcmp(deltas.relations[i], "r") != 0 || deltas.ncols[i] != 1)
+            continue;
+        if (deltas.rows[i][0] == 2 && deltas.diffs[i] == 1)
+            found_r2 = true;
+        if (deltas.rows[i][0] == 1)
+            found_r1_again = true;
+    }
+    if (!found_r2) {
+        FAIL("expected r(2) diff=+1 after step 2");
+        return 1;
+    }
+    if (found_r1_again) {
+        FAIL("r(1) fired again in step 2 (set diff broken)");
+        return 1;
+    }
+    PASS();
     return 0;
 }
 
@@ -145,8 +295,66 @@ test_delta_multi_step(void)
 {
     TEST("Delta propagation across multiple steps");
 
-    /* Placeholder for full Phase 2A implementation validation */
-    printf(" ... SKIP (Phase 2A in progress)\n");
+    /*
+     * Insert a(1), a(2) before any step.
+     * Step 1 → deltas: r(1), r(2)
+     * Step 2 (no new EDB) → no new deltas (convergence)
+     */
+    wl_ffi_dd_plan_t *dd_plan = NULL;
+    wl_ffi_plan_t *ffi = ffi_plan_from_source(".decl a(x: int32)\n"
+                                              ".decl r(x: int32)\n"
+                                              "r(x) :- a(x).\n",
+                                              &dd_plan);
+    if (!ffi) {
+        FAIL("could not generate FFI plan");
+        return 1;
+    }
+
+    wl_session_t *session = NULL;
+    int rc = wl_session_create(wl_backend_columnar(), ffi, 1, &session);
+    if (rc != 0 || !session) {
+        wl_ffi_plan_free(ffi);
+        wl_ffi_dd_plan_free(dd_plan);
+        FAIL("session_create failed");
+        return 1;
+    }
+
+    delta_collector_t deltas;
+    memset(&deltas, 0, sizeof(deltas));
+    wl_session_set_delta_cb(session, collect_delta, &deltas);
+
+    int64_t ab[] = { 1, 2 };
+    wl_session_insert(session, "a", ab, 2, 1);
+
+    /* Step 1: should fire r(1) and r(2) */
+    wl_session_step(session);
+    int count_step1 = deltas.count;
+
+    /* Step 2: no new EDB → no new deltas */
+    rc = wl_session_step(session);
+    int count_step2 = deltas.count;
+
+    wl_session_destroy(session);
+    wl_ffi_plan_free(ffi);
+    wl_ffi_dd_plan_free(dd_plan);
+
+    if (rc != 0) {
+        FAIL("session_step returned non-zero");
+        return 1;
+    }
+    if (count_step1 < 2) {
+        FAIL("expected at least 2 deltas after step 1");
+        return 1;
+    }
+    if (count_step2 != count_step1) {
+        char msg[64];
+        snprintf(msg, sizeof(msg),
+                 "step 2 fired %d extra deltas (expected 0)",
+                 count_step2 - count_step1);
+        FAIL(msg);
+        return 1;
+    }
+    PASS();
     return 0;
 }
 
@@ -167,8 +375,6 @@ main(void)
     printf("\n");
     printf("Passed: %d/%d\n", tests_passed, tests_run);
     printf("Failed: %d/%d\n", tests_failed, tests_run);
-    printf("\nNote: Full delta callback tests require Phase 2A implementation.\n");
-    printf("Currently testing callback infrastructure and signature validation.\n");
 
     return tests_failed > 0 ? 1 : 0;
 }

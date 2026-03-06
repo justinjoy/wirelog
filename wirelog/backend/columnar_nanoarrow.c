@@ -1616,17 +1616,161 @@ col_session_remove(wl_session_t *session, const char *relation,
 }
 
 /*
+ * col_row_in_sorted: Binary search for a row in a sorted int64 row buffer.
+ *
+ * @param sorted_data: Row-major int64 buffer sorted by memcmp row order
+ * @param nrows:       Number of rows in sorted_data
+ * @param ncols:       Columns per row
+ * @param row:         The row to search for
+ * @return true if found, false otherwise
+ */
+static bool
+col_row_in_sorted(const int64_t *sorted_data, uint32_t nrows, uint32_t ncols,
+                  const int64_t *row)
+{
+    if (!sorted_data || nrows == 0 || ncols == 0)
+        return false;
+    uint32_t lo = 0, hi = nrows;
+    size_t row_bytes = sizeof(int64_t) * ncols;
+    while (lo < hi) {
+        uint32_t mid = lo + (hi - lo) / 2;
+        int cmp = memcmp(sorted_data + (size_t)mid * ncols, row, row_bytes);
+        if (cmp == 0)
+            return true;
+        if (cmp < 0)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    return false;
+}
+
+/*
+ * col_idb_consolidate: Sort + dedup one IDB relation in-place.
+ *
+ * Reuses the eval stack + col_op_consolidate operator so sort order
+ * is consistent with the rest of the evaluation pipeline.
+ */
+static int
+col_idb_consolidate(col_rel_t *r)
+{
+    eval_stack_t stk;
+    eval_stack_init(&stk);
+    int rc = eval_stack_push(&stk, r, false); /* borrowed */
+    if (rc != 0)
+        return rc;
+    col_op_consolidate(&stk);
+    if (stk.top > 0) {
+        eval_entry_t ce = eval_stack_pop(&stk);
+        if (ce.owned && ce.rel != r) {
+            free(r->data);
+            r->data = ce.rel->data;
+            r->nrows = ce.rel->nrows;
+            r->capacity = ce.rel->capacity;
+            ce.rel->data = NULL;
+            col_rel_free_contents(ce.rel);
+            free(ce.rel);
+        }
+    }
+    return 0;
+}
+
+/*
+ * col_stratum_step_with_delta: Evaluate one stratum and fire delta callbacks.
+ *
+ * Phase 2A algorithm (full re-eval + set diff):
+ *   1. Snapshot each IDB relation's current sorted rows (prev state)
+ *   2. Run col_eval_stratum (appends newly derived rows)
+ *   3. Consolidate each IDB relation (sort + dedup)
+ *   4. Fire delta_cb(+1) for each row in new state not found in prev state
+ *   5. Free snapshots
+ *
+ * TODO(Phase 2B): Replace step 2 with semi-naive ΔR propagation.
+ */
+static int
+col_stratum_step_with_delta(const wl_ffi_stratum_plan_t *sp,
+                             wl_col_session_t *sess)
+{
+    uint32_t rc_cnt = sp->relation_count;
+
+    /* Allocate snapshot arrays */
+    int64_t **prev_data = (int64_t **)calloc(rc_cnt, sizeof(int64_t *));
+    uint32_t *prev_nrows = (uint32_t *)calloc(rc_cnt, sizeof(uint32_t));
+    uint32_t *prev_ncols = (uint32_t *)calloc(rc_cnt, sizeof(uint32_t));
+    if (!prev_data || !prev_nrows || !prev_ncols) {
+        free(prev_data);
+        free(prev_nrows);
+        free(prev_ncols);
+        return ENOMEM;
+    }
+
+    /* Step 1: snapshot sorted prev state for each IDB relation */
+    for (uint32_t ri = 0; ri < rc_cnt; ri++) {
+        col_rel_t *r = session_find_rel(sess, sp->relations[ri].name);
+        if (!r || r->nrows == 0 || r->ncols == 0)
+            continue;
+        size_t sz = (size_t)r->nrows * r->ncols * sizeof(int64_t);
+        prev_data[ri] = (int64_t *)malloc(sz);
+        if (!prev_data[ri]) {
+            for (uint32_t i = 0; i < ri; i++)
+                free(prev_data[i]);
+            free(prev_data);
+            free(prev_nrows);
+            free(prev_ncols);
+            return ENOMEM;
+        }
+        memcpy(prev_data[ri], r->data, sz);
+        prev_nrows[ri] = r->nrows;
+        prev_ncols[ri] = r->ncols;
+    }
+
+    /* Step 2: evaluate stratum (appends new rows to IDB relations) */
+    int rc = col_eval_stratum(sp, sess);
+    if (rc != 0)
+        goto cleanup;
+
+    /* Steps 3-4: consolidate each IDB relation, fire callbacks for new rows */
+    for (uint32_t ri = 0; ri < rc_cnt; ri++) {
+        col_rel_t *r = session_find_rel(sess, sp->relations[ri].name);
+        if (!r || r->nrows == 0)
+            continue;
+
+        /* Consolidate: sort + dedup so binary search is valid */
+        rc = col_idb_consolidate(r);
+        if (rc != 0)
+            goto cleanup;
+
+        /* Fire delta_cb(+1) for rows not present in prev sorted state */
+        uint32_t ncols = r->ncols;
+        for (uint32_t row = 0; row < r->nrows; row++) {
+            const int64_t *rowp = r->data + (size_t)row * ncols;
+            if (!col_row_in_sorted(prev_data[ri], prev_nrows[ri], ncols,
+                                   rowp)) {
+                sess->delta_cb(r->name, rowp, ncols, +1, sess->delta_data);
+            }
+        }
+    }
+
+cleanup:
+    for (uint32_t i = 0; i < rc_cnt; i++)
+        free(prev_data[i]);
+    free(prev_data);
+    free(prev_nrows);
+    free(prev_ncols);
+    return rc;
+}
+
+/*
  * col_session_step: Advance the session by one evaluation epoch
  *
  * Implements wl_compute_backend_t.session_step vtable slot.
  *
- * Phase 2A: Delegates to col_eval_stratum (full re-evaluation of stratum 0).
- * Fires delta_cb for newly derived tuples via the stratum evaluation path.
+ * Iterates all strata in plan order. For each stratum:
+ *   - Fast path (no delta_cb): col_eval_stratum directly
+ *   - Delta path: col_stratum_step_with_delta (snapshot + eval + set diff)
+ * Arena is reset after each stratum to reclaim temporary evaluation data.
  *
- * TODO(Phase 2B): Replace with semi-naive delta propagation:
- *   - Maintain ΔR (delta relations) alongside R (stable relations)
- *   - One epoch = propagate ΔR through rules to produce new ΔR'
- *   - Merge ΔR' into R, fire delta_cb for each new tuple
+ * TODO(Phase 2B): Replace set-diff delta with semi-naive ΔR propagation.
  *
  * @param session: wl_session_t* (cast to wl_col_session_t* internally)
  * @return 0 on success, non-zero on evaluation error
@@ -1634,16 +1778,13 @@ col_session_remove(wl_session_t *session, const char *relation,
 static int
 col_session_step(wl_session_t *session)
 {
-    /* Execute one epoch of evaluation: all strata in order.
-     * Each stratum evaluation computes all its IDB relations via fixed-point.
-     * Previous stratum's IDB becomes current stratum's EDB (natural layering).
-     * Arena is reset after each stratum to reclaim temporary evaluation data.
-     */
     wl_col_session_t *sess = COL_SESSION(session);
     const wl_ffi_plan_t *plan = sess->plan;
 
     for (uint32_t si = 0; si < plan->stratum_count; si++) {
-        int rc = col_eval_stratum(&plan->strata[si], sess);
+        const wl_ffi_stratum_plan_t *sp = &plan->strata[si];
+        int rc = sess->delta_cb ? col_stratum_step_with_delta(sp, sess)
+                                 : col_eval_stratum(sp, sess);
         if (rc != 0)
             return rc;
         /* Reset arena after stratum evaluation to free temporaries */
