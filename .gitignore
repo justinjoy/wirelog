@@ -60,3 +60,4 @@ bench/data/doop/*.csv
 # OS specific
 .DS_Store
 Thumbs.db
+subprojects/nanoarrow

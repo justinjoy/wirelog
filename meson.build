@@ -87,7 +87,7 @@ if ipc_option == 'enabled'
   endif
 endif
 
-#Phase 2A : nanoarrow for columnar backend(via git submodule)
+#Phase 2A : nanoarrow for columnar backend(via meson wrap)
 nanoarrow_proj = subproject('nanoarrow', default_options: ['tests=disabled', 'apps=disabled', 'ipc=disabled', 'device=disabled', 'testing=disabled'])
 nanoarrow_dep = nanoarrow_proj.get_variable('nanoarrow_dep')
 
