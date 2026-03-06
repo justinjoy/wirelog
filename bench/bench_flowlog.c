@@ -18,7 +18,7 @@
 
 #include "bench_util.h"
 
-#include "../wirelog/ffi/dd_ffi.h"
+#include "../wirelog/backend/dd/dd_ffi.h"
 #include "../wirelog/passes/fusion.h"
 #include "../wirelog/passes/jpp.h"
 #include "../wirelog/passes/sip.h"
@@ -215,25 +215,25 @@ run_pipeline_count(const char *source, uint32_t num_workers, int64_t *out_count)
     wl_jpp_apply(prog, NULL);
     wl_sip_apply(prog, NULL);
 
-    wl_ffi_dd_plan_t *dd_plan = NULL;
-    int rc = wl_ffi_dd_plan_generate(prog, &dd_plan);
+    wl_dd_plan_t *dd_plan = NULL;
+    int rc = wl_dd_plan_generate(prog, &dd_plan);
     if (rc != 0) {
         wirelog_program_free(prog);
         return -1;
     }
 
-    wl_ffi_plan_t *ffi = NULL;
+    wl_plan_t *ffi = NULL;
     rc = wl_dd_marshal_plan(dd_plan, &ffi);
     if (rc != 0) {
-        wl_ffi_dd_plan_free(dd_plan);
+        wl_dd_plan_free(dd_plan);
         wirelog_program_free(prog);
         return -1;
     }
 
     wl_dd_worker_t *w = wl_dd_worker_create(num_workers);
     if (!w) {
-        wl_ffi_plan_free(ffi);
-        wl_ffi_dd_plan_free(dd_plan);
+        wl_plan_free(ffi);
+        wl_dd_plan_free(dd_plan);
         wirelog_program_free(prog);
         return -1;
     }
@@ -241,8 +241,8 @@ run_pipeline_count(const char *source, uint32_t num_workers, int64_t *out_count)
     rc = wirelog_load_all_facts(prog, w);
     if (rc != 0) {
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
-        wl_ffi_dd_plan_free(dd_plan);
+        wl_plan_free(ffi);
+        wl_dd_plan_free(dd_plan);
         wirelog_program_free(prog);
         return -1;
     }
@@ -250,8 +250,8 @@ run_pipeline_count(const char *source, uint32_t num_workers, int64_t *out_count)
     rc = wirelog_load_input_files(prog, w);
     if (rc != 0) {
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
-        wl_ffi_dd_plan_free(dd_plan);
+        wl_plan_free(ffi);
+        wl_dd_plan_free(dd_plan);
         wirelog_program_free(prog);
         return -1;
     }
@@ -260,8 +260,8 @@ run_pipeline_count(const char *source, uint32_t num_workers, int64_t *out_count)
     rc = wl_dd_execute_cb(ffi, w, count_tuple_cb, &ctx);
 
     wl_dd_worker_destroy(w);
-    wl_ffi_plan_free(ffi);
-    wl_ffi_dd_plan_free(dd_plan);
+    wl_plan_free(ffi);
+    wl_dd_plan_free(dd_plan);
     wirelog_program_free(prog);
 
     if (rc == 0 && out_count)

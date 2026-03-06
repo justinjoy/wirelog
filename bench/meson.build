@@ -2,7 +2,7 @@ bench_flowlog = executable(
   'bench_flowlog',
   files('bench_flowlog.c'),
   wirelog_sources,
-  files('../wirelog/ffi/facts_loader.c'),
+  files('../wirelog/backend/dd/facts_loader.c'),
   files('../wirelog/cli/driver.c'),
   config_h_file,
   include_directories: [wirelog_inc, wirelog_src_inc],

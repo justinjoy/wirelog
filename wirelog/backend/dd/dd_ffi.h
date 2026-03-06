@@ -146,7 +146,7 @@
 
 /*
  * exec_plan.h provides the backend-agnostic plan types:
- *   wl_ffi_expr_tag_t, wl_plan_expr_buffer_t, wl_plan_op_type_t,
+ *   wl_plan_expr_tag_t, wl_plan_expr_buffer_t, wl_plan_op_type_t,
  *   wl_plan_op_t, wl_plan_relation_t, wl_plan_stratum_t,
  *   wl_plan_t
  *
