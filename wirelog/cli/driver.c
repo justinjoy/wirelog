@@ -11,12 +11,15 @@
 
 #include "driver.h"
 
-#include "../backend/dd/dd_ffi.h"
+#include "../backend.h"
+#include "../exec_plan_gen.h"
 #include "../intern.h"
 #include "../ir/program.h"
 #include "../passes/fusion.h"
 #include "../passes/jpp.h"
 #include "../passes/sip.h"
+#include "../session.h"
+#include "../session_facts.h"
 #include "../wirelog.h"
 
 #include <inttypes.h>
@@ -146,47 +149,37 @@ wl_run_pipeline(const char *source, uint32_t num_workers, FILE *out)
     wl_jpp_apply(prog, NULL);
     wl_sip_apply(prog, NULL);
 
-    /* 3. Generate DD plan */
-    wl_dd_plan_t *dd_plan = NULL;
-    int rc = wl_dd_plan_generate(prog, &dd_plan);
+    /* 3. Generate execution plan */
+    wl_plan_t *plan = NULL;
+    int rc = wl_plan_from_program(prog, &plan);
     if (rc != 0) {
         wirelog_program_free(prog);
         return -1;
     }
 
-    /* 3. Marshal to FFI */
-    wl_plan_t *ffi = NULL;
-    rc = wl_dd_marshal_plan(dd_plan, &ffi);
+    /* 4. Create columnar session */
+    wl_session_t *sess = NULL;
+    rc = wl_session_create(wl_backend_columnar(), plan, num_workers, &sess);
     if (rc != 0) {
-        wl_dd_plan_free(dd_plan);
+        wl_plan_free(plan);
         wirelog_program_free(prog);
         return -1;
     }
 
-    /* 4. Create worker and load inline facts */
-    wl_dd_worker_t *w = wl_dd_worker_create(num_workers);
-    if (!w) {
-        wl_plan_free(ffi);
-        wl_dd_plan_free(dd_plan);
-        wirelog_program_free(prog);
-        return -1;
-    }
-
-    rc = wirelog_load_all_facts(prog, w);
+    /* 4a. Load inline facts */
+    rc = wl_session_load_facts(sess, prog);
     if (rc != 0) {
-        wl_dd_worker_destroy(w);
-        wl_plan_free(ffi);
-        wl_dd_plan_free(dd_plan);
+        wl_session_destroy(sess);
+        wl_plan_free(plan);
         wirelog_program_free(prog);
         return -1;
     }
 
     /* 4b. Load external CSV files from .input directives */
-    rc = wirelog_load_input_files(prog, w);
+    rc = wl_session_load_input_files(sess, prog);
     if (rc != 0) {
-        wl_dd_worker_destroy(w);
-        wl_plan_free(ffi);
-        wl_dd_plan_free(dd_plan);
+        wl_session_destroy(sess);
+        wl_plan_free(plan);
         wirelog_program_free(prog);
         return -1;
     }
@@ -207,12 +200,11 @@ wl_run_pipeline(const char *source, uint32_t num_workers, FILE *out)
         .intern = prog->intern,
         .has_any_output = has_any_output,
     };
-    rc = wl_dd_execute_cb(ffi, w, print_tuple_cb, &ctx);
+    rc = wl_session_snapshot(sess, print_tuple_cb, &ctx);
 
-    /* 6. Cleanup */
-    wl_dd_worker_destroy(w);
-    wl_plan_free(ffi);
-    wl_dd_plan_free(dd_plan);
+    /* 7. Cleanup */
+    wl_session_destroy(sess);
+    wl_plan_free(plan);
     wirelog_program_free(prog);
 
     return rc;
