@@ -1331,6 +1331,26 @@ col_eval_stratum(const wl_plan_stratum_t *sp, wl_col_session_t *sess)
      * Recursive stratum: semi-naive fixed-point iteration.
      * Iterate until no new tuples are produced.
      *
+     * Pre-register empty IDB relations so that VARIABLE ops can find
+     * them on the first iteration (before any tuples are produced).
+     */
+    for (uint32_t ri = 0; ri < sp->relation_count; ri++) {
+        col_rel_t *existing = session_find_rel(sess, sp->relations[ri].name);
+        if (!existing) {
+            col_rel_t *empty = NULL;
+            int rc = col_rel_alloc(&empty, sp->relations[ri].name);
+            if (rc != 0)
+                return ENOMEM;
+            rc = session_add_rel(sess, empty);
+            if (rc != 0) {
+                col_rel_free_contents(empty);
+                free(empty);
+                return rc;
+            }
+        }
+    }
+
+    /*
      * TODO(Task #3): implement proper delta/delta_next tracking.
      * Current implementation: naive re-evaluation until stable.
      */
@@ -1391,6 +1411,19 @@ col_eval_stratum(const wl_plan_stratum_t *sp, wl_col_session_t *sess)
                     return rc;
                 }
             } else {
+                /* Adopt schema from result if target is still uninitialized */
+                if (target->ncols == 0 && result.rel->ncols > 0) {
+                    rc = col_rel_set_schema(
+                        target, result.rel->ncols,
+                        (const char *const *)result.rel->col_names);
+                    if (rc != 0) {
+                        if (result.owned) {
+                            col_rel_free_contents(result.rel);
+                            free(result.rel);
+                        }
+                        return rc;
+                    }
+                }
                 rc = col_rel_append_all(target, result.rel);
                 if (result.owned) {
                     col_rel_free_contents(result.rel);
