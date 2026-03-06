@@ -324,9 +324,9 @@ col_eval_filter_row(const uint8_t *buf, uint32_t size, const int64_t *row,
     uint32_t i = 0;
     while (i < size) {
         uint8_t tag = buf[i++];
-        switch ((wl_ffi_expr_tag_t)tag) {
+        switch ((wl_plan_expr_tag_t)tag) {
 
-        case WL_FFI_EXPR_VAR: {
+        case WL_PLAN_EXPR_VAR: {
             if (i + 2 > size)
                 goto bad;
             uint16_t nlen;
@@ -348,7 +348,7 @@ col_eval_filter_row(const uint8_t *buf, uint32_t size, const int64_t *row,
             break;
         }
 
-        case WL_FFI_EXPR_CONST_INT: {
+        case WL_PLAN_EXPR_CONST_INT: {
             if (i + 8 > size)
                 goto bad;
             int64_t v;
@@ -358,14 +358,14 @@ col_eval_filter_row(const uint8_t *buf, uint32_t size, const int64_t *row,
             break;
         }
 
-        case WL_FFI_EXPR_BOOL: {
+        case WL_PLAN_EXPR_BOOL: {
             if (i + 1 > size)
                 goto bad;
             filt_push(&s, buf[i++] ? 1 : 0);
             break;
         }
 
-        case WL_FFI_EXPR_CONST_STR: {
+        case WL_PLAN_EXPR_CONST_STR: {
             if (i + 2 > size)
                 goto bad;
             uint16_t slen;
@@ -377,69 +377,69 @@ col_eval_filter_row(const uint8_t *buf, uint32_t size, const int64_t *row,
         }
 
         /* Arithmetic */
-        case WL_FFI_EXPR_ARITH_ADD: {
+        case WL_PLAN_EXPR_ARITH_ADD: {
             int64_t b = filt_pop(&s), a = filt_pop(&s);
             filt_push(&s, a + b);
             break;
         }
-        case WL_FFI_EXPR_ARITH_SUB: {
+        case WL_PLAN_EXPR_ARITH_SUB: {
             int64_t b = filt_pop(&s), a = filt_pop(&s);
             filt_push(&s, a - b);
             break;
         }
-        case WL_FFI_EXPR_ARITH_MUL: {
+        case WL_PLAN_EXPR_ARITH_MUL: {
             int64_t b = filt_pop(&s), a = filt_pop(&s);
             filt_push(&s, a * b);
             break;
         }
-        case WL_FFI_EXPR_ARITH_DIV: {
+        case WL_PLAN_EXPR_ARITH_DIV: {
             int64_t b = filt_pop(&s), a = filt_pop(&s);
             filt_push(&s, b != 0 ? a / b : 0);
             break;
         }
-        case WL_FFI_EXPR_ARITH_MOD: {
+        case WL_PLAN_EXPR_ARITH_MOD: {
             int64_t b = filt_pop(&s), a = filt_pop(&s);
             filt_push(&s, b != 0 ? a % b : 0);
             break;
         }
 
         /* Comparisons */
-        case WL_FFI_EXPR_CMP_EQ: {
+        case WL_PLAN_EXPR_CMP_EQ: {
             int64_t b = filt_pop(&s), a = filt_pop(&s);
             filt_push(&s, a == b ? 1 : 0);
             break;
         }
-        case WL_FFI_EXPR_CMP_NEQ: {
+        case WL_PLAN_EXPR_CMP_NEQ: {
             int64_t b = filt_pop(&s), a = filt_pop(&s);
             filt_push(&s, a != b ? 1 : 0);
             break;
         }
-        case WL_FFI_EXPR_CMP_LT: {
+        case WL_PLAN_EXPR_CMP_LT: {
             int64_t b = filt_pop(&s), a = filt_pop(&s);
             filt_push(&s, a < b ? 1 : 0);
             break;
         }
-        case WL_FFI_EXPR_CMP_GT: {
+        case WL_PLAN_EXPR_CMP_GT: {
             int64_t b = filt_pop(&s), a = filt_pop(&s);
             filt_push(&s, a > b ? 1 : 0);
             break;
         }
-        case WL_FFI_EXPR_CMP_LTE: {
+        case WL_PLAN_EXPR_CMP_LTE: {
             int64_t b = filt_pop(&s), a = filt_pop(&s);
             filt_push(&s, a <= b ? 1 : 0);
             break;
         }
-        case WL_FFI_EXPR_CMP_GTE: {
+        case WL_PLAN_EXPR_CMP_GTE: {
             int64_t b = filt_pop(&s), a = filt_pop(&s);
             filt_push(&s, a >= b ? 1 : 0);
             break;
         }
 
         /* Aggregates: not valid in row-level filter, skip */
-        case WL_FFI_EXPR_AGG_COUNT:
-        case WL_FFI_EXPR_AGG_SUM:
-        case WL_FFI_EXPR_AGG_MIN:
-        case WL_FFI_EXPR_AGG_MAX:
+        case WL_PLAN_EXPR_AGG_COUNT:
+        case WL_PLAN_EXPR_AGG_SUM:
+        case WL_PLAN_EXPR_AGG_MIN:
+        case WL_PLAN_EXPR_AGG_MAX:
             break;
 
         default:
@@ -1204,38 +1204,38 @@ col_op_reduce(const wl_ffi_op_t *op, eval_stack_t *stack)
  * On success, the top of stack holds the result relation (owned).
  */
 static int
-col_eval_relation_plan(const wl_ffi_relation_plan_t *rplan, eval_stack_t *stack,
+col_eval_relation_plan(const wl_plan_relation_t *rplan, eval_stack_t *stack,
                        wl_col_session_t *sess)
 {
     for (uint32_t i = 0; i < rplan->op_count; i++) {
         const wl_ffi_op_t *op = &rplan->ops[i];
         int rc = 0;
         switch (op->op) {
-        case WL_FFI_OP_VARIABLE:
+        case WL_PLAN_OP_VARIABLE:
             rc = col_op_variable(op, stack, sess);
             break;
-        case WL_FFI_OP_MAP:
+        case WL_PLAN_OP_MAP:
             rc = col_op_map(op, stack);
             break;
-        case WL_FFI_OP_FILTER:
+        case WL_PLAN_OP_FILTER:
             rc = col_op_filter(op, stack);
             break;
-        case WL_FFI_OP_JOIN:
+        case WL_PLAN_OP_JOIN:
             rc = col_op_join(op, stack, sess);
             break;
-        case WL_FFI_OP_ANTIJOIN:
+        case WL_PLAN_OP_ANTIJOIN:
             rc = col_op_antijoin(op, stack, sess);
             break;
-        case WL_FFI_OP_CONCAT:
+        case WL_PLAN_OP_CONCAT:
             rc = col_op_concat(stack);
             break;
-        case WL_FFI_OP_CONSOLIDATE:
+        case WL_PLAN_OP_CONSOLIDATE:
             rc = col_op_consolidate(stack);
             break;
-        case WL_FFI_OP_REDUCE:
+        case WL_PLAN_OP_REDUCE:
             rc = col_op_reduce(op, stack);
             break;
-        case WL_FFI_OP_SEMIJOIN:
+        case WL_PLAN_OP_SEMIJOIN:
             rc = col_op_semijoin(op, stack, sess);
             break;
         default:
@@ -1256,12 +1256,12 @@ col_eval_relation_plan(const wl_ffi_relation_plan_t *rplan, eval_stack_t *stack,
  * Returns 0 on success, non-zero on error.
  */
 static int
-col_eval_stratum(const wl_ffi_stratum_plan_t *sp, wl_col_session_t *sess)
+col_eval_stratum(const wl_plan_stratum_t *sp, wl_col_session_t *sess)
 {
     if (!sp->is_recursive) {
         /* Non-recursive: evaluate each relation plan once */
         for (uint32_t ri = 0; ri < sp->relation_count; ri++) {
-            const wl_ffi_relation_plan_t *rp = &sp->relations[ri];
+            const wl_plan_relation_t *rp = &sp->relations[ri];
 
             eval_stack_t stack;
             eval_stack_init(&stack);
@@ -1344,7 +1344,7 @@ col_eval_stratum(const wl_ffi_stratum_plan_t *sp, wl_col_session_t *sess)
 
         /* One pass: evaluate each relation plan */
         for (uint32_t ri = 0; ri < sp->relation_count; ri++) {
-            const wl_ffi_relation_plan_t *rp = &sp->relations[ri];
+            const wl_plan_relation_t *rp = &sp->relations[ri];
 
             eval_stack_t stack;
             eval_stack_init(&stack);
@@ -1688,8 +1688,7 @@ col_idb_consolidate(col_rel_t *r)
  * TODO(Phase 2B): Replace step 2 with semi-naive ΔR propagation.
  */
 static int
-col_stratum_step_with_delta(const wl_ffi_stratum_plan_t *sp,
-                             wl_col_session_t *sess)
+col_stratum_step_with_delta(const wl_plan_stratum_t *sp, wl_col_session_t *sess)
 {
     uint32_t rc_cnt = sp->relation_count;
 
@@ -1782,9 +1781,9 @@ col_session_step(wl_session_t *session)
     const wl_ffi_plan_t *plan = sess->plan;
 
     for (uint32_t si = 0; si < plan->stratum_count; si++) {
-        const wl_ffi_stratum_plan_t *sp = &plan->strata[si];
+        const wl_plan_stratum_t *sp = &plan->strata[si];
         int rc = sess->delta_cb ? col_stratum_step_with_delta(sp, sess)
-                                 : col_eval_stratum(sp, sess);
+                                : col_eval_stratum(sp, sess);
         if (rc != 0)
             return rc;
         /* Reset arena after stratum evaluation to free temporaries */
@@ -1856,7 +1855,7 @@ col_session_snapshot(wl_session_t *session, wl_on_tuple_fn callback,
 
     /* Invoke callback for every tuple in every IDB relation */
     for (uint32_t si = 0; si < plan->stratum_count; si++) {
-        const wl_ffi_stratum_plan_t *sp = &plan->strata[si];
+        const wl_plan_stratum_t *sp = &plan->strata[si];
         for (uint32_t ri = 0; ri < sp->relation_count; ri++) {
             const char *rname = sp->relations[ri].name;
             col_rel_t *r = session_find_rel(sess, rname);

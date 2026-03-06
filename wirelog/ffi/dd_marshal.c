@@ -126,7 +126,7 @@ serialize_expr_node(const wl_ir_expr_t *expr, expr_buf_t *b)
         if (!expr->var_name)
             return -3;
         uint16_t name_len = (uint16_t)strlen(expr->var_name);
-        if (expr_buf_write_u8(b, WL_FFI_EXPR_VAR) != 0)
+        if (expr_buf_write_u8(b, WL_PLAN_EXPR_VAR) != 0)
             return -1;
         if (expr_buf_write_u16(b, name_len) != 0)
             return -1;
@@ -137,7 +137,7 @@ serialize_expr_node(const wl_ir_expr_t *expr, expr_buf_t *b)
     }
 
     case WL_IR_EXPR_CONST_INT:
-        if (expr_buf_write_u8(b, WL_FFI_EXPR_CONST_INT) != 0)
+        if (expr_buf_write_u8(b, WL_PLAN_EXPR_CONST_INT) != 0)
             return -1;
         if (expr_buf_write_i64(b, expr->int_value) != 0)
             return -1;
@@ -147,7 +147,7 @@ serialize_expr_node(const wl_ir_expr_t *expr, expr_buf_t *b)
         if (!expr->str_value)
             return -3;
         uint16_t str_len = (uint16_t)strlen(expr->str_value);
-        if (expr_buf_write_u8(b, WL_FFI_EXPR_CONST_STR) != 0)
+        if (expr_buf_write_u8(b, WL_PLAN_EXPR_CONST_STR) != 0)
             return -1;
         if (expr_buf_write_u16(b, str_len) != 0)
             return -1;
@@ -158,28 +158,28 @@ serialize_expr_node(const wl_ir_expr_t *expr, expr_buf_t *b)
     }
 
     case WL_IR_EXPR_BOOL:
-        if (expr_buf_write_u8(b, WL_FFI_EXPR_BOOL) != 0)
+        if (expr_buf_write_u8(b, WL_PLAN_EXPR_BOOL) != 0)
             return -1;
         if (expr_buf_write_u8(b, expr->bool_value ? 1 : 0) != 0)
             return -1;
         break;
 
     case WL_IR_EXPR_ARITH: {
-        uint8_t tag = (uint8_t)(WL_FFI_EXPR_ARITH_ADD + (int)expr->arith_op);
+        uint8_t tag = (uint8_t)(WL_PLAN_EXPR_ARITH_ADD + (int)expr->arith_op);
         if (expr_buf_write_u8(b, tag) != 0)
             return -1;
         break;
     }
 
     case WL_IR_EXPR_CMP: {
-        uint8_t tag = (uint8_t)(WL_FFI_EXPR_CMP_EQ + (int)expr->cmp_op);
+        uint8_t tag = (uint8_t)(WL_PLAN_EXPR_CMP_EQ + (int)expr->cmp_op);
         if (expr_buf_write_u8(b, tag) != 0)
             return -1;
         break;
     }
 
     case WL_IR_EXPR_AGG: {
-        uint8_t tag = (uint8_t)(WL_FFI_EXPR_AGG_COUNT + (int)expr->agg_fn);
+        uint8_t tag = (uint8_t)(WL_PLAN_EXPR_AGG_COUNT + (int)expr->agg_fn);
         if (expr_buf_write_u8(b, tag) != 0)
             return -1;
         break;
@@ -193,7 +193,7 @@ serialize_expr_node(const wl_ir_expr_t *expr, expr_buf_t *b)
 }
 
 int
-wl_ffi_expr_serialize(const struct wl_ir_expr *expr, wl_ffi_expr_buffer_t *out)
+wl_ffi_expr_serialize(const struct wl_ir_expr *expr, wl_plan_expr_buffer_t *out)
 {
     if (!expr) {
         out->data = NULL;
@@ -233,7 +233,7 @@ marshal_op(const wl_ffi_dd_op_t *src, wl_ffi_op_t *dst)
 
     switch (src->op) {
     case WL_FFI_DD_VARIABLE:
-        dst->op = WL_FFI_OP_VARIABLE;
+        dst->op = WL_PLAN_OP_VARIABLE;
         if (src->relation_name) {
             char *s = strdup_safe(src->relation_name);
             if (!s)
@@ -243,7 +243,7 @@ marshal_op(const wl_ffi_dd_op_t *src, wl_ffi_op_t *dst)
         break;
 
     case WL_FFI_DD_MAP:
-        dst->op = WL_FFI_OP_MAP;
+        dst->op = WL_PLAN_OP_MAP;
         dst->project_count = src->project_count;
         if (src->project_count > 0 && src->project_indices) {
             uint32_t *idx
@@ -256,8 +256,8 @@ marshal_op(const wl_ffi_dd_op_t *src, wl_ffi_op_t *dst)
         }
         /* Serialize per-column expressions (for computed projections) */
         if (src->project_exprs && src->project_count > 0) {
-            wl_ffi_expr_buffer_t *bufs = (wl_ffi_expr_buffer_t *)calloc(
-                src->project_count, sizeof(wl_ffi_expr_buffer_t));
+            wl_plan_expr_buffer_t *bufs = (wl_plan_expr_buffer_t *)calloc(
+                src->project_count, sizeof(wl_plan_expr_buffer_t));
             if (!bufs)
                 return -1;
             for (uint32_t i = 0; i < src->project_count; i++) {
@@ -279,7 +279,7 @@ marshal_op(const wl_ffi_dd_op_t *src, wl_ffi_op_t *dst)
         break;
 
     case WL_FFI_DD_FILTER:
-        dst->op = WL_FFI_OP_FILTER;
+        dst->op = WL_PLAN_OP_FILTER;
         if (src->filter_expr) {
             int rc = wl_ffi_expr_serialize(src->filter_expr, &dst->filter_expr);
             if (rc != 0)
@@ -288,7 +288,7 @@ marshal_op(const wl_ffi_dd_op_t *src, wl_ffi_op_t *dst)
         break;
 
     case WL_FFI_DD_JOIN:
-        dst->op = WL_FFI_OP_JOIN;
+        dst->op = WL_PLAN_OP_JOIN;
         if (src->right_relation) {
             char *s = strdup_safe(src->right_relation);
             if (!s)
@@ -348,7 +348,7 @@ marshal_op(const wl_ffi_dd_op_t *src, wl_ffi_op_t *dst)
         break;
 
     case WL_FFI_DD_ANTIJOIN:
-        dst->op = WL_FFI_OP_ANTIJOIN;
+        dst->op = WL_PLAN_OP_ANTIJOIN;
         if (src->right_relation) {
             char *s = strdup_safe(src->right_relation);
             if (!s)
@@ -414,7 +414,7 @@ marshal_op(const wl_ffi_dd_op_t *src, wl_ffi_op_t *dst)
         break;
 
     case WL_FFI_DD_REDUCE:
-        dst->op = WL_FFI_OP_REDUCE;
+        dst->op = WL_PLAN_OP_REDUCE;
         dst->agg_fn = src->agg_fn;
         dst->group_by_count = src->group_by_count;
         if (src->group_by_count > 0 && src->group_by_indices) {
@@ -429,15 +429,15 @@ marshal_op(const wl_ffi_dd_op_t *src, wl_ffi_op_t *dst)
         break;
 
     case WL_FFI_DD_CONCAT:
-        dst->op = WL_FFI_OP_CONCAT;
+        dst->op = WL_PLAN_OP_CONCAT;
         break;
 
     case WL_FFI_DD_CONSOLIDATE:
-        dst->op = WL_FFI_OP_CONSOLIDATE;
+        dst->op = WL_PLAN_OP_CONSOLIDATE;
         break;
 
     case WL_FFI_DD_SEMIJOIN:
-        dst->op = WL_FFI_OP_SEMIJOIN;
+        dst->op = WL_PLAN_OP_SEMIJOIN;
         if (src->right_relation) {
             char *s = strdup_safe(src->right_relation);
             if (!s)
@@ -570,8 +570,8 @@ wl_dd_marshal_plan(const wl_ffi_dd_plan_t *plan, wl_ffi_plan_t **out)
 
     /* Marshal strata */
     if (plan->stratum_count > 0) {
-        wl_ffi_stratum_plan_t *strata = (wl_ffi_stratum_plan_t *)calloc(
-            plan->stratum_count, sizeof(wl_ffi_stratum_plan_t));
+        wl_plan_stratum_t *strata = (wl_plan_stratum_t *)calloc(
+            plan->stratum_count, sizeof(wl_plan_stratum_t));
         if (!strata) {
             wl_ffi_plan_free(ffi);
             return -1;
@@ -581,14 +581,14 @@ wl_dd_marshal_plan(const wl_ffi_dd_plan_t *plan, wl_ffi_plan_t **out)
 
         for (uint32_t s = 0; s < plan->stratum_count; s++) {
             const wl_ffi_dd_stratum_plan_t *src_s = &plan->strata[s];
-            wl_ffi_stratum_plan_t *dst_s = &strata[s];
+            wl_plan_stratum_t *dst_s = &strata[s];
 
             dst_s->stratum_id = src_s->stratum_id;
             dst_s->is_recursive = src_s->is_recursive;
 
             if (src_s->relation_count > 0) {
-                wl_ffi_relation_plan_t *rels = (wl_ffi_relation_plan_t *)calloc(
-                    src_s->relation_count, sizeof(wl_ffi_relation_plan_t));
+                wl_plan_relation_t *rels = (wl_plan_relation_t *)calloc(
+                    src_s->relation_count, sizeof(wl_plan_relation_t));
                 if (!rels) {
                     wl_ffi_plan_free(ffi);
                     return -1;
@@ -599,7 +599,7 @@ wl_dd_marshal_plan(const wl_ffi_dd_plan_t *plan, wl_ffi_plan_t **out)
                 for (uint32_t r = 0; r < src_s->relation_count; r++) {
                     const wl_ffi_dd_relation_plan_t *src_r
                         = &src_s->relations[r];
-                    wl_ffi_relation_plan_t *dst_r = &rels[r];
+                    wl_plan_relation_t *dst_r = &rels[r];
 
                     /* Deep copy relation name */
                     if (src_r->name) {
@@ -651,15 +651,15 @@ wl_ffi_plan_free(wl_ffi_plan_t *plan)
 
     /* Free strata */
     if (plan->strata) {
-        wl_ffi_stratum_plan_t *strata
-            = (wl_ffi_stratum_plan_t *)(uintptr_t)plan->strata;
+        wl_plan_stratum_t *strata
+            = (wl_plan_stratum_t *)(uintptr_t)plan->strata;
         for (uint32_t s = 0; s < plan->stratum_count; s++) {
-            wl_ffi_stratum_plan_t *sp = &strata[s];
+            wl_plan_stratum_t *sp = &strata[s];
             if (sp->relations) {
-                wl_ffi_relation_plan_t *rels
-                    = (wl_ffi_relation_plan_t *)(uintptr_t)sp->relations;
+                wl_plan_relation_t *rels
+                    = (wl_plan_relation_t *)(uintptr_t)sp->relations;
                 for (uint32_t r = 0; r < sp->relation_count; r++) {
-                    wl_ffi_relation_plan_t *rp = &rels[r];
+                    wl_plan_relation_t *rp = &rels[r];
                     free((void *)rp->name);
                     if (rp->ops) {
                         wl_ffi_op_t *ops = (wl_ffi_op_t *)(uintptr_t)rp->ops;

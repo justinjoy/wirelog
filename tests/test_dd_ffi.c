@@ -70,7 +70,7 @@ plan_from_source(const char *src)
 /* Helper: find FFI relation plan by name                                   */
 /* ======================================================================== */
 
-static const wl_ffi_relation_plan_t *
+static const wl_plan_relation_t *
 find_ffi_relation(const wl_ffi_plan_t *plan, const char *name)
 {
     for (uint32_t s = 0; s < plan->stratum_count; s++) {
@@ -91,7 +91,7 @@ test_expr_serialize_null(void)
 {
     TEST("expr serialize: NULL expr -> data=NULL, size=0, rc=0");
 
-    wl_ffi_expr_buffer_t buf;
+    wl_plan_expr_buffer_t buf;
     memset(&buf, 0xFF, sizeof(buf)); /* poison to detect writes */
     int rc = wl_ffi_expr_serialize(NULL, &buf);
 
@@ -123,7 +123,7 @@ test_expr_serialize_var(void)
     wl_ir_expr_t *expr = wl_ir_expr_create(WL_IR_EXPR_VAR);
     expr->var_name = strdup_safe("x");
 
-    wl_ffi_expr_buffer_t buf;
+    wl_plan_expr_buffer_t buf;
     int rc = wl_ffi_expr_serialize(expr, &buf);
 
     if (rc != 0) {
@@ -142,7 +142,7 @@ test_expr_serialize_var(void)
         return;
     }
 
-    if (buf.data[0] != WL_FFI_EXPR_VAR) {
+    if (buf.data[0] != WL_PLAN_EXPR_VAR) {
         free(buf.data);
         wl_ir_expr_free(expr);
         FAIL("first byte should be EXPR_VAR tag");
@@ -178,7 +178,7 @@ test_expr_serialize_const_int(void)
     wl_ir_expr_t *expr = wl_ir_expr_create(WL_IR_EXPR_CONST_INT);
     expr->int_value = 42;
 
-    wl_ffi_expr_buffer_t buf;
+    wl_plan_expr_buffer_t buf;
     int rc = wl_ffi_expr_serialize(expr, &buf);
 
     if (rc != 0) {
@@ -197,7 +197,7 @@ test_expr_serialize_const_int(void)
         return;
     }
 
-    if (buf.data[0] != WL_FFI_EXPR_CONST_INT) {
+    if (buf.data[0] != WL_PLAN_EXPR_CONST_INT) {
         free(buf.data);
         wl_ir_expr_free(expr);
         FAIL("first byte should be EXPR_CONST_INT tag");
@@ -230,7 +230,7 @@ test_expr_serialize_const_str(void)
     wl_ir_expr_t *expr = wl_ir_expr_create(WL_IR_EXPR_CONST_STR);
     expr->str_value = strdup_safe("hi");
 
-    wl_ffi_expr_buffer_t buf;
+    wl_plan_expr_buffer_t buf;
     int rc = wl_ffi_expr_serialize(expr, &buf);
 
     if (rc != 0) {
@@ -249,7 +249,7 @@ test_expr_serialize_const_str(void)
         return;
     }
 
-    if (buf.data[0] != WL_FFI_EXPR_CONST_STR) {
+    if (buf.data[0] != WL_PLAN_EXPR_CONST_STR) {
         free(buf.data);
         wl_ir_expr_free(expr);
         FAIL("first byte should be EXPR_CONST_STR tag");
@@ -284,7 +284,7 @@ test_expr_serialize_bool(void)
     wl_ir_expr_t *expr = wl_ir_expr_create(WL_IR_EXPR_BOOL);
     expr->bool_value = true;
 
-    wl_ffi_expr_buffer_t buf;
+    wl_plan_expr_buffer_t buf;
     int rc = wl_ffi_expr_serialize(expr, &buf);
 
     if (rc != 0) {
@@ -303,7 +303,7 @@ test_expr_serialize_bool(void)
         return;
     }
 
-    if (buf.data[0] != WL_FFI_EXPR_BOOL) {
+    if (buf.data[0] != WL_PLAN_EXPR_BOOL) {
         free(buf.data);
         wl_ir_expr_free(expr);
         FAIL("first byte should be EXPR_BOOL tag");
@@ -339,7 +339,7 @@ test_expr_serialize_cmp_gt(void)
     wl_ir_expr_add_child(cmp, var_x);
     wl_ir_expr_add_child(cmp, const5);
 
-    wl_ffi_expr_buffer_t buf;
+    wl_plan_expr_buffer_t buf;
     int rc = wl_ffi_expr_serialize(cmp, &buf);
 
     if (rc != 0) {
@@ -371,7 +371,7 @@ test_expr_serialize_cmp_gt(void)
     }
 
     /* First instruction: VAR("X") */
-    if (buf.data[0] != WL_FFI_EXPR_VAR) {
+    if (buf.data[0] != WL_PLAN_EXPR_VAR) {
         free(buf.data);
         wl_ir_expr_free(cmp);
         FAIL("byte[0] should be EXPR_VAR");
@@ -379,7 +379,7 @@ test_expr_serialize_cmp_gt(void)
     }
 
     /* Second instruction: CONST_INT(5) at offset 4 */
-    if (buf.data[4] != WL_FFI_EXPR_CONST_INT) {
+    if (buf.data[4] != WL_PLAN_EXPR_CONST_INT) {
         free(buf.data);
         wl_ir_expr_free(cmp);
         FAIL("byte[4] should be EXPR_CONST_INT");
@@ -387,7 +387,7 @@ test_expr_serialize_cmp_gt(void)
     }
 
     /* Third instruction: CMP_GT at offset 13 */
-    if (buf.data[13] != WL_FFI_EXPR_CMP_GT) {
+    if (buf.data[13] != WL_PLAN_EXPR_CMP_GT) {
         free(buf.data);
         wl_ir_expr_free(cmp);
         FAIL("last byte should be EXPR_CMP_GT");
@@ -415,7 +415,7 @@ test_expr_serialize_arith_add(void)
     wl_ir_expr_add_child(arith, var_a);
     wl_ir_expr_add_child(arith, var_b);
 
-    wl_ffi_expr_buffer_t buf;
+    wl_plan_expr_buffer_t buf;
     int rc = wl_ffi_expr_serialize(arith, &buf);
 
     if (rc != 0) {
@@ -441,7 +441,7 @@ test_expr_serialize_arith_add(void)
     }
 
     /* First: VAR(A) */
-    if (buf.data[0] != WL_FFI_EXPR_VAR) {
+    if (buf.data[0] != WL_PLAN_EXPR_VAR) {
         free(buf.data);
         wl_ir_expr_free(arith);
         FAIL("byte[0] should be EXPR_VAR");
@@ -449,7 +449,7 @@ test_expr_serialize_arith_add(void)
     }
 
     /* Second: VAR(B) at offset 4 */
-    if (buf.data[4] != WL_FFI_EXPR_VAR) {
+    if (buf.data[4] != WL_PLAN_EXPR_VAR) {
         free(buf.data);
         wl_ir_expr_free(arith);
         FAIL("byte[4] should be EXPR_VAR");
@@ -457,7 +457,7 @@ test_expr_serialize_arith_add(void)
     }
 
     /* Last: ARITH_ADD */
-    if (buf.data[8] != WL_FFI_EXPR_ARITH_ADD) {
+    if (buf.data[8] != WL_PLAN_EXPR_ARITH_ADD) {
         free(buf.data);
         wl_ir_expr_free(arith);
         FAIL("byte[8] should be EXPR_ARITH_ADD");
@@ -494,7 +494,7 @@ test_expr_serialize_nested(void)
     wl_ir_expr_add_child(gt, add);
     wl_ir_expr_add_child(gt, const5);
 
-    wl_ffi_expr_buffer_t buf;
+    wl_plan_expr_buffer_t buf;
     int rc = wl_ffi_expr_serialize(gt, &buf);
 
     if (rc != 0) {
@@ -522,35 +522,35 @@ test_expr_serialize_nested(void)
     }
 
     /* Verify ordering: VAR first, then CONST_INT, ADD, CONST_INT, CMP_GT */
-    if (buf.data[0] != WL_FFI_EXPR_VAR) {
+    if (buf.data[0] != WL_PLAN_EXPR_VAR) {
         free(buf.data);
         wl_ir_expr_free(gt);
         FAIL("byte[0] should be EXPR_VAR");
         return;
     }
 
-    if (buf.data[4] != WL_FFI_EXPR_CONST_INT) {
+    if (buf.data[4] != WL_PLAN_EXPR_CONST_INT) {
         free(buf.data);
         wl_ir_expr_free(gt);
         FAIL("byte[4] should be EXPR_CONST_INT");
         return;
     }
 
-    if (buf.data[13] != WL_FFI_EXPR_ARITH_ADD) {
+    if (buf.data[13] != WL_PLAN_EXPR_ARITH_ADD) {
         free(buf.data);
         wl_ir_expr_free(gt);
         FAIL("byte[13] should be EXPR_ARITH_ADD");
         return;
     }
 
-    if (buf.data[14] != WL_FFI_EXPR_CONST_INT) {
+    if (buf.data[14] != WL_PLAN_EXPR_CONST_INT) {
         free(buf.data);
         wl_ir_expr_free(gt);
         FAIL("byte[14] should be EXPR_CONST_INT");
         return;
     }
 
-    if (buf.data[23] != WL_FFI_EXPR_CMP_GT) {
+    if (buf.data[23] != WL_PLAN_EXPR_CMP_GT) {
         free(buf.data);
         wl_ir_expr_free(gt);
         FAIL("byte[23] should be EXPR_CMP_GT");
@@ -748,7 +748,7 @@ test_marshal_scan_op(void)
         return;
     }
 
-    const wl_ffi_relation_plan_t *rp = find_ffi_relation(ffi, "r");
+    const wl_plan_relation_t *rp = find_ffi_relation(ffi, "r");
     if (!rp) {
         wl_ffi_plan_free(ffi);
         wl_ffi_dd_plan_free(plan);
@@ -759,7 +759,7 @@ test_marshal_scan_op(void)
     /* Should have a VARIABLE op referencing "a" */
     bool found_var = false;
     for (uint32_t i = 0; i < rp->op_count; i++) {
-        if (rp->ops[i].op == WL_FFI_OP_VARIABLE) {
+        if (rp->ops[i].op == WL_PLAN_OP_VARIABLE) {
             if (rp->ops[i].relation_name
                 && strcmp(rp->ops[i].relation_name, "a") == 0) {
                 found_var = true;
@@ -801,7 +801,7 @@ test_marshal_filter_op(void)
         return;
     }
 
-    const wl_ffi_relation_plan_t *rp = find_ffi_relation(ffi, "r");
+    const wl_plan_relation_t *rp = find_ffi_relation(ffi, "r");
     if (!rp) {
         wl_ffi_plan_free(ffi);
         wl_ffi_dd_plan_free(plan);
@@ -811,7 +811,7 @@ test_marshal_filter_op(void)
 
     bool found_filter = false;
     for (uint32_t i = 0; i < rp->op_count; i++) {
-        if (rp->ops[i].op == WL_FFI_OP_FILTER) {
+        if (rp->ops[i].op == WL_PLAN_OP_FILTER) {
             if (rp->ops[i].filter_expr.data != NULL
                 && rp->ops[i].filter_expr.size > 0) {
                 found_filter = true;
@@ -858,7 +858,7 @@ test_marshal_map_op(void)
         return;
     }
 
-    const wl_ffi_relation_plan_t *rp = find_ffi_relation(ffi, "r");
+    const wl_plan_relation_t *rp = find_ffi_relation(ffi, "r");
     if (!rp) {
         wl_ffi_plan_free(ffi);
         wl_ffi_dd_plan_free(plan);
@@ -868,7 +868,7 @@ test_marshal_map_op(void)
 
     bool found_map = false;
     for (uint32_t i = 0; i < rp->op_count; i++) {
-        if (rp->ops[i].op == WL_FFI_OP_MAP) {
+        if (rp->ops[i].op == WL_PLAN_OP_MAP) {
             if (rp->ops[i].project_count > 0) {
                 found_map = true;
             } else {
@@ -914,7 +914,7 @@ test_marshal_map_exprs(void)
         return;
     }
 
-    const wl_ffi_relation_plan_t *rp = find_ffi_relation(ffi, "b");
+    const wl_plan_relation_t *rp = find_ffi_relation(ffi, "b");
     if (!rp) {
         wl_ffi_plan_free(ffi);
         wl_ffi_dd_plan_free(plan);
@@ -926,7 +926,7 @@ test_marshal_map_exprs(void)
      * for column 1 (y+1) and NULL data for column 0 (simple x). */
     bool found = false;
     for (uint32_t i = 0; i < rp->op_count; i++) {
-        if (rp->ops[i].op == WL_FFI_OP_MAP && rp->ops[i].map_exprs != NULL
+        if (rp->ops[i].op == WL_PLAN_OP_MAP && rp->ops[i].map_exprs != NULL
             && rp->ops[i].map_expr_count == 2) {
             /* Column 0 (x) should have no expression (data==NULL) */
             if (rp->ops[i].map_exprs[0].data != NULL) {
@@ -982,7 +982,7 @@ test_marshal_join_op(void)
         return;
     }
 
-    const wl_ffi_relation_plan_t *rp = find_ffi_relation(ffi, "r");
+    const wl_plan_relation_t *rp = find_ffi_relation(ffi, "r");
     if (!rp) {
         wl_ffi_plan_free(ffi);
         wl_ffi_dd_plan_free(plan);
@@ -992,7 +992,7 @@ test_marshal_join_op(void)
 
     bool found_join = false;
     for (uint32_t i = 0; i < rp->op_count; i++) {
-        if (rp->ops[i].op == WL_FFI_OP_JOIN) {
+        if (rp->ops[i].op == WL_PLAN_OP_JOIN) {
             if (rp->ops[i].key_count < 1) {
                 wl_ffi_plan_free(ffi);
                 wl_ffi_dd_plan_free(plan);
@@ -1056,7 +1056,7 @@ test_marshal_antijoin_op(void)
         return;
     }
 
-    const wl_ffi_relation_plan_t *rp = find_ffi_relation(ffi, "r");
+    const wl_plan_relation_t *rp = find_ffi_relation(ffi, "r");
     if (!rp) {
         wl_ffi_plan_free(ffi);
         wl_ffi_dd_plan_free(plan);
@@ -1066,7 +1066,7 @@ test_marshal_antijoin_op(void)
 
     bool found_antijoin = false;
     for (uint32_t i = 0; i < rp->op_count; i++) {
-        if (rp->ops[i].op == WL_FFI_OP_ANTIJOIN) {
+        if (rp->ops[i].op == WL_PLAN_OP_ANTIJOIN) {
             if (!rp->ops[i].right_relation) {
                 wl_ffi_plan_free(ffi);
                 wl_ffi_dd_plan_free(plan);
@@ -1117,7 +1117,7 @@ test_marshal_reduce_op(void)
         return;
     }
 
-    const wl_ffi_relation_plan_t *rp = find_ffi_relation(ffi, "r");
+    const wl_plan_relation_t *rp = find_ffi_relation(ffi, "r");
     if (!rp) {
         wl_ffi_plan_free(ffi);
         wl_ffi_dd_plan_free(plan);
@@ -1127,7 +1127,7 @@ test_marshal_reduce_op(void)
 
     bool found_reduce = false;
     for (uint32_t i = 0; i < rp->op_count; i++) {
-        if (rp->ops[i].op == WL_FFI_OP_REDUCE) {
+        if (rp->ops[i].op == WL_PLAN_OP_REDUCE) {
             if (rp->ops[i].group_by_count == 0) {
                 wl_ffi_plan_free(ffi);
                 wl_ffi_dd_plan_free(plan);
@@ -1180,7 +1180,7 @@ test_marshal_union_ops(void)
         return;
     }
 
-    const wl_ffi_relation_plan_t *rp = find_ffi_relation(ffi, "r");
+    const wl_plan_relation_t *rp = find_ffi_relation(ffi, "r");
     if (!rp) {
         wl_ffi_plan_free(ffi);
         wl_ffi_dd_plan_free(plan);
@@ -1191,9 +1191,9 @@ test_marshal_union_ops(void)
     bool found_concat = false;
     bool found_consolidate = false;
     for (uint32_t i = 0; i < rp->op_count; i++) {
-        if (rp->ops[i].op == WL_FFI_OP_CONCAT)
+        if (rp->ops[i].op == WL_PLAN_OP_CONCAT)
             found_concat = true;
-        if (rp->ops[i].op == WL_FFI_OP_CONSOLIDATE)
+        if (rp->ops[i].op == WL_PLAN_OP_CONSOLIDATE)
             found_consolidate = true;
     }
 
@@ -1382,7 +1382,7 @@ test_marshal_relation_name_copied(void)
         return;
     }
 
-    const wl_ffi_relation_plan_t *rp = find_ffi_relation(ffi, "r");
+    const wl_plan_relation_t *rp = find_ffi_relation(ffi, "r");
     if (!rp) {
         wl_ffi_plan_free(ffi);
         wl_ffi_dd_plan_free(plan);
@@ -1476,7 +1476,7 @@ test_marshal_join_keys_copied(void)
         return;
     }
 
-    const wl_ffi_relation_plan_t *rp = find_ffi_relation(ffi, "r");
+    const wl_plan_relation_t *rp = find_ffi_relation(ffi, "r");
     if (!rp) {
         wl_ffi_plan_free(ffi);
         wl_ffi_dd_plan_free(plan);
@@ -1486,7 +1486,7 @@ test_marshal_join_keys_copied(void)
 
     /* Find JOIN op and verify key strings */
     for (uint32_t i = 0; i < rp->op_count; i++) {
-        if (rp->ops[i].op == WL_FFI_OP_JOIN) {
+        if (rp->ops[i].op == WL_PLAN_OP_JOIN) {
             if (rp->ops[i].key_count != 1) {
                 wl_ffi_plan_free(ffi);
                 wl_ffi_dd_plan_free(plan);
@@ -1564,7 +1564,7 @@ test_ffi_plan_free_after_marshal(void)
         (void)ffi->strata[s].stratum_id;
         (void)ffi->strata[s].is_recursive;
         for (uint32_t r = 0; r < ffi->strata[s].relation_count; r++) {
-            const wl_ffi_relation_plan_t *rp = &ffi->strata[s].relations[r];
+            const wl_plan_relation_t *rp = &ffi->strata[s].relations[r];
             (void)rp->name;
             for (uint32_t o = 0; o < rp->op_count; o++) {
                 (void)rp->ops[o].op;
@@ -1596,13 +1596,13 @@ test_ffi_types_exist(void)
         return;
     }
 
-    if (sizeof(wl_ffi_relation_plan_t) == 0) {
-        FAIL("wl_ffi_relation_plan_t has zero size");
+    if (sizeof(wl_plan_relation_t) == 0) {
+        FAIL("wl_plan_relation_t has zero size");
         return;
     }
 
-    if (sizeof(wl_ffi_stratum_plan_t) == 0) {
-        FAIL("wl_ffi_stratum_plan_t has zero size");
+    if (sizeof(wl_plan_stratum_t) == 0) {
+        FAIL("wl_plan_stratum_t has zero size");
         return;
     }
 
@@ -1611,8 +1611,8 @@ test_ffi_types_exist(void)
         return;
     }
 
-    if (sizeof(wl_ffi_expr_buffer_t) == 0) {
-        FAIL("wl_ffi_expr_buffer_t has zero size");
+    if (sizeof(wl_plan_expr_buffer_t) == 0) {
+        FAIL("wl_plan_expr_buffer_t has zero size");
         return;
     }
 
@@ -1624,36 +1624,36 @@ test_ffi_op_type_values(void)
 {
     TEST("FFI op types: explicit integer values match spec");
 
-    if (WL_FFI_OP_VARIABLE != 0) {
-        FAIL("WL_FFI_OP_VARIABLE should be 0");
+    if (WL_PLAN_OP_VARIABLE != 0) {
+        FAIL("WL_PLAN_OP_VARIABLE should be 0");
         return;
     }
-    if (WL_FFI_OP_MAP != 1) {
-        FAIL("WL_FFI_OP_MAP should be 1");
+    if (WL_PLAN_OP_MAP != 1) {
+        FAIL("WL_PLAN_OP_MAP should be 1");
         return;
     }
-    if (WL_FFI_OP_FILTER != 2) {
-        FAIL("WL_FFI_OP_FILTER should be 2");
+    if (WL_PLAN_OP_FILTER != 2) {
+        FAIL("WL_PLAN_OP_FILTER should be 2");
         return;
     }
-    if (WL_FFI_OP_JOIN != 3) {
-        FAIL("WL_FFI_OP_JOIN should be 3");
+    if (WL_PLAN_OP_JOIN != 3) {
+        FAIL("WL_PLAN_OP_JOIN should be 3");
         return;
     }
-    if (WL_FFI_OP_ANTIJOIN != 4) {
-        FAIL("WL_FFI_OP_ANTIJOIN should be 4");
+    if (WL_PLAN_OP_ANTIJOIN != 4) {
+        FAIL("WL_PLAN_OP_ANTIJOIN should be 4");
         return;
     }
-    if (WL_FFI_OP_REDUCE != 5) {
-        FAIL("WL_FFI_OP_REDUCE should be 5");
+    if (WL_PLAN_OP_REDUCE != 5) {
+        FAIL("WL_PLAN_OP_REDUCE should be 5");
         return;
     }
-    if (WL_FFI_OP_CONCAT != 6) {
-        FAIL("WL_FFI_OP_CONCAT should be 6");
+    if (WL_PLAN_OP_CONCAT != 6) {
+        FAIL("WL_PLAN_OP_CONCAT should be 6");
         return;
     }
-    if (WL_FFI_OP_CONSOLIDATE != 7) {
-        FAIL("WL_FFI_OP_CONSOLIDATE should be 7");
+    if (WL_PLAN_OP_CONSOLIDATE != 7) {
+        FAIL("WL_PLAN_OP_CONSOLIDATE should be 7");
         return;
     }
 
@@ -1665,32 +1665,32 @@ test_ffi_expr_tag_values(void)
 {
     TEST("FFI expr tags: values match spec");
 
-    if (WL_FFI_EXPR_VAR != 0x01) {
-        FAIL("WL_FFI_EXPR_VAR should be 0x01");
+    if (WL_PLAN_EXPR_VAR != 0x01) {
+        FAIL("WL_PLAN_EXPR_VAR should be 0x01");
         return;
     }
-    if (WL_FFI_EXPR_CONST_INT != 0x02) {
-        FAIL("WL_FFI_EXPR_CONST_INT should be 0x02");
+    if (WL_PLAN_EXPR_CONST_INT != 0x02) {
+        FAIL("WL_PLAN_EXPR_CONST_INT should be 0x02");
         return;
     }
-    if (WL_FFI_EXPR_CONST_STR != 0x03) {
-        FAIL("WL_FFI_EXPR_CONST_STR should be 0x03");
+    if (WL_PLAN_EXPR_CONST_STR != 0x03) {
+        FAIL("WL_PLAN_EXPR_CONST_STR should be 0x03");
         return;
     }
-    if (WL_FFI_EXPR_BOOL != 0x04) {
-        FAIL("WL_FFI_EXPR_BOOL should be 0x04");
+    if (WL_PLAN_EXPR_BOOL != 0x04) {
+        FAIL("WL_PLAN_EXPR_BOOL should be 0x04");
         return;
     }
-    if (WL_FFI_EXPR_ARITH_ADD != 0x10) {
-        FAIL("WL_FFI_EXPR_ARITH_ADD should be 0x10");
+    if (WL_PLAN_EXPR_ARITH_ADD != 0x10) {
+        FAIL("WL_PLAN_EXPR_ARITH_ADD should be 0x10");
         return;
     }
-    if (WL_FFI_EXPR_CMP_EQ != 0x20) {
-        FAIL("WL_FFI_EXPR_CMP_EQ should be 0x20");
+    if (WL_PLAN_EXPR_CMP_EQ != 0x20) {
+        FAIL("WL_PLAN_EXPR_CMP_EQ should be 0x20");
         return;
     }
-    if (WL_FFI_EXPR_AGG_COUNT != 0x30) {
-        FAIL("WL_FFI_EXPR_AGG_COUNT should be 0x30");
+    if (WL_PLAN_EXPR_AGG_COUNT != 0x30) {
+        FAIL("WL_PLAN_EXPR_AGG_COUNT should be 0x30");
         return;
     }
 

@@ -26,10 +26,10 @@
  *   Internal (dd_plan.h)         FFI (dd_ffi.h)
  *   -------------------------    ---------------------------
  *   wl_ffi_dd_op_t                   wl_ffi_op_t
- *   wl_ffi_dd_relation_plan_t        wl_ffi_relation_plan_t
- *   wl_ffi_dd_stratum_plan_t         wl_ffi_stratum_plan_t
+ *   wl_ffi_dd_relation_plan_t        wl_plan_relation_t
+ *   wl_ffi_dd_stratum_plan_t         wl_plan_stratum_t
  *   wl_ffi_dd_plan_t                 wl_ffi_plan_t
- *   wl_ir_expr (tree)            wl_ffi_expr_buffer_t (flat)
+ *   wl_ir_expr (tree)            wl_plan_expr_buffer_t (flat)
  *
  * A marshalling step (wl_dd_marshal_plan) converts the internal plan
  * to the FFI representation.  The Rust side receives a const pointer
@@ -146,8 +146,8 @@
 
 /*
  * exec_plan.h provides the backend-agnostic plan types:
- *   wl_ffi_expr_tag_t, wl_ffi_expr_buffer_t, wl_ffi_op_type_t,
- *   wl_ffi_op_t, wl_ffi_relation_plan_t, wl_ffi_stratum_plan_t,
+ *   wl_ffi_expr_tag_t, wl_plan_expr_buffer_t, wl_plan_op_type_t,
+ *   wl_ffi_op_t, wl_plan_relation_t, wl_plan_stratum_t,
  *   wl_ffi_plan_t
  *
  * These types are shared with the columnar C11 backend (Phase 2A).
@@ -354,7 +354,8 @@ wl_ffi_plan_free(wl_ffi_plan_t *plan);
  *   -3: Malformed expression tree (unknown node type).
  */
 int
-wl_ffi_expr_serialize(const struct wl_ir_expr *expr, wl_ffi_expr_buffer_t *out);
+wl_ffi_expr_serialize(const struct wl_ir_expr *expr,
+                      wl_plan_expr_buffer_t *out);
 
 /* ======================================================================== */
 /* Persistent Session Handle (opaque)                                       */

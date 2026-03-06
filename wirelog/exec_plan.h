@@ -57,60 +57,60 @@
 /* ======================================================================== */
 
 /**
- * wl_ffi_expr_tag_t:
+ * wl_plan_expr_tag_t:
  *
  * Opcodes for the serialized postfix expression encoding.
  * Each opcode is stored as a single uint8_t byte in the expression
  * buffer, followed by its payload (if any).
  *
  * Value-producing tags (push one value onto the evaluation stack):
- *   WL_FFI_EXPR_VAR:        Variable reference.
+ *   WL_PLAN_EXPR_VAR:        Variable reference.
  *                            Payload: [name_len:u16] [name:u8*name_len]
- *   WL_FFI_EXPR_CONST_INT:  64-bit signed integer literal.
+ *   WL_PLAN_EXPR_CONST_INT:  64-bit signed integer literal.
  *                            Payload: [value:i64] (8 bytes, little-endian)
- *   WL_FFI_EXPR_CONST_STR:  String literal.
+ *   WL_PLAN_EXPR_CONST_STR:  String literal.
  *                            Payload: [len:u16] [data:u8*len]
- *   WL_FFI_EXPR_BOOL:       Boolean literal.
+ *   WL_PLAN_EXPR_BOOL:       Boolean literal.
  *                            Payload: [value:u8] (0=false, 1=true)
  *
  * Binary operator tags (pop 2, push 1):
- *   WL_FFI_EXPR_ARITH_ADD .. WL_FFI_EXPR_ARITH_MOD
- *   WL_FFI_EXPR_CMP_EQ     .. WL_FFI_EXPR_CMP_GTE
+ *   WL_PLAN_EXPR_ARITH_ADD .. WL_PLAN_EXPR_ARITH_MOD
+ *   WL_PLAN_EXPR_CMP_EQ     .. WL_PLAN_EXPR_CMP_GTE
  *
  * Unary aggregate tags (pop 1, push 1):
- *   WL_FFI_EXPR_AGG_COUNT .. WL_FFI_EXPR_AGG_MAX
+ *   WL_PLAN_EXPR_AGG_COUNT .. WL_PLAN_EXPR_AGG_MAX
  */
 typedef enum {
     /* Value producers */
-    WL_FFI_EXPR_VAR = 0x01,
-    WL_FFI_EXPR_CONST_INT = 0x02,
-    WL_FFI_EXPR_CONST_STR = 0x03,
-    WL_FFI_EXPR_BOOL = 0x04,
+    WL_PLAN_EXPR_VAR = 0x01,
+    WL_PLAN_EXPR_CONST_INT = 0x02,
+    WL_PLAN_EXPR_CONST_STR = 0x03,
+    WL_PLAN_EXPR_BOOL = 0x04,
 
     /* Arithmetic operators (binary, pop 2 push 1) */
-    WL_FFI_EXPR_ARITH_ADD = 0x10,
-    WL_FFI_EXPR_ARITH_SUB = 0x11,
-    WL_FFI_EXPR_ARITH_MUL = 0x12,
-    WL_FFI_EXPR_ARITH_DIV = 0x13,
-    WL_FFI_EXPR_ARITH_MOD = 0x14,
+    WL_PLAN_EXPR_ARITH_ADD = 0x10,
+    WL_PLAN_EXPR_ARITH_SUB = 0x11,
+    WL_PLAN_EXPR_ARITH_MUL = 0x12,
+    WL_PLAN_EXPR_ARITH_DIV = 0x13,
+    WL_PLAN_EXPR_ARITH_MOD = 0x14,
 
     /* Comparison operators (binary, pop 2 push 1) */
-    WL_FFI_EXPR_CMP_EQ = 0x20,
-    WL_FFI_EXPR_CMP_NEQ = 0x21,
-    WL_FFI_EXPR_CMP_LT = 0x22,
-    WL_FFI_EXPR_CMP_GT = 0x23,
-    WL_FFI_EXPR_CMP_LTE = 0x24,
-    WL_FFI_EXPR_CMP_GTE = 0x25,
+    WL_PLAN_EXPR_CMP_EQ = 0x20,
+    WL_PLAN_EXPR_CMP_NEQ = 0x21,
+    WL_PLAN_EXPR_CMP_LT = 0x22,
+    WL_PLAN_EXPR_CMP_GT = 0x23,
+    WL_PLAN_EXPR_CMP_LTE = 0x24,
+    WL_PLAN_EXPR_CMP_GTE = 0x25,
 
     /* Aggregate operators (unary, pop 1 push 1) */
-    WL_FFI_EXPR_AGG_COUNT = 0x30,
-    WL_FFI_EXPR_AGG_SUM = 0x31,
-    WL_FFI_EXPR_AGG_MIN = 0x32,
-    WL_FFI_EXPR_AGG_MAX = 0x33,
-} wl_ffi_expr_tag_t;
+    WL_PLAN_EXPR_AGG_COUNT = 0x30,
+    WL_PLAN_EXPR_AGG_SUM = 0x31,
+    WL_PLAN_EXPR_AGG_MIN = 0x32,
+    WL_PLAN_EXPR_AGG_MAX = 0x33,
+} wl_plan_expr_tag_t;
 
 /**
- * wl_ffi_expr_buffer_t:
+ * wl_plan_expr_buffer_t:
  *
  * Flat byte buffer containing a serialized expression in postfix
  * (RPN) encoding.  Replaces pointer-based expression trees for FFI.
@@ -121,39 +121,39 @@ typedef enum {
 typedef struct {
     uint8_t *data;
     uint32_t size;
-} wl_ffi_expr_buffer_t;
+} wl_plan_expr_buffer_t;
 
 /* ======================================================================== */
 /* Operator Types                                                           */
 /* ======================================================================== */
 
 /**
- * wl_ffi_op_type_t:
+ * wl_plan_op_type_t:
  *
  * Operator types in a backend execution plan.
  * Explicit integer values for stable ABI across backends.
  *
- * WL_FFI_OP_VARIABLE:    Reference to an input collection (EDB or IDB).
- * WL_FFI_OP_MAP:         Column projection / rename.
- * WL_FFI_OP_FILTER:      Predicate filter (expr in serialized buffer).
- * WL_FFI_OP_JOIN:        Equijoin on key columns.
- * WL_FFI_OP_ANTIJOIN:    Negation (antijoin).
- * WL_FFI_OP_REDUCE:      Aggregation (group-by + aggregate function).
- * WL_FFI_OP_CONCAT:      Union of multiple collections.
- * WL_FFI_OP_CONSOLIDATE: Deduplication / consolidation.
- * WL_FFI_OP_SEMIJOIN:    Semijoin (SIP pre-filter).
+ * WL_PLAN_OP_VARIABLE:    Reference to an input collection (EDB or IDB).
+ * WL_PLAN_OP_MAP:         Column projection / rename.
+ * WL_PLAN_OP_FILTER:      Predicate filter (expr in serialized buffer).
+ * WL_PLAN_OP_JOIN:        Equijoin on key columns.
+ * WL_PLAN_OP_ANTIJOIN:    Negation (antijoin).
+ * WL_PLAN_OP_REDUCE:      Aggregation (group-by + aggregate function).
+ * WL_PLAN_OP_CONCAT:      Union of multiple collections.
+ * WL_PLAN_OP_CONSOLIDATE: Deduplication / consolidation.
+ * WL_PLAN_OP_SEMIJOIN:    Semijoin (SIP pre-filter).
  */
 typedef enum {
-    WL_FFI_OP_VARIABLE = 0,
-    WL_FFI_OP_MAP = 1,
-    WL_FFI_OP_FILTER = 2,
-    WL_FFI_OP_JOIN = 3,
-    WL_FFI_OP_ANTIJOIN = 4,
-    WL_FFI_OP_REDUCE = 5,
-    WL_FFI_OP_CONCAT = 6,
-    WL_FFI_OP_CONSOLIDATE = 7,
-    WL_FFI_OP_SEMIJOIN = 8,
-} wl_ffi_op_type_t;
+    WL_PLAN_OP_VARIABLE = 0,
+    WL_PLAN_OP_MAP = 1,
+    WL_PLAN_OP_FILTER = 2,
+    WL_PLAN_OP_JOIN = 3,
+    WL_PLAN_OP_ANTIJOIN = 4,
+    WL_PLAN_OP_REDUCE = 5,
+    WL_PLAN_OP_CONCAT = 6,
+    WL_PLAN_OP_CONSOLIDATE = 7,
+    WL_PLAN_OP_SEMIJOIN = 8,
+} wl_plan_op_type_t;
 
 /* ======================================================================== */
 /* Operator Node                                                            */
@@ -180,7 +180,7 @@ typedef enum {
  *                project_indices, project_count
  */
 typedef struct {
-    wl_ffi_op_type_t op;
+    wl_plan_op_type_t op;
 
     const char *relation_name;
     const char *right_relation;
@@ -192,13 +192,13 @@ typedef struct {
     const uint32_t *project_indices;
     uint32_t project_count;
 
-    wl_ffi_expr_buffer_t filter_expr;
+    wl_plan_expr_buffer_t filter_expr;
 
     wirelog_agg_fn_t agg_fn;
     const uint32_t *group_by_indices;
     uint32_t group_by_count;
 
-    wl_ffi_expr_buffer_t *map_exprs;
+    wl_plan_expr_buffer_t *map_exprs;
     uint32_t map_expr_count;
 } wl_ffi_op_t;
 
@@ -207,7 +207,7 @@ typedef struct {
 /* ======================================================================== */
 
 /**
- * wl_ffi_relation_plan_t:
+ * wl_plan_relation_t:
  *
  * Operator sequence for a single IDB relation within a stratum.
  *
@@ -219,14 +219,14 @@ typedef struct {
     const char *name;
     const wl_ffi_op_t *ops;
     uint32_t op_count;
-} wl_ffi_relation_plan_t;
+} wl_plan_relation_t;
 
 /* ======================================================================== */
 /* Stratum Plan                                                             */
 /* ======================================================================== */
 
 /**
- * wl_ffi_stratum_plan_t:
+ * wl_plan_stratum_t:
  *
  * Execution plan for a single stratum.
  *
@@ -238,9 +238,9 @@ typedef struct {
 typedef struct {
     uint32_t stratum_id;
     bool is_recursive;
-    const wl_ffi_relation_plan_t *relations;
+    const wl_plan_relation_t *relations;
     uint32_t relation_count;
-} wl_ffi_stratum_plan_t;
+} wl_plan_stratum_t;
 
 /* ======================================================================== */
 /* Full Execution Plan                                                      */
@@ -260,7 +260,7 @@ typedef struct {
  * @edb_count:     Number of EDB relations.
  */
 typedef struct {
-    const wl_ffi_stratum_plan_t *strata;
+    const wl_plan_stratum_t *strata;
     uint32_t stratum_count;
     const char *const *edb_relations;
     uint32_t edb_count;
