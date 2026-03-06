@@ -155,7 +155,7 @@ wl_run_pipeline(const char *source, uint32_t num_workers, FILE *out)
     }
 
     /* 3. Marshal to FFI */
-    wl_ffi_plan_t *ffi = NULL;
+    wl_plan_t *ffi = NULL;
     rc = wl_dd_marshal_plan(dd_plan, &ffi);
     if (rc != 0) {
         wl_dd_plan_free(dd_plan);
@@ -166,7 +166,7 @@ wl_run_pipeline(const char *source, uint32_t num_workers, FILE *out)
     /* 4. Create worker and load inline facts */
     wl_dd_worker_t *w = wl_dd_worker_create(num_workers);
     if (!w) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         wirelog_program_free(prog);
         return -1;
@@ -175,7 +175,7 @@ wl_run_pipeline(const char *source, uint32_t num_workers, FILE *out)
     rc = wirelog_load_all_facts(prog, w);
     if (rc != 0) {
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         wirelog_program_free(prog);
         return -1;
@@ -185,7 +185,7 @@ wl_run_pipeline(const char *source, uint32_t num_workers, FILE *out)
     rc = wirelog_load_input_files(prog, w);
     if (rc != 0) {
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         wirelog_program_free(prog);
         return -1;
@@ -211,7 +211,7 @@ wl_run_pipeline(const char *source, uint32_t num_workers, FILE *out)
 
     /* 6. Cleanup */
     wl_dd_worker_destroy(w);
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(dd_plan);
     wirelog_program_free(prog);
 

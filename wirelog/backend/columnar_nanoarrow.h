@@ -14,7 +14,7 @@
  * The nanoarrow columnar backend stores relations in row-major int64_t
  * buffers and uses Apache Arrow schemas (via nanoarrow) for type metadata.
  * Evaluation uses a stack-based relational algebra interpreter executing
- * the wl_ffi_plan_t operator sequence with semi-naive fixed-point
+ * the wl_plan_t operator sequence with semi-naive fixed-point
  * iteration for recursive strata.
  *
  * ========================================================================

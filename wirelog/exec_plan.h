@@ -160,7 +160,7 @@ typedef enum {
 /* ======================================================================== */
 
 /**
- * wl_ffi_op_t:
+ * wl_plan_op_t:
  *
  * Flat operator descriptor.  All pointer fields point to caller-owned
  * memory.  The backend must NOT free or retain these pointers beyond
@@ -200,7 +200,7 @@ typedef struct {
 
     wl_plan_expr_buffer_t *map_exprs;
     uint32_t map_expr_count;
-} wl_ffi_op_t;
+} wl_plan_op_t;
 
 /* ======================================================================== */
 /* Per-Relation Plan                                                        */
@@ -217,7 +217,7 @@ typedef struct {
  */
 typedef struct {
     const char *name;
-    const wl_ffi_op_t *ops;
+    const wl_plan_op_t *ops;
     uint32_t op_count;
 } wl_plan_relation_t;
 
@@ -247,7 +247,7 @@ typedef struct {
 /* ======================================================================== */
 
 /**
- * wl_ffi_plan_t:
+ * wl_plan_t:
  *
  * Complete execution plan for a stratified Datalog program.
  * Passed to any backend (DD via FFI, or columnar directly).
@@ -264,6 +264,6 @@ typedef struct {
     uint32_t stratum_count;
     const char *const *edb_relations;
     uint32_t edb_count;
-} wl_ffi_plan_t;
+} wl_plan_t;
 
 #endif /* WL_EXEC_PLAN_H */

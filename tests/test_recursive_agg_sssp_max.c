@@ -166,7 +166,7 @@ dist_of(const tuple_collector_t *c, const char *relation, int64_t node_id)
     "Dist(y, max(w))       :- Edge(0, y, w).\n"  \
     "Dist(y, max(dz + w))  :- Dist(z, dz), Edge(z, y, w).\n"
 
-static wl_ffi_plan_t *
+static wl_plan_t *
 ffi_plan_from_source(const char *src, wl_dd_plan_t **dd_plan_out)
 {
     wirelog_error_t err;
@@ -180,7 +180,7 @@ ffi_plan_from_source(const char *src, wl_dd_plan_t **dd_plan_out)
     if (rc != 0)
         return NULL;
 
-    wl_ffi_plan_t *ffi = NULL;
+    wl_plan_t *ffi = NULL;
     rc = wl_dd_marshal_plan(dd_plan, &ffi);
     if (rc != 0) {
         wl_dd_plan_free(dd_plan);
@@ -213,7 +213,7 @@ test_max_sssp_triangle(void)
     TEST("MAX SSSP: triangle graph - correct maximum distances");
 
     wl_dd_plan_t *dd_plan = NULL;
-    wl_ffi_plan_t *ffi = ffi_plan_from_source(SSSP_MAX_PROGRAM, &dd_plan);
+    wl_plan_t *ffi = ffi_plan_from_source(SSSP_MAX_PROGRAM, &dd_plan);
 
     if (!ffi) {
         FAIL("could not generate FFI plan");
@@ -222,7 +222,7 @@ test_max_sssp_triangle(void)
 
     wl_dd_worker_t *w = wl_dd_worker_create(1);
     if (!w) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("could not create worker");
         return;
@@ -242,7 +242,7 @@ test_max_sssp_triangle(void)
         char msg[80];
         snprintf(msg, sizeof(msg), "execute_cb returned %d", rc);
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
@@ -254,7 +254,7 @@ test_max_sssp_triangle(void)
         char msg[64];
         snprintf(msg, sizeof(msg), "expected 3 Dist tuples, got %d", n);
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
@@ -267,7 +267,7 @@ test_max_sssp_triangle(void)
         int64_t got = dist_of(&results, "Dist", 1);
         snprintf(msg, sizeof(msg), "Dist(1) should be 4, got %" PRId64, got);
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
@@ -280,7 +280,7 @@ test_max_sssp_triangle(void)
         int64_t got = dist_of(&results, "Dist", 2);
         snprintf(msg, sizeof(msg), "Dist(2) should be 1, got %" PRId64, got);
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
@@ -293,14 +293,14 @@ test_max_sssp_triangle(void)
         int64_t got = dist_of(&results, "Dist", 3);
         snprintf(msg, sizeof(msg), "Dist(3) should be 5, got %" PRId64, got);
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
     }
 
     wl_dd_worker_destroy(w);
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(dd_plan);
     PASS();
 }
@@ -327,7 +327,7 @@ test_max_sssp_fixpoint_convergence(void)
     TEST("MAX SSSP: converges to global maximum (multi-iteration needed)");
 
     wl_dd_plan_t *dd_plan = NULL;
-    wl_ffi_plan_t *ffi = ffi_plan_from_source(SSSP_MAX_PROGRAM, &dd_plan);
+    wl_plan_t *ffi = ffi_plan_from_source(SSSP_MAX_PROGRAM, &dd_plan);
 
     if (!ffi) {
         FAIL("could not generate FFI plan");
@@ -336,7 +336,7 @@ test_max_sssp_fixpoint_convergence(void)
 
     wl_dd_worker_t *w = wl_dd_worker_create(1);
     if (!w) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("could not create worker");
         return;
@@ -353,7 +353,7 @@ test_max_sssp_fixpoint_convergence(void)
         char msg[80];
         snprintf(msg, sizeof(msg), "execute_cb returned %d", rc);
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
@@ -367,7 +367,7 @@ test_max_sssp_fixpoint_convergence(void)
                  "Dist(1) should be 7 (max path via node 2), got %" PRId64,
                  val);
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
@@ -379,14 +379,14 @@ test_max_sssp_fixpoint_convergence(void)
         char msg[64];
         snprintf(msg, sizeof(msg), "Dist(2) should be 2, got %" PRId64, val2);
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
     }
 
     wl_dd_worker_destroy(w);
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(dd_plan);
     PASS();
 }
@@ -407,7 +407,7 @@ test_max_sssp_disconnected(void)
     TEST("MAX SSSP: disconnected graph - unreachable nodes absent from Dist");
 
     wl_dd_plan_t *dd_plan = NULL;
-    wl_ffi_plan_t *ffi = ffi_plan_from_source(SSSP_MAX_PROGRAM, &dd_plan);
+    wl_plan_t *ffi = ffi_plan_from_source(SSSP_MAX_PROGRAM, &dd_plan);
 
     if (!ffi) {
         FAIL("could not generate FFI plan");
@@ -416,7 +416,7 @@ test_max_sssp_disconnected(void)
 
     wl_dd_worker_t *w = wl_dd_worker_create(1);
     if (!w) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("could not create worker");
         return;
@@ -433,7 +433,7 @@ test_max_sssp_disconnected(void)
         char msg[80];
         snprintf(msg, sizeof(msg), "execute_cb returned %d", rc);
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
@@ -445,7 +445,7 @@ test_max_sssp_disconnected(void)
         char msg[64];
         snprintf(msg, sizeof(msg), "expected 1 Dist tuple, got %d", n);
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
@@ -454,7 +454,7 @@ test_max_sssp_disconnected(void)
     int64_t d1[] = { 1, 5 };
     if (!has_tuple(&results, "Dist", d1, 2)) {
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("Dist(1, 5) missing");
         return;
@@ -467,14 +467,14 @@ test_max_sssp_disconnected(void)
         snprintf(msg, sizeof(msg), "Dist(2) should be absent, got %" PRId64,
                  d2_any);
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
     }
 
     wl_dd_worker_destroy(w);
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(dd_plan);
     PASS();
 }
@@ -493,7 +493,7 @@ test_max_sssp_single_edge(void)
     TEST("MAX SSSP: single edge - Dist(1) = 7");
 
     wl_dd_plan_t *dd_plan = NULL;
-    wl_ffi_plan_t *ffi = ffi_plan_from_source(SSSP_MAX_PROGRAM, &dd_plan);
+    wl_plan_t *ffi = ffi_plan_from_source(SSSP_MAX_PROGRAM, &dd_plan);
 
     if (!ffi) {
         FAIL("could not generate FFI plan");
@@ -502,7 +502,7 @@ test_max_sssp_single_edge(void)
 
     wl_dd_worker_t *w = wl_dd_worker_create(1);
     if (!w) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("could not create worker");
         return;
@@ -519,7 +519,7 @@ test_max_sssp_single_edge(void)
         char msg[80];
         snprintf(msg, sizeof(msg), "execute_cb returned %d", rc);
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
@@ -530,7 +530,7 @@ test_max_sssp_single_edge(void)
         char msg[64];
         snprintf(msg, sizeof(msg), "expected 1 Dist tuple, got %d", n);
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
@@ -539,14 +539,14 @@ test_max_sssp_single_edge(void)
     int64_t d1[] = { 1, 7 };
     if (!has_tuple(&results, "Dist", d1, 2)) {
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("Dist(1, 7) missing");
         return;
     }
 
     wl_dd_worker_destroy(w);
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(dd_plan);
     PASS();
 }
@@ -580,7 +580,7 @@ test_max_sssp_dense(void)
         "MAX SSSP: dense 5-node graph - MAX selects longest path to each node");
 
     wl_dd_plan_t *dd_plan = NULL;
-    wl_ffi_plan_t *ffi = ffi_plan_from_source(SSSP_MAX_PROGRAM, &dd_plan);
+    wl_plan_t *ffi = ffi_plan_from_source(SSSP_MAX_PROGRAM, &dd_plan);
 
     if (!ffi) {
         FAIL("could not generate FFI plan");
@@ -589,7 +589,7 @@ test_max_sssp_dense(void)
 
     wl_dd_worker_t *w = wl_dd_worker_create(1);
     if (!w) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("could not create worker");
         return;
@@ -613,7 +613,7 @@ test_max_sssp_dense(void)
         char msg[80];
         snprintf(msg, sizeof(msg), "execute_cb returned %d", rc);
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
@@ -625,7 +625,7 @@ test_max_sssp_dense(void)
         char msg[64];
         snprintf(msg, sizeof(msg), "expected 4 Dist tuples, got %d", n);
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
@@ -637,7 +637,7 @@ test_max_sssp_dense(void)
         char msg[64];
         snprintf(msg, sizeof(msg), "Dist(1) should be 1, got %" PRId64, val1);
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
@@ -649,7 +649,7 @@ test_max_sssp_dense(void)
         char msg[64];
         snprintf(msg, sizeof(msg), "Dist(2) should be 3, got %" PRId64, val2);
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
@@ -661,7 +661,7 @@ test_max_sssp_dense(void)
         char msg[64];
         snprintf(msg, sizeof(msg), "Dist(3) should be 2, got %" PRId64, val3);
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
@@ -674,14 +674,14 @@ test_max_sssp_dense(void)
         snprintf(msg, sizeof(msg),
                  "Dist(4) should be 8 (max via 0->3->4), got %" PRId64, val4);
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
     }
 
     wl_dd_worker_destroy(w);
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(dd_plan);
     PASS();
 }

@@ -40,11 +40,11 @@ typedef struct {
 
     /* Batch worker and plan for snapshot execution */
     wl_dd_worker_t *worker;
-    const wl_ffi_plan_t *plan;
+    const wl_plan_t *plan;
 } wl_dd_session_t;
 
 static int
-dd_session_create(const wl_ffi_plan_t *plan, uint32_t num_workers,
+dd_session_create(const wl_plan_t *plan, uint32_t num_workers,
                   wl_session_t **out)
 {
     wl_dd_session_t *s;

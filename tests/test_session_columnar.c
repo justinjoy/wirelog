@@ -101,7 +101,7 @@ has_tuple(const tuple_collector_t *c, const char *relation,
 /* Helper: FFI plan from Datalog source (DD marshal, pure C)               */
 /* ======================================================================== */
 
-static wl_ffi_plan_t *
+static wl_plan_t *
 ffi_plan_from_source(const char *src, wl_dd_plan_t **dd_plan_out)
 {
     wirelog_error_t err;
@@ -115,7 +115,7 @@ ffi_plan_from_source(const char *src, wl_dd_plan_t **dd_plan_out)
     if (rc != 0)
         return NULL;
 
-    wl_ffi_plan_t *ffi = NULL;
+    wl_plan_t *ffi = NULL;
     rc = wl_dd_marshal_plan(dd_plan, &ffi);
     if (rc != 0) {
         wl_dd_plan_free(dd_plan);
@@ -139,10 +139,10 @@ test_col_session_create_destroy(void)
     TEST("columnar session: create and destroy");
 
     wl_dd_plan_t *dd_plan = NULL;
-    wl_ffi_plan_t *ffi = ffi_plan_from_source(".decl a(x: int32)\n"
-                                              ".decl r(x: int32)\n"
-                                              "r(x) :- a(x).\n",
-                                              &dd_plan);
+    wl_plan_t *ffi = ffi_plan_from_source(".decl a(x: int32)\n"
+                                          ".decl r(x: int32)\n"
+                                          "r(x) :- a(x).\n",
+                                          &dd_plan);
     if (!ffi) {
         FAIL("could not generate FFI plan");
         return;
@@ -151,14 +151,14 @@ test_col_session_create_destroy(void)
     wl_session_t *session = NULL;
     int rc = wl_session_create(wl_backend_columnar(), ffi, 1, &session);
     if (rc != 0 || !session) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("session_create failed");
         return;
     }
 
     wl_session_destroy(session);
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(dd_plan);
     PASS();
 }
@@ -172,10 +172,10 @@ test_col_session_snapshot_empty(void)
     TEST("columnar session: snapshot of empty session returns 0 tuples");
 
     wl_dd_plan_t *dd_plan = NULL;
-    wl_ffi_plan_t *ffi = ffi_plan_from_source(".decl a(x: int32)\n"
-                                              ".decl r(x: int32)\n"
-                                              "r(x) :- a(x).\n",
-                                              &dd_plan);
+    wl_plan_t *ffi = ffi_plan_from_source(".decl a(x: int32)\n"
+                                          ".decl r(x: int32)\n"
+                                          "r(x) :- a(x).\n",
+                                          &dd_plan);
     if (!ffi) {
         FAIL("could not generate FFI plan");
         return;
@@ -184,7 +184,7 @@ test_col_session_snapshot_empty(void)
     wl_session_t *session = NULL;
     int rc = wl_session_create(wl_backend_columnar(), ffi, 1, &session);
     if (rc != 0 || !session) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("session_create failed");
         return;
@@ -197,7 +197,7 @@ test_col_session_snapshot_empty(void)
         char msg[64];
         snprintf(msg, sizeof(msg), "snapshot returned %d (expected 0)", rc);
         wl_session_destroy(session);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
@@ -207,14 +207,14 @@ test_col_session_snapshot_empty(void)
         char msg[64];
         snprintf(msg, sizeof(msg), "expected 0 tuples, got %d", tuples.count);
         wl_session_destroy(session);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
     }
 
     wl_session_destroy(session);
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(dd_plan);
     PASS();
 }
@@ -231,10 +231,10 @@ test_col_session_snapshot_after_insert(void)
     TEST("columnar session: snapshot reflects inserted EDB");
 
     wl_dd_plan_t *dd_plan = NULL;
-    wl_ffi_plan_t *ffi = ffi_plan_from_source(".decl a(x: int32)\n"
-                                              ".decl r(x: int32)\n"
-                                              "r(x) :- a(x).\n",
-                                              &dd_plan);
+    wl_plan_t *ffi = ffi_plan_from_source(".decl a(x: int32)\n"
+                                          ".decl r(x: int32)\n"
+                                          "r(x) :- a(x).\n",
+                                          &dd_plan);
     if (!ffi) {
         FAIL("could not generate FFI plan");
         return;
@@ -243,7 +243,7 @@ test_col_session_snapshot_after_insert(void)
     wl_session_t *session = NULL;
     int rc = wl_session_create(wl_backend_columnar(), ffi, 1, &session);
     if (rc != 0 || !session) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("session_create failed");
         return;
@@ -259,7 +259,7 @@ test_col_session_snapshot_after_insert(void)
         char msg[64];
         snprintf(msg, sizeof(msg), "snapshot returned %d (expected 0)", rc);
         wl_session_destroy(session);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
@@ -272,14 +272,14 @@ test_col_session_snapshot_after_insert(void)
                  "expected r(42) in snapshot, got %d tuples total",
                  tuples.count);
         wl_session_destroy(session);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
     }
 
     wl_session_destroy(session);
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(dd_plan);
     PASS();
 }

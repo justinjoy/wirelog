@@ -167,7 +167,7 @@ has_tuple(const tuple_collector_t *c, const char *relation,
 /* Helper: FFI plan from Datalog source                                     */
 /* ======================================================================== */
 
-static wl_ffi_plan_t *
+static wl_plan_t *
 ffi_plan_from_source(const char *src, wl_dd_plan_t **dd_plan_out)
 {
     wirelog_error_t err;
@@ -181,7 +181,7 @@ ffi_plan_from_source(const char *src, wl_dd_plan_t **dd_plan_out)
     if (rc != 0)
         return NULL;
 
-    wl_ffi_plan_t *ffi = NULL;
+    wl_plan_t *ffi = NULL;
     rc = wl_dd_marshal_plan(dd_plan, &ffi);
     if (rc != 0) {
         wl_dd_plan_free(dd_plan);
@@ -203,10 +203,10 @@ static void
 test_session_create_destroy_impl(const wl_compute_backend_t *backend)
 {
     wl_dd_plan_t *dd_plan = NULL;
-    wl_ffi_plan_t *ffi = ffi_plan_from_source(".decl a(x: int32)\n"
-                                              ".decl r(x: int32)\n"
-                                              "r(x) :- a(x).\n",
-                                              &dd_plan);
+    wl_plan_t *ffi = ffi_plan_from_source(".decl a(x: int32)\n"
+                                          ".decl r(x: int32)\n"
+                                          "r(x) :- a(x).\n",
+                                          &dd_plan);
     if (!ffi) {
         FAIL("could not generate FFI plan");
         return;
@@ -215,14 +215,14 @@ test_session_create_destroy_impl(const wl_compute_backend_t *backend)
     wl_session_t *session = NULL;
     int rc = wl_session_create(backend, ffi, 1, &session);
     if (rc != 0 || !session) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("session_create failed");
         return;
     }
 
     wl_session_destroy(session);
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(dd_plan);
     PASS();
 }
@@ -250,10 +250,10 @@ test_session_create_multi_worker_rejected(void)
     TEST("session: multi-worker rejected");
 
     wl_dd_plan_t *dd_plan = NULL;
-    wl_ffi_plan_t *ffi = ffi_plan_from_source(".decl a(x: int32)\n"
-                                              ".decl r(x: int32)\n"
-                                              "r(x) :- a(x).\n",
-                                              &dd_plan);
+    wl_plan_t *ffi = ffi_plan_from_source(".decl a(x: int32)\n"
+                                          ".decl r(x: int32)\n"
+                                          "r(x) :- a(x).\n",
+                                          &dd_plan);
     if (!ffi) {
         FAIL("could not generate FFI plan");
         return;
@@ -263,7 +263,7 @@ test_session_create_multi_worker_rejected(void)
     int rc = wl_session_create(wl_backend_dd(), ffi, 2, &session);
     if (rc == 0 && session)
         wl_session_destroy(session);
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(dd_plan);
 
     if (rc != 0) {
@@ -285,7 +285,7 @@ test_session_step_initial_delta(void)
     TEST("session: initial step produces diff=+1 deltas");
 
     wl_dd_plan_t *dd_plan = NULL;
-    wl_ffi_plan_t *ffi
+    wl_plan_t *ffi
         = ffi_plan_from_source(".decl a(x: int32, y: int32)\n"
                                ".decl b(y: int32, z: int32)\n"
                                ".decl r(x: int32, y: int32, z: int32)\n"
@@ -299,7 +299,7 @@ test_session_step_initial_delta(void)
     wl_session_t *session = NULL;
     int rc = wl_session_create(wl_backend_dd(), ffi, 1, &session);
     if (rc != 0 || !session) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("session_create failed");
         return;
@@ -315,7 +315,7 @@ test_session_step_initial_delta(void)
     rc = wl_session_insert(session, "a", a_data, 1, 2);
     if (rc != 0) {
         wl_session_destroy(session);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("insert a failed");
         return;
@@ -325,7 +325,7 @@ test_session_step_initial_delta(void)
     rc = wl_session_insert(session, "b", b_data, 1, 2);
     if (rc != 0) {
         wl_session_destroy(session);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("insert b failed");
         return;
@@ -335,7 +335,7 @@ test_session_step_initial_delta(void)
     rc = wl_session_step(session);
     if (rc != 0) {
         wl_session_destroy(session);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("session_step failed");
         return;
@@ -348,7 +348,7 @@ test_session_step_initial_delta(void)
                  "expected r(1,2,3) diff=+1, got %d deltas total",
                  deltas.count);
         wl_session_destroy(session);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
@@ -359,14 +359,14 @@ test_session_step_initial_delta(void)
         snprintf(msg, sizeof(msg), "expected exactly 1 positive delta, got %d",
                  count_deltas(&deltas, "r", +1));
         wl_session_destroy(session);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
     }
 
     wl_session_destroy(session);
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(dd_plan);
     PASS();
 }
@@ -382,7 +382,7 @@ test_session_step_incremental_delta(void)
     TEST("session: incremental step produces only new deltas");
 
     wl_dd_plan_t *dd_plan = NULL;
-    wl_ffi_plan_t *ffi
+    wl_plan_t *ffi
         = ffi_plan_from_source(".decl a(x: int32, y: int32)\n"
                                ".decl b(y: int32, z: int32)\n"
                                ".decl r(x: int32, y: int32, z: int32)\n"
@@ -396,7 +396,7 @@ test_session_step_incremental_delta(void)
     wl_session_t *session = NULL;
     int rc = wl_session_create(wl_backend_dd(), ffi, 1, &session);
     if (rc != 0 || !session) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("session_create failed");
         return;
@@ -414,7 +414,7 @@ test_session_step_incremental_delta(void)
     rc = wl_session_step(session);
     if (rc != 0) {
         wl_session_destroy(session);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("first step failed");
         return;
@@ -431,7 +431,7 @@ test_session_step_incremental_delta(void)
     rc = wl_session_step(session);
     if (rc != 0) {
         wl_session_destroy(session);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("second step failed");
         return;
@@ -445,7 +445,7 @@ test_session_step_incremental_delta(void)
                  "expected r(1,4,5) diff=+1, got %d deltas total",
                  deltas.count);
         wl_session_destroy(session);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
@@ -456,14 +456,14 @@ test_session_step_incremental_delta(void)
         snprintf(msg, sizeof(msg), "expected exactly 1 positive delta, got %d",
                  count_deltas(&deltas, "r", +1));
         wl_session_destroy(session);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
     }
 
     wl_session_destroy(session);
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(dd_plan);
     PASS();
 }
@@ -477,10 +477,10 @@ test_session_step_no_change(void)
     TEST("session: step with no changes produces no deltas");
 
     wl_dd_plan_t *dd_plan = NULL;
-    wl_ffi_plan_t *ffi = ffi_plan_from_source(".decl a(x: int32)\n"
-                                              ".decl r(x: int32)\n"
-                                              "r(x) :- a(x).\n",
-                                              &dd_plan);
+    wl_plan_t *ffi = ffi_plan_from_source(".decl a(x: int32)\n"
+                                          ".decl r(x: int32)\n"
+                                          "r(x) :- a(x).\n",
+                                          &dd_plan);
     if (!ffi) {
         FAIL("could not generate FFI plan");
         return;
@@ -489,7 +489,7 @@ test_session_step_no_change(void)
     wl_session_t *session = NULL;
     int rc = wl_session_create(wl_backend_dd(), ffi, 1, &session);
     if (rc != 0 || !session) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("session_create failed");
         return;
@@ -505,7 +505,7 @@ test_session_step_no_change(void)
     rc = wl_session_step(session);
     if (rc != 0) {
         wl_session_destroy(session);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("first step failed");
         return;
@@ -516,7 +516,7 @@ test_session_step_no_change(void)
     rc = wl_session_step(session);
     if (rc != 0) {
         wl_session_destroy(session);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("second step failed");
         return;
@@ -526,14 +526,14 @@ test_session_step_no_change(void)
         char msg[64];
         snprintf(msg, sizeof(msg), "expected 0 deltas, got %d", deltas.count);
         wl_session_destroy(session);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
     }
 
     wl_session_destroy(session);
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(dd_plan);
     PASS();
 }
@@ -554,10 +554,10 @@ test_session_remove_single_delta(void)
     TEST("session: remove tuple produces diff=-1 delta");
 
     wl_dd_plan_t *dd_plan = NULL;
-    wl_ffi_plan_t *ffi = ffi_plan_from_source(".decl a(x: int32)\n"
-                                              ".decl r(x: int32)\n"
-                                              "r(x) :- a(x).\n",
-                                              &dd_plan);
+    wl_plan_t *ffi = ffi_plan_from_source(".decl a(x: int32)\n"
+                                          ".decl r(x: int32)\n"
+                                          "r(x) :- a(x).\n",
+                                          &dd_plan);
     if (!ffi) {
         FAIL("could not generate FFI plan");
         return;
@@ -566,7 +566,7 @@ test_session_remove_single_delta(void)
     wl_session_t *session = NULL;
     int rc = wl_session_create(wl_backend_dd(), ffi, 1, &session);
     if (rc != 0 || !session) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("session_create failed");
         return;
@@ -581,7 +581,7 @@ test_session_remove_single_delta(void)
     rc = wl_session_insert(session, "a", a_data, 1, 1);
     if (rc != 0) {
         wl_session_destroy(session);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("insert failed");
         return;
@@ -589,7 +589,7 @@ test_session_remove_single_delta(void)
     rc = wl_session_step(session);
     if (rc != 0) {
         wl_session_destroy(session);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("first step failed");
         return;
@@ -602,7 +602,7 @@ test_session_remove_single_delta(void)
         char msg[64];
         snprintf(msg, sizeof(msg), "remove returned %d (expected 0)", rc);
         wl_session_destroy(session);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
@@ -612,7 +612,7 @@ test_session_remove_single_delta(void)
     rc = wl_session_step(session);
     if (rc != 0) {
         wl_session_destroy(session);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("second step failed");
         return;
@@ -624,7 +624,7 @@ test_session_remove_single_delta(void)
         snprintf(msg, sizeof(msg), "expected r(1) diff=-1, got %d total deltas",
                  deltas.count);
         wl_session_destroy(session);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
@@ -635,14 +635,14 @@ test_session_remove_single_delta(void)
         snprintf(msg, sizeof(msg), "expected exactly 1 retraction, got %d",
                  count_deltas(&deltas, "r", -1));
         wl_session_destroy(session);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
     }
 
     wl_session_destroy(session);
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(dd_plan);
     PASS();
 }
@@ -659,10 +659,10 @@ test_session_remove_nonexistent(void)
     TEST("session: remove non-existent tuple is no-op");
 
     wl_dd_plan_t *dd_plan = NULL;
-    wl_ffi_plan_t *ffi = ffi_plan_from_source(".decl a(x: int32)\n"
-                                              ".decl r(x: int32)\n"
-                                              "r(x) :- a(x).\n",
-                                              &dd_plan);
+    wl_plan_t *ffi = ffi_plan_from_source(".decl a(x: int32)\n"
+                                          ".decl r(x: int32)\n"
+                                          "r(x) :- a(x).\n",
+                                          &dd_plan);
     if (!ffi) {
         FAIL("could not generate FFI plan");
         return;
@@ -671,7 +671,7 @@ test_session_remove_nonexistent(void)
     wl_session_t *session = NULL;
     int rc = wl_session_create(wl_backend_dd(), ffi, 1, &session);
     if (rc != 0 || !session) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("session_create failed");
         return;
@@ -684,14 +684,14 @@ test_session_remove_nonexistent(void)
         char msg[64];
         snprintf(msg, sizeof(msg), "remove returned %d (expected 0)", rc);
         wl_session_destroy(session);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
     }
 
     wl_session_destroy(session);
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(dd_plan);
     PASS();
 }
@@ -705,10 +705,10 @@ test_session_snapshot_empty(void)
     TEST("session: snapshot of empty session returns 0 tuples");
 
     wl_dd_plan_t *dd_plan = NULL;
-    wl_ffi_plan_t *ffi = ffi_plan_from_source(".decl a(x: int32)\n"
-                                              ".decl r(x: int32)\n"
-                                              "r(x) :- a(x).\n",
-                                              &dd_plan);
+    wl_plan_t *ffi = ffi_plan_from_source(".decl a(x: int32)\n"
+                                          ".decl r(x: int32)\n"
+                                          "r(x) :- a(x).\n",
+                                          &dd_plan);
     if (!ffi) {
         FAIL("could not generate FFI plan");
         return;
@@ -717,7 +717,7 @@ test_session_snapshot_empty(void)
     wl_session_t *session = NULL;
     int rc = wl_session_create(wl_backend_dd(), ffi, 1, &session);
     if (rc != 0 || !session) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("session_create failed");
         return;
@@ -730,7 +730,7 @@ test_session_snapshot_empty(void)
         char msg[64];
         snprintf(msg, sizeof(msg), "snapshot returned %d (expected 0)", rc);
         wl_session_destroy(session);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
@@ -740,14 +740,14 @@ test_session_snapshot_empty(void)
         char msg[64];
         snprintf(msg, sizeof(msg), "expected 0 tuples, got %d", tuples.count);
         wl_session_destroy(session);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
     }
 
     wl_session_destroy(session);
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(dd_plan);
     PASS();
 }
@@ -764,7 +764,7 @@ test_session_snapshot_after_insert(void)
     TEST("session: snapshot reflects current derived state");
 
     wl_dd_plan_t *dd_plan = NULL;
-    wl_ffi_plan_t *ffi
+    wl_plan_t *ffi
         = ffi_plan_from_source(".decl a(x: int32, y: int32)\n"
                                ".decl b(y: int32, z: int32)\n"
                                ".decl r(x: int32, y: int32, z: int32)\n"
@@ -778,7 +778,7 @@ test_session_snapshot_after_insert(void)
     wl_session_t *session = NULL;
     int rc = wl_session_create(wl_backend_dd(), ffi, 1, &session);
     if (rc != 0 || !session) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("session_create failed");
         return;
@@ -792,7 +792,7 @@ test_session_snapshot_after_insert(void)
     rc = wl_session_step(session);
     if (rc != 0) {
         wl_session_destroy(session);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("step failed");
         return;
@@ -806,7 +806,7 @@ test_session_snapshot_after_insert(void)
         char msg[64];
         snprintf(msg, sizeof(msg), "snapshot returned %d (expected 0)", rc);
         wl_session_destroy(session);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
@@ -819,7 +819,7 @@ test_session_snapshot_after_insert(void)
                  "expected r(1,2,3) in snapshot, got %d tuples total",
                  tuples.count);
         wl_session_destroy(session);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
@@ -830,14 +830,14 @@ test_session_snapshot_after_insert(void)
         snprintf(msg, sizeof(msg), "expected exactly 1 tuple, got %d",
                  tuples.count);
         wl_session_destroy(session);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
     }
 
     wl_session_destroy(session);
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(dd_plan);
     PASS();
 }
@@ -852,10 +852,10 @@ test_session_duplicate_insert(void)
     TEST("session: duplicate insert produces single positive delta");
 
     wl_dd_plan_t *dd_plan = NULL;
-    wl_ffi_plan_t *ffi = ffi_plan_from_source(".decl a(x: int32)\n"
-                                              ".decl r(x: int32)\n"
-                                              "r(x) :- a(x).\n",
-                                              &dd_plan);
+    wl_plan_t *ffi = ffi_plan_from_source(".decl a(x: int32)\n"
+                                          ".decl r(x: int32)\n"
+                                          "r(x) :- a(x).\n",
+                                          &dd_plan);
     if (!ffi) {
         FAIL("could not generate FFI plan");
         return;
@@ -864,7 +864,7 @@ test_session_duplicate_insert(void)
     wl_session_t *session = NULL;
     int rc = wl_session_create(wl_backend_dd(), ffi, 1, &session);
     if (rc != 0 || !session) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("session_create failed");
         return;
@@ -882,7 +882,7 @@ test_session_duplicate_insert(void)
     rc = wl_session_step(session);
     if (rc != 0) {
         wl_session_destroy(session);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("step failed");
         return;
@@ -894,7 +894,7 @@ test_session_duplicate_insert(void)
         snprintf(msg, sizeof(msg), "expected r(5) diff=+1, got %d deltas total",
                  deltas.count);
         wl_session_destroy(session);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
@@ -906,14 +906,14 @@ test_session_duplicate_insert(void)
                  "expected exactly 1 positive delta (set semantics), got %d",
                  count_deltas(&deltas, "r", +1));
         wl_session_destroy(session);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
     }
 
     wl_session_destroy(session);
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(dd_plan);
     PASS();
 }
@@ -931,7 +931,7 @@ test_session_tc_insert(void)
        tc(X, Y) :- edge(X, Y).
        tc(X, Z) :- edge(X, Y), tc(Y, Z).
     */
-    wl_ffi_plan_t *ffi = NULL;
+    wl_plan_t *ffi = NULL;
     wl_dd_plan_t *dd_plan = NULL;
     ffi = ffi_plan_from_source(".decl edge(x: int32, y: int32)\n"
                                ".decl tc(x: int32, y: int32)\n"
@@ -942,7 +942,7 @@ test_session_tc_insert(void)
     if (!ffi || !dd_plan) {
         FAIL("failed to parse TC program");
         if (ffi)
-            wl_ffi_plan_free(ffi);
+            wl_plan_free(ffi);
         return;
     }
 
@@ -950,7 +950,7 @@ test_session_tc_insert(void)
     wl_session_t *session = NULL;
     int rc = wl_session_create(wl_backend_dd(), ffi, 1, &session);
     if (rc != 0) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         FAIL("session creation failed");
         return;
     }
@@ -967,7 +967,7 @@ test_session_tc_insert(void)
     rc = wl_session_step(session);
     if (rc != 0) {
         wl_session_destroy(session);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         FAIL("first step failed");
         return;
     }
@@ -975,13 +975,13 @@ test_session_tc_insert(void)
     /* Should have TC: (1,2), (2,3), (1,3) */
     if (!has_delta(&deltas, "tc", (int64_t[]){ 1, 2 }, 2, +1)) {
         wl_session_destroy(session);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         FAIL("expected tc(1,2) with diff=+1");
         return;
     }
     if (!has_delta(&deltas, "tc", (int64_t[]){ 1, 3 }, 2, +1)) {
         wl_session_destroy(session);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         FAIL("expected tc(1,3) with diff=+1 (recursive)");
         return;
     }
@@ -995,7 +995,7 @@ test_session_tc_insert(void)
     rc = wl_session_step(session);
     if (rc != 0) {
         wl_session_destroy(session);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         FAIL("second step failed");
         return;
     }
@@ -1007,7 +1007,7 @@ test_session_tc_insert(void)
         snprintf(msg, sizeof(msg), "expected 3 new TC deltas, got %d",
                  new_tc_count);
         wl_session_destroy(session);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         FAIL(msg);
         return;
     }
@@ -1016,13 +1016,13 @@ test_session_tc_insert(void)
         || !has_delta(&deltas, "tc", (int64_t[]){ 2, 4 }, 2, +1)
         || !has_delta(&deltas, "tc", (int64_t[]){ 3, 4 }, 2, +1)) {
         wl_session_destroy(session);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         FAIL("expected tc(1,4), tc(2,4), tc(3,4) deltas");
         return;
     }
 
     wl_session_destroy(session);
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     PASS();
 }
 

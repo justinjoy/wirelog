@@ -183,7 +183,7 @@ label_of(const tuple_collector_t *c, const char *relation, int64_t node_id)
     "Label(y, min(y))  :- Edge(x, y).\n" \
     "Label(x, min(l))  :- Label(y, l), Edge(y, x).\n"
 
-static wl_ffi_plan_t *
+static wl_plan_t *
 ffi_plan_from_source(const char *src, wl_dd_plan_t **dd_plan_out)
 {
     wirelog_error_t err;
@@ -197,7 +197,7 @@ ffi_plan_from_source(const char *src, wl_dd_plan_t **dd_plan_out)
     if (rc != 0)
         return NULL;
 
-    wl_ffi_plan_t *ffi = NULL;
+    wl_plan_t *ffi = NULL;
     rc = wl_dd_marshal_plan(dd_plan, &ffi);
     if (rc != 0) {
         wl_dd_plan_free(dd_plan);
@@ -229,7 +229,7 @@ test_cc_two_components(void)
     TEST("CC MIN: two-component graph - correct min label per component");
 
     wl_dd_plan_t *dd_plan = NULL;
-    wl_ffi_plan_t *ffi = ffi_plan_from_source(CC_MIN_PROGRAM, &dd_plan);
+    wl_plan_t *ffi = ffi_plan_from_source(CC_MIN_PROGRAM, &dd_plan);
 
     if (!ffi) {
         FAIL("could not generate FFI plan");
@@ -238,7 +238,7 @@ test_cc_two_components(void)
 
     wl_dd_worker_t *w = wl_dd_worker_create(1);
     if (!w) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("could not create worker");
         return;
@@ -256,7 +256,7 @@ test_cc_two_components(void)
         char msg[80];
         snprintf(msg, sizeof(msg), "execute_cb returned %d", rc);
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
@@ -268,7 +268,7 @@ test_cc_two_components(void)
         char msg[64];
         snprintf(msg, sizeof(msg), "expected 5 Label tuples, got %d", n);
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
@@ -282,7 +282,7 @@ test_cc_two_components(void)
             snprintf(msg, sizeof(msg),
                      "Label(%" PRId64 ") = %" PRId64 ", expected 1", node, lbl);
             wl_dd_worker_destroy(w);
-            wl_ffi_plan_free(ffi);
+            wl_plan_free(ffi);
             wl_dd_plan_free(dd_plan);
             FAIL(msg);
             return;
@@ -297,7 +297,7 @@ test_cc_two_components(void)
             snprintf(msg, sizeof(msg),
                      "Label(%" PRId64 ") = %" PRId64 ", expected 4", node, lbl);
             wl_dd_worker_destroy(w);
-            wl_ffi_plan_free(ffi);
+            wl_plan_free(ffi);
             wl_dd_plan_free(dd_plan);
             FAIL(msg);
             return;
@@ -308,14 +308,14 @@ test_cc_two_components(void)
     int64_t cross[] = { 1, 4 };
     if (has_tuple(&results, "Label", cross, 2)) {
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("Label(1,4) present: component A contaminated by component B");
         return;
     }
 
     wl_dd_worker_destroy(w);
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(dd_plan);
     PASS();
 }
@@ -337,7 +337,7 @@ test_cc_triangle(void)
     TEST("CC MIN: dense triangle - all three nodes labelled with minimum");
 
     wl_dd_plan_t *dd_plan = NULL;
-    wl_ffi_plan_t *ffi = ffi_plan_from_source(CC_MIN_PROGRAM, &dd_plan);
+    wl_plan_t *ffi = ffi_plan_from_source(CC_MIN_PROGRAM, &dd_plan);
 
     if (!ffi) {
         FAIL("could not generate FFI plan");
@@ -346,7 +346,7 @@ test_cc_triangle(void)
 
     wl_dd_worker_t *w = wl_dd_worker_create(1);
     if (!w) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("could not create worker");
         return;
@@ -364,7 +364,7 @@ test_cc_triangle(void)
         char msg[64];
         snprintf(msg, sizeof(msg), "execute_cb returned %d", rc);
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
@@ -375,7 +375,7 @@ test_cc_triangle(void)
         char msg[64];
         snprintf(msg, sizeof(msg), "expected 3 Label tuples, got %d", n);
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
@@ -389,7 +389,7 @@ test_cc_triangle(void)
             snprintf(msg, sizeof(msg),
                      "Label(%" PRId64 ") = %" PRId64 ", expected 2", node, lbl);
             wl_dd_worker_destroy(w);
-            wl_ffi_plan_free(ffi);
+            wl_plan_free(ffi);
             wl_dd_plan_free(dd_plan);
             FAIL(msg);
             return;
@@ -397,7 +397,7 @@ test_cc_triangle(void)
     }
 
     wl_dd_worker_destroy(w);
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(dd_plan);
     PASS();
 }
@@ -419,7 +419,7 @@ test_cc_single_edge(void)
     TEST("CC MIN: single edge - both endpoints get min label");
 
     wl_dd_plan_t *dd_plan = NULL;
-    wl_ffi_plan_t *ffi = ffi_plan_from_source(CC_MIN_PROGRAM, &dd_plan);
+    wl_plan_t *ffi = ffi_plan_from_source(CC_MIN_PROGRAM, &dd_plan);
 
     if (!ffi) {
         FAIL("could not generate FFI plan");
@@ -428,7 +428,7 @@ test_cc_single_edge(void)
 
     wl_dd_worker_t *w = wl_dd_worker_create(1);
     if (!w) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("could not create worker");
         return;
@@ -446,7 +446,7 @@ test_cc_single_edge(void)
         char msg[64];
         snprintf(msg, sizeof(msg), "execute_cb returned %d", rc);
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
@@ -457,7 +457,7 @@ test_cc_single_edge(void)
         char msg[64];
         snprintf(msg, sizeof(msg), "expected 2 Label tuples, got %d", n);
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
@@ -467,7 +467,7 @@ test_cc_single_edge(void)
     int64_t t33[] = { 3, 3 };
     if (!has_tuple(&results, "Label", t33, 2)) {
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("Label(3,3) missing");
         return;
@@ -477,14 +477,14 @@ test_cc_single_edge(void)
     int64_t t73[] = { 7, 3 };
     if (!has_tuple(&results, "Label", t73, 2)) {
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("Label(7,3) missing: label did not propagate from 3 to 7");
         return;
     }
 
     wl_dd_worker_destroy(w);
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(dd_plan);
     PASS();
 }
@@ -510,7 +510,7 @@ test_cc_linear_chain(void)
     TEST("CC MIN: linear chain - min label propagates to all endpoints");
 
     wl_dd_plan_t *dd_plan = NULL;
-    wl_ffi_plan_t *ffi = ffi_plan_from_source(CC_MIN_PROGRAM, &dd_plan);
+    wl_plan_t *ffi = ffi_plan_from_source(CC_MIN_PROGRAM, &dd_plan);
 
     if (!ffi) {
         FAIL("could not generate FFI plan");
@@ -519,7 +519,7 @@ test_cc_linear_chain(void)
 
     wl_dd_worker_t *w = wl_dd_worker_create(1);
     if (!w) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("could not create worker");
         return;
@@ -537,7 +537,7 @@ test_cc_linear_chain(void)
         char msg[64];
         snprintf(msg, sizeof(msg), "execute_cb returned %d", rc);
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
@@ -548,7 +548,7 @@ test_cc_linear_chain(void)
         char msg[64];
         snprintf(msg, sizeof(msg), "expected 5 Label tuples, got %d", n);
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
@@ -565,7 +565,7 @@ test_cc_linear_chain(void)
                      ", expected 1 (min not propagated far enough)",
                      nodes[i], lbl);
             wl_dd_worker_destroy(w);
-            wl_ffi_plan_free(ffi);
+            wl_plan_free(ffi);
             wl_dd_plan_free(dd_plan);
             FAIL(msg);
             return;
@@ -573,7 +573,7 @@ test_cc_linear_chain(void)
     }
 
     wl_dd_worker_destroy(w);
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(dd_plan);
     PASS();
 }
@@ -603,7 +603,7 @@ test_cc_three_components(void)
     TEST("CC MIN: three components - each gets correct minimal label");
 
     wl_dd_plan_t *dd_plan = NULL;
-    wl_ffi_plan_t *ffi = ffi_plan_from_source(CC_MIN_PROGRAM, &dd_plan);
+    wl_plan_t *ffi = ffi_plan_from_source(CC_MIN_PROGRAM, &dd_plan);
 
     if (!ffi) {
         FAIL("could not generate FFI plan");
@@ -612,7 +612,7 @@ test_cc_three_components(void)
 
     wl_dd_worker_t *w = wl_dd_worker_create(1);
     if (!w) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("could not create worker");
         return;
@@ -631,7 +631,7 @@ test_cc_three_components(void)
         char msg[64];
         snprintf(msg, sizeof(msg), "execute_cb returned %d", rc);
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
@@ -642,7 +642,7 @@ test_cc_three_components(void)
         char msg[64];
         snprintf(msg, sizeof(msg), "expected 8 Label tuples, got %d", n);
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
@@ -659,7 +659,7 @@ test_cc_three_components(void)
                      "Label(%" PRId64 ") = %" PRId64 ", expected %" PRId64,
                      a_nodes[i], lbl, a_label);
             wl_dd_worker_destroy(w);
-            wl_ffi_plan_free(ffi);
+            wl_plan_free(ffi);
             wl_dd_plan_free(dd_plan);
             FAIL(msg);
             return;
@@ -677,7 +677,7 @@ test_cc_three_components(void)
                      "Label(%" PRId64 ") = %" PRId64 ", expected %" PRId64,
                      b_nodes[i], lbl, b_label);
             wl_dd_worker_destroy(w);
-            wl_ffi_plan_free(ffi);
+            wl_plan_free(ffi);
             wl_dd_plan_free(dd_plan);
             FAIL(msg);
             return;
@@ -695,7 +695,7 @@ test_cc_three_components(void)
                      "Label(%" PRId64 ") = %" PRId64 ", expected %" PRId64,
                      c_nodes[i], lbl, c_label);
             wl_dd_worker_destroy(w);
-            wl_ffi_plan_free(ffi);
+            wl_plan_free(ffi);
             wl_dd_plan_free(dd_plan);
             FAIL(msg);
             return;
@@ -703,7 +703,7 @@ test_cc_three_components(void)
     }
 
     wl_dd_worker_destroy(w);
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(dd_plan);
     PASS();
 }

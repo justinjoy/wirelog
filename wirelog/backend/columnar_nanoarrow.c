@@ -209,7 +209,7 @@ col_rel_col_idx(const col_rel_t *r, const char *name)
  *   Offset 0: wl_session_t base
  *     └─ Contains: backend pointer (vtable dispatch, set by session.c:38)
  *   Offset sizeof(wl_session_t): columnar-specific fields
- *     ├─ const wl_ffi_plan_t *plan
+ *     ├─ const wl_plan_t *plan
  *     ├─ col_rel_t **rels
  *     ├─ uint32_t nrels
  *     ├─ uint32_t rel_cap
@@ -238,17 +238,17 @@ col_rel_col_idx(const col_rel_t *r, const char *name)
  *
  * @see backend_dd.c:35-44 for the embedding pattern reference (wl_dd_session_t)
  * @see session.h:38-40 for canonical wl_session_t definition
- * @see exec_plan.h for wl_ffi_plan_t backend-agnostic plan types
+ * @see exec_plan.h for wl_plan_t backend-agnostic plan types
  */
 typedef struct {
-    wl_session_t base;         /* MUST be first field (vtable dispatch)  */
-    const wl_ffi_plan_t *plan; /* borrowed, lifetime: caller             */
-    col_rel_t **rels;          /* owned array of owned col_rel_t*        */
-    uint32_t nrels;            /* current number of registered relations */
-    uint32_t rel_cap;          /* allocated capacity of rels[]           */
-    wl_on_delta_fn delta_cb;   /* delta callback (NULL = disabled)       */
-    void *delta_data;          /* opaque user context for delta_cb       */
-    wl_arena_t *eval_arena;    /* arena for per-iteration temporaries    */
+    wl_session_t base;       /* MUST be first field (vtable dispatch)  */
+    const wl_plan_t *plan;   /* borrowed, lifetime: caller             */
+    col_rel_t **rels;        /* owned array of owned col_rel_t*        */
+    uint32_t nrels;          /* current number of registered relations */
+    uint32_t rel_cap;        /* allocated capacity of rels[]           */
+    wl_on_delta_fn delta_cb; /* delta callback (NULL = disabled)       */
+    void *delta_data;        /* opaque user context for delta_cb       */
+    wl_arena_t *eval_arena;  /* arena for per-iteration temporaries    */
     /* TODO(Phase 2B): add delta relation tracking (ΔR fields) here */
 } wl_col_session_t;
 
@@ -548,7 +548,7 @@ col_rel_new_like(const char *name, const col_rel_t *src)
 /* --- VARIABLE ------------------------------------------------------------ */
 
 static int
-col_op_variable(const wl_ffi_op_t *op, eval_stack_t *stack,
+col_op_variable(const wl_plan_op_t *op, eval_stack_t *stack,
                 wl_col_session_t *sess)
 {
     col_rel_t *rel = session_find_rel(sess, op->relation_name);
@@ -561,7 +561,7 @@ col_op_variable(const wl_ffi_op_t *op, eval_stack_t *stack,
 /* --- MAP ----------------------------------------------------------------- */
 
 static int
-col_op_map(const wl_ffi_op_t *op, eval_stack_t *stack)
+col_op_map(const wl_plan_op_t *op, eval_stack_t *stack)
 {
     eval_entry_t e = eval_stack_pop(stack);
     if (!e.rel)
@@ -618,7 +618,7 @@ col_op_map(const wl_ffi_op_t *op, eval_stack_t *stack)
 /* --- FILTER -------------------------------------------------------------- */
 
 static int
-col_op_filter(const wl_ffi_op_t *op, eval_stack_t *stack)
+col_op_filter(const wl_plan_op_t *op, eval_stack_t *stack)
 {
     eval_entry_t e = eval_stack_pop(stack);
     if (!e.rel)
@@ -665,7 +665,7 @@ col_op_filter(const wl_ffi_op_t *op, eval_stack_t *stack)
 /* --- JOIN ---------------------------------------------------------------- */
 
 static int
-col_op_join(const wl_ffi_op_t *op, eval_stack_t *stack, wl_col_session_t *sess)
+col_op_join(const wl_plan_op_t *op, eval_stack_t *stack, wl_col_session_t *sess)
 {
     eval_entry_t left_e = eval_stack_pop(stack);
     if (!left_e.rel)
@@ -771,7 +771,7 @@ col_op_join(const wl_ffi_op_t *op, eval_stack_t *stack, wl_col_session_t *sess)
 /* --- ANTIJOIN ------------------------------------------------------------ */
 
 static int
-col_op_antijoin(const wl_ffi_op_t *op, eval_stack_t *stack,
+col_op_antijoin(const wl_plan_op_t *op, eval_stack_t *stack,
                 wl_col_session_t *sess)
 {
     eval_entry_t left_e = eval_stack_pop(stack);
@@ -985,7 +985,7 @@ col_op_consolidate(eval_stack_t *stack)
 /* --- SEMIJOIN ------------------------------------------------------------ */
 
 static int
-col_op_semijoin(const wl_ffi_op_t *op, eval_stack_t *stack,
+col_op_semijoin(const wl_plan_op_t *op, eval_stack_t *stack,
                 wl_col_session_t *sess)
 {
     eval_entry_t left_e = eval_stack_pop(stack);
@@ -1093,7 +1093,7 @@ col_op_semijoin(const wl_ffi_op_t *op, eval_stack_t *stack,
 /* --- REDUCE (aggregate) -------------------------------------------------- */
 
 static int
-col_op_reduce(const wl_ffi_op_t *op, eval_stack_t *stack)
+col_op_reduce(const wl_plan_op_t *op, eval_stack_t *stack)
 {
     eval_entry_t e = eval_stack_pop(stack);
     if (!e.rel)
@@ -1208,7 +1208,7 @@ col_eval_relation_plan(const wl_plan_relation_t *rplan, eval_stack_t *stack,
                        wl_col_session_t *sess)
 {
     for (uint32_t i = 0; i < rplan->op_count; i++) {
-        const wl_ffi_op_t *op = &rplan->ops[i];
+        const wl_plan_op_t *op = &rplan->ops[i];
         int rc = 0;
         switch (op->op) {
         case WL_PLAN_OP_VARIABLE:
@@ -1467,7 +1467,7 @@ col_eval_stratum(const wl_plan_stratum_t *sp, wl_col_session_t *sess)
  * @see wl_col_session_t memory layout documentation above
  */
 static int
-col_session_create(const wl_ffi_plan_t *plan, uint32_t num_workers,
+col_session_create(const wl_plan_t *plan, uint32_t num_workers,
                    wl_session_t **out)
 {
     (void)num_workers; /* columnar backend is single-threaded */
@@ -1778,7 +1778,7 @@ static int
 col_session_step(wl_session_t *session)
 {
     wl_col_session_t *sess = COL_SESSION(session);
-    const wl_ffi_plan_t *plan = sess->plan;
+    const wl_plan_t *plan = sess->plan;
 
     for (uint32_t si = 0; si < plan->stratum_count; si++) {
         const wl_plan_stratum_t *sp = &plan->strata[si];
@@ -1844,7 +1844,7 @@ col_session_snapshot(wl_session_t *session, wl_on_tuple_fn callback,
         return EINVAL;
 
     wl_col_session_t *sess = COL_SESSION(session);
-    const wl_ffi_plan_t *plan = sess->plan;
+    const wl_plan_t *plan = sess->plan;
 
     /* Execute all strata in order */
     for (uint32_t si = 0; si < plan->stratum_count; si++) {

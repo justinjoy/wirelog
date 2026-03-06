@@ -71,7 +71,7 @@ plan_from_source(const char *src)
 /* ======================================================================== */
 
 static const wl_plan_relation_t *
-find_ffi_relation(const wl_ffi_plan_t *plan, const char *name)
+find_ffi_relation(const wl_plan_t *plan, const char *name)
 {
     for (uint32_t s = 0; s < plan->stratum_count; s++) {
         for (uint32_t r = 0; r < plan->strata[s].relation_count; r++) {
@@ -93,7 +93,7 @@ test_expr_serialize_null(void)
 
     wl_plan_expr_buffer_t buf;
     memset(&buf, 0xFF, sizeof(buf)); /* poison to detect writes */
-    int rc = wl_ffi_expr_serialize(NULL, &buf);
+    int rc = wl_plan_expr_serialize(NULL, &buf);
 
     if (rc != 0) {
         char msg[100];
@@ -124,7 +124,7 @@ test_expr_serialize_var(void)
     expr->var_name = strdup_safe("x");
 
     wl_plan_expr_buffer_t buf;
-    int rc = wl_ffi_expr_serialize(expr, &buf);
+    int rc = wl_plan_expr_serialize(expr, &buf);
 
     if (rc != 0) {
         wl_ir_expr_free(expr);
@@ -179,7 +179,7 @@ test_expr_serialize_const_int(void)
     expr->int_value = 42;
 
     wl_plan_expr_buffer_t buf;
-    int rc = wl_ffi_expr_serialize(expr, &buf);
+    int rc = wl_plan_expr_serialize(expr, &buf);
 
     if (rc != 0) {
         wl_ir_expr_free(expr);
@@ -231,7 +231,7 @@ test_expr_serialize_const_str(void)
     expr->str_value = strdup_safe("hi");
 
     wl_plan_expr_buffer_t buf;
-    int rc = wl_ffi_expr_serialize(expr, &buf);
+    int rc = wl_plan_expr_serialize(expr, &buf);
 
     if (rc != 0) {
         wl_ir_expr_free(expr);
@@ -285,7 +285,7 @@ test_expr_serialize_bool(void)
     expr->bool_value = true;
 
     wl_plan_expr_buffer_t buf;
-    int rc = wl_ffi_expr_serialize(expr, &buf);
+    int rc = wl_plan_expr_serialize(expr, &buf);
 
     if (rc != 0) {
         wl_ir_expr_free(expr);
@@ -340,7 +340,7 @@ test_expr_serialize_cmp_gt(void)
     wl_ir_expr_add_child(cmp, const5);
 
     wl_plan_expr_buffer_t buf;
-    int rc = wl_ffi_expr_serialize(cmp, &buf);
+    int rc = wl_plan_expr_serialize(cmp, &buf);
 
     if (rc != 0) {
         wl_ir_expr_free(cmp);
@@ -416,7 +416,7 @@ test_expr_serialize_arith_add(void)
     wl_ir_expr_add_child(arith, var_b);
 
     wl_plan_expr_buffer_t buf;
-    int rc = wl_ffi_expr_serialize(arith, &buf);
+    int rc = wl_plan_expr_serialize(arith, &buf);
 
     if (rc != 0) {
         wl_ir_expr_free(arith);
@@ -495,7 +495,7 @@ test_expr_serialize_nested(void)
     wl_ir_expr_add_child(gt, const5);
 
     wl_plan_expr_buffer_t buf;
-    int rc = wl_ffi_expr_serialize(gt, &buf);
+    int rc = wl_plan_expr_serialize(gt, &buf);
 
     if (rc != 0) {
         wl_ir_expr_free(gt);
@@ -571,7 +571,7 @@ test_marshal_null_plan(void)
 {
     TEST("marshal plan: NULL plan -> returns -2");
 
-    wl_ffi_plan_t *out = NULL;
+    wl_plan_t *out = NULL;
     int rc = wl_dd_marshal_plan(NULL, &out);
 
     if (rc != -2) {
@@ -582,7 +582,7 @@ test_marshal_null_plan(void)
     }
 
     if (out != NULL) {
-        wl_ffi_plan_free(out);
+        wl_plan_free(out);
         FAIL("out should remain NULL on error");
         return;
     }
@@ -631,7 +631,7 @@ test_marshal_empty_plan(void)
         return;
     }
 
-    wl_ffi_plan_t *ffi = NULL;
+    wl_plan_t *ffi = NULL;
     int rc = wl_dd_marshal_plan(plan, &ffi);
 
     if (rc != 0) {
@@ -651,20 +651,20 @@ test_marshal_empty_plan(void)
     if (ffi->edb_count != 1) {
         char msg[100];
         snprintf(msg, sizeof(msg), "expected 1 EDB, got %u", ffi->edb_count);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(plan);
         FAIL(msg);
         return;
     }
 
     if (strcmp(ffi->edb_relations[0], "a") != 0) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(plan);
         FAIL("EDB relation should be 'a'");
         return;
     }
 
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(plan);
     PASS();
 }
@@ -688,7 +688,7 @@ test_marshal_edb_relations(void)
         return;
     }
 
-    wl_ffi_plan_t *ffi = NULL;
+    wl_plan_t *ffi = NULL;
     int rc = wl_dd_marshal_plan(plan, &ffi);
 
     if (rc != 0 || !ffi) {
@@ -701,7 +701,7 @@ test_marshal_edb_relations(void)
     if (ffi->edb_count != 3) {
         char msg[100];
         snprintf(msg, sizeof(msg), "expected 3 EDB, got %u", ffi->edb_count);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(plan);
         FAIL(msg);
         return;
@@ -710,14 +710,14 @@ test_marshal_edb_relations(void)
     /* Verify all EDB names are non-NULL strings */
     for (uint32_t i = 0; i < ffi->edb_count; i++) {
         if (!ffi->edb_relations[i] || strlen(ffi->edb_relations[i]) == 0) {
-            wl_ffi_plan_free(ffi);
+            wl_plan_free(ffi);
             wl_dd_plan_free(plan);
             FAIL("EDB relation name is NULL or empty");
             return;
         }
     }
 
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(plan);
     PASS();
 }
@@ -739,7 +739,7 @@ test_marshal_scan_op(void)
         return;
     }
 
-    wl_ffi_plan_t *ffi = NULL;
+    wl_plan_t *ffi = NULL;
     int rc = wl_dd_marshal_plan(plan, &ffi);
 
     if (rc != 0 || !ffi) {
@@ -750,7 +750,7 @@ test_marshal_scan_op(void)
 
     const wl_plan_relation_t *rp = find_ffi_relation(ffi, "r");
     if (!rp) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(plan);
         FAIL("relation 'r' not found in FFI plan");
         return;
@@ -768,13 +768,13 @@ test_marshal_scan_op(void)
     }
 
     if (!found_var) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(plan);
         FAIL("expected FFI VARIABLE op with relation_name='a'");
         return;
     }
 
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(plan);
     PASS();
 }
@@ -792,7 +792,7 @@ test_marshal_filter_op(void)
         return;
     }
 
-    wl_ffi_plan_t *ffi = NULL;
+    wl_plan_t *ffi = NULL;
     int rc = wl_dd_marshal_plan(plan, &ffi);
 
     if (rc != 0 || !ffi) {
@@ -803,7 +803,7 @@ test_marshal_filter_op(void)
 
     const wl_plan_relation_t *rp = find_ffi_relation(ffi, "r");
     if (!rp) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(plan);
         FAIL("relation 'r' not found in FFI plan");
         return;
@@ -816,7 +816,7 @@ test_marshal_filter_op(void)
                 && rp->ops[i].filter_expr.size > 0) {
                 found_filter = true;
             } else {
-                wl_ffi_plan_free(ffi);
+                wl_plan_free(ffi);
                 wl_dd_plan_free(plan);
                 FAIL("FILTER op has NULL/empty filter_expr");
                 return;
@@ -825,13 +825,13 @@ test_marshal_filter_op(void)
     }
 
     if (!found_filter) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(plan);
         FAIL("expected FFI FILTER op");
         return;
     }
 
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(plan);
     PASS();
 }
@@ -849,7 +849,7 @@ test_marshal_map_op(void)
         return;
     }
 
-    wl_ffi_plan_t *ffi = NULL;
+    wl_plan_t *ffi = NULL;
     int rc = wl_dd_marshal_plan(plan, &ffi);
 
     if (rc != 0 || !ffi) {
@@ -860,7 +860,7 @@ test_marshal_map_op(void)
 
     const wl_plan_relation_t *rp = find_ffi_relation(ffi, "r");
     if (!rp) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(plan);
         FAIL("relation 'r' not found in FFI plan");
         return;
@@ -872,7 +872,7 @@ test_marshal_map_op(void)
             if (rp->ops[i].project_count > 0) {
                 found_map = true;
             } else {
-                wl_ffi_plan_free(ffi);
+                wl_plan_free(ffi);
                 wl_dd_plan_free(plan);
                 FAIL("MAP op has project_count == 0");
                 return;
@@ -881,13 +881,13 @@ test_marshal_map_op(void)
     }
 
     if (!found_map) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(plan);
         FAIL("expected FFI MAP op");
         return;
     }
 
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(plan);
     PASS();
 }
@@ -905,7 +905,7 @@ test_marshal_map_exprs(void)
         return;
     }
 
-    wl_ffi_plan_t *ffi = NULL;
+    wl_plan_t *ffi = NULL;
     int rc = wl_dd_marshal_plan(plan, &ffi);
 
     if (rc != 0 || !ffi) {
@@ -916,7 +916,7 @@ test_marshal_map_exprs(void)
 
     const wl_plan_relation_t *rp = find_ffi_relation(ffi, "b");
     if (!rp) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(plan);
         FAIL("relation 'b' not found in FFI plan");
         return;
@@ -930,7 +930,7 @@ test_marshal_map_exprs(void)
             && rp->ops[i].map_expr_count == 2) {
             /* Column 0 (x) should have no expression (data==NULL) */
             if (rp->ops[i].map_exprs[0].data != NULL) {
-                wl_ffi_plan_free(ffi);
+                wl_plan_free(ffi);
                 wl_dd_plan_free(plan);
                 FAIL("map_exprs[0] should be NULL for simple column x");
                 return;
@@ -938,7 +938,7 @@ test_marshal_map_exprs(void)
             /* Column 1 (y+1) should have serialized expression data */
             if (rp->ops[i].map_exprs[1].data == NULL
                 || rp->ops[i].map_exprs[1].size == 0) {
-                wl_ffi_plan_free(ffi);
+                wl_plan_free(ffi);
                 wl_dd_plan_free(plan);
                 FAIL("map_exprs[1] should have serialized data for y+1");
                 return;
@@ -948,13 +948,13 @@ test_marshal_map_exprs(void)
     }
 
     if (!found) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(plan);
         FAIL("expected MAP op with map_exprs");
         return;
     }
 
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(plan);
     PASS();
 }
@@ -973,7 +973,7 @@ test_marshal_join_op(void)
         return;
     }
 
-    wl_ffi_plan_t *ffi = NULL;
+    wl_plan_t *ffi = NULL;
     int rc = wl_dd_marshal_plan(plan, &ffi);
 
     if (rc != 0 || !ffi) {
@@ -984,7 +984,7 @@ test_marshal_join_op(void)
 
     const wl_plan_relation_t *rp = find_ffi_relation(ffi, "r");
     if (!rp) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(plan);
         FAIL("relation 'r' not found in FFI plan");
         return;
@@ -994,25 +994,25 @@ test_marshal_join_op(void)
     for (uint32_t i = 0; i < rp->op_count; i++) {
         if (rp->ops[i].op == WL_PLAN_OP_JOIN) {
             if (rp->ops[i].key_count < 1) {
-                wl_ffi_plan_free(ffi);
+                wl_plan_free(ffi);
                 wl_dd_plan_free(plan);
                 FAIL("JOIN key_count should be >= 1");
                 return;
             }
             if (!rp->ops[i].right_relation) {
-                wl_ffi_plan_free(ffi);
+                wl_plan_free(ffi);
                 wl_dd_plan_free(plan);
                 FAIL("JOIN right_relation should not be NULL");
                 return;
             }
             if (strcmp(rp->ops[i].right_relation, "b") != 0) {
-                wl_ffi_plan_free(ffi);
+                wl_plan_free(ffi);
                 wl_dd_plan_free(plan);
                 FAIL("JOIN right_relation should be 'b'");
                 return;
             }
             if (!rp->ops[i].left_keys || !rp->ops[i].right_keys) {
-                wl_ffi_plan_free(ffi);
+                wl_plan_free(ffi);
                 wl_dd_plan_free(plan);
                 FAIL("JOIN left_keys/right_keys should not be NULL");
                 return;
@@ -1022,13 +1022,13 @@ test_marshal_join_op(void)
     }
 
     if (!found_join) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(plan);
         FAIL("expected FFI JOIN op");
         return;
     }
 
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(plan);
     PASS();
 }
@@ -1047,7 +1047,7 @@ test_marshal_antijoin_op(void)
         return;
     }
 
-    wl_ffi_plan_t *ffi = NULL;
+    wl_plan_t *ffi = NULL;
     int rc = wl_dd_marshal_plan(plan, &ffi);
 
     if (rc != 0 || !ffi) {
@@ -1058,7 +1058,7 @@ test_marshal_antijoin_op(void)
 
     const wl_plan_relation_t *rp = find_ffi_relation(ffi, "r");
     if (!rp) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(plan);
         FAIL("relation 'r' not found in FFI plan");
         return;
@@ -1068,13 +1068,13 @@ test_marshal_antijoin_op(void)
     for (uint32_t i = 0; i < rp->op_count; i++) {
         if (rp->ops[i].op == WL_PLAN_OP_ANTIJOIN) {
             if (!rp->ops[i].right_relation) {
-                wl_ffi_plan_free(ffi);
+                wl_plan_free(ffi);
                 wl_dd_plan_free(plan);
                 FAIL("ANTIJOIN right_relation should not be NULL");
                 return;
             }
             if (strcmp(rp->ops[i].right_relation, "b") != 0) {
-                wl_ffi_plan_free(ffi);
+                wl_plan_free(ffi);
                 wl_dd_plan_free(plan);
                 FAIL("ANTIJOIN right_relation should be 'b'");
                 return;
@@ -1084,13 +1084,13 @@ test_marshal_antijoin_op(void)
     }
 
     if (!found_antijoin) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(plan);
         FAIL("expected FFI ANTIJOIN op");
         return;
     }
 
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(plan);
     PASS();
 }
@@ -1108,7 +1108,7 @@ test_marshal_reduce_op(void)
         return;
     }
 
-    wl_ffi_plan_t *ffi = NULL;
+    wl_plan_t *ffi = NULL;
     int rc = wl_dd_marshal_plan(plan, &ffi);
 
     if (rc != 0 || !ffi) {
@@ -1119,7 +1119,7 @@ test_marshal_reduce_op(void)
 
     const wl_plan_relation_t *rp = find_ffi_relation(ffi, "r");
     if (!rp) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(plan);
         FAIL("relation 'r' not found in FFI plan");
         return;
@@ -1129,13 +1129,13 @@ test_marshal_reduce_op(void)
     for (uint32_t i = 0; i < rp->op_count; i++) {
         if (rp->ops[i].op == WL_PLAN_OP_REDUCE) {
             if (rp->ops[i].group_by_count == 0) {
-                wl_ffi_plan_free(ffi);
+                wl_plan_free(ffi);
                 wl_dd_plan_free(plan);
                 FAIL("REDUCE group_by_count should be > 0");
                 return;
             }
             if (!rp->ops[i].group_by_indices) {
-                wl_ffi_plan_free(ffi);
+                wl_plan_free(ffi);
                 wl_dd_plan_free(plan);
                 FAIL("REDUCE group_by_indices should not be NULL");
                 return;
@@ -1145,13 +1145,13 @@ test_marshal_reduce_op(void)
     }
 
     if (!found_reduce) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(plan);
         FAIL("expected FFI REDUCE op");
         return;
     }
 
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(plan);
     PASS();
 }
@@ -1171,7 +1171,7 @@ test_marshal_union_ops(void)
         return;
     }
 
-    wl_ffi_plan_t *ffi = NULL;
+    wl_plan_t *ffi = NULL;
     int rc = wl_dd_marshal_plan(plan, &ffi);
 
     if (rc != 0 || !ffi) {
@@ -1182,7 +1182,7 @@ test_marshal_union_ops(void)
 
     const wl_plan_relation_t *rp = find_ffi_relation(ffi, "r");
     if (!rp) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(plan);
         FAIL("relation 'r' not found in FFI plan");
         return;
@@ -1198,20 +1198,20 @@ test_marshal_union_ops(void)
     }
 
     if (!found_concat) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(plan);
         FAIL("expected FFI CONCAT op for union");
         return;
     }
 
     if (!found_consolidate) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(plan);
         FAIL("expected FFI CONSOLIDATE op for union");
         return;
     }
 
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(plan);
     PASS();
 }
@@ -1235,7 +1235,7 @@ test_marshal_recursive_stratum(void)
         return;
     }
 
-    wl_ffi_plan_t *ffi = NULL;
+    wl_plan_t *ffi = NULL;
     int rc = wl_dd_marshal_plan(plan, &ffi);
 
     if (rc != 0 || !ffi) {
@@ -1255,13 +1255,13 @@ test_marshal_recursive_stratum(void)
     }
 
     if (!found_recursive) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(plan);
         FAIL("expected recursive stratum containing 'tc'");
         return;
     }
 
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(plan);
     PASS();
 }
@@ -1281,7 +1281,7 @@ test_marshal_multi_stratum_ordering(void)
         return;
     }
 
-    wl_ffi_plan_t *ffi = NULL;
+    wl_plan_t *ffi = NULL;
     int rc = wl_dd_marshal_plan(plan, &ffi);
 
     if (rc != 0 || !ffi) {
@@ -1294,7 +1294,7 @@ test_marshal_multi_stratum_ordering(void)
         char msg[100];
         snprintf(msg, sizeof(msg), "expected >= 2 strata, got %u",
                  ffi->stratum_count);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(plan);
         FAIL(msg);
         return;
@@ -1303,14 +1303,14 @@ test_marshal_multi_stratum_ordering(void)
     /* Strata should be ordered by stratum_id */
     for (uint32_t s = 1; s < ffi->stratum_count; s++) {
         if (ffi->strata[s].stratum_id <= ffi->strata[s - 1].stratum_id) {
-            wl_ffi_plan_free(ffi);
+            wl_plan_free(ffi);
             wl_dd_plan_free(plan);
             FAIL("strata should be ordered by ascending stratum_id");
             return;
         }
     }
 
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(plan);
     PASS();
 }
@@ -1332,7 +1332,7 @@ test_marshal_stratum_count_matches(void)
 
     uint32_t expected_count = plan->stratum_count;
 
-    wl_ffi_plan_t *ffi = NULL;
+    wl_plan_t *ffi = NULL;
     int rc = wl_dd_marshal_plan(plan, &ffi);
 
     if (rc != 0 || !ffi) {
@@ -1345,13 +1345,13 @@ test_marshal_stratum_count_matches(void)
         char msg[100];
         snprintf(msg, sizeof(msg), "expected %u strata, got %u", expected_count,
                  ffi->stratum_count);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(plan);
         FAIL(msg);
         return;
     }
 
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(plan);
     PASS();
 }
@@ -1373,7 +1373,7 @@ test_marshal_relation_name_copied(void)
         return;
     }
 
-    wl_ffi_plan_t *ffi = NULL;
+    wl_plan_t *ffi = NULL;
     int rc = wl_dd_marshal_plan(plan, &ffi);
 
     if (rc != 0 || !ffi) {
@@ -1384,27 +1384,27 @@ test_marshal_relation_name_copied(void)
 
     const wl_plan_relation_t *rp = find_ffi_relation(ffi, "r");
     if (!rp) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(plan);
         FAIL("relation 'r' not found in FFI plan");
         return;
     }
 
     if (strcmp(rp->name, "r") != 0) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(plan);
         FAIL("FFI relation name should be 'r'");
         return;
     }
 
     if (rp->op_count < 1) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(plan);
         FAIL("FFI relation should have >= 1 op");
         return;
     }
 
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(plan);
     PASS();
 }
@@ -1425,7 +1425,7 @@ test_marshal_edb_count_matches(void)
 
     uint32_t expected_edb = plan->edb_count;
 
-    wl_ffi_plan_t *ffi = NULL;
+    wl_plan_t *ffi = NULL;
     int rc = wl_dd_marshal_plan(plan, &ffi);
 
     if (rc != 0 || !ffi) {
@@ -1438,13 +1438,13 @@ test_marshal_edb_count_matches(void)
         char msg[100];
         snprintf(msg, sizeof(msg), "expected %u EDB, got %u", expected_edb,
                  ffi->edb_count);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(plan);
         FAIL(msg);
         return;
     }
 
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(plan);
     PASS();
 }
@@ -1467,7 +1467,7 @@ test_marshal_join_keys_copied(void)
         return;
     }
 
-    wl_ffi_plan_t *ffi = NULL;
+    wl_plan_t *ffi = NULL;
     int rc = wl_dd_marshal_plan(plan, &ffi);
 
     if (rc != 0 || !ffi) {
@@ -1478,7 +1478,7 @@ test_marshal_join_keys_copied(void)
 
     const wl_plan_relation_t *rp = find_ffi_relation(ffi, "r");
     if (!rp) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(plan);
         FAIL("relation 'r' not found in FFI plan");
         return;
@@ -1488,32 +1488,32 @@ test_marshal_join_keys_copied(void)
     for (uint32_t i = 0; i < rp->op_count; i++) {
         if (rp->ops[i].op == WL_PLAN_OP_JOIN) {
             if (rp->ops[i].key_count != 1) {
-                wl_ffi_plan_free(ffi);
+                wl_plan_free(ffi);
                 wl_dd_plan_free(plan);
                 FAIL("JOIN should have 1 key pair");
                 return;
             }
             if (strcmp(rp->ops[i].left_keys[0], "y") != 0) {
-                wl_ffi_plan_free(ffi);
+                wl_plan_free(ffi);
                 wl_dd_plan_free(plan);
                 FAIL("JOIN left_keys[0] should be 'y'");
                 return;
             }
             if (strcmp(rp->ops[i].right_keys[0], "y") != 0) {
-                wl_ffi_plan_free(ffi);
+                wl_plan_free(ffi);
                 wl_dd_plan_free(plan);
                 FAIL("JOIN right_keys[0] should be 'y'");
                 return;
             }
 
-            wl_ffi_plan_free(ffi);
+            wl_plan_free(ffi);
             wl_dd_plan_free(plan);
             PASS();
             return;
         }
     }
 
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(plan);
     FAIL("JOIN op not found");
 }
@@ -1527,7 +1527,7 @@ test_ffi_plan_free_null(void)
 {
     TEST("ffi plan free: NULL does not crash");
 
-    wl_ffi_plan_free(NULL);
+    wl_plan_free(NULL);
 
     PASS();
 }
@@ -1545,7 +1545,7 @@ test_ffi_plan_free_after_marshal(void)
         return;
     }
 
-    wl_ffi_plan_t *ffi = NULL;
+    wl_plan_t *ffi = NULL;
     int rc = wl_dd_marshal_plan(plan, &ffi);
 
     if (rc != 0 || !ffi) {
@@ -1577,7 +1577,7 @@ test_ffi_plan_free_after_marshal(void)
     }
 
     /* Free should not crash */
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(plan);
     PASS();
 }
@@ -1591,8 +1591,8 @@ test_ffi_types_exist(void)
 {
     TEST("FFI types: structs have non-zero size");
 
-    if (sizeof(wl_ffi_op_t) == 0) {
-        FAIL("wl_ffi_op_t has zero size");
+    if (sizeof(wl_plan_op_t) == 0) {
+        FAIL("wl_plan_op_t has zero size");
         return;
     }
 
@@ -1606,8 +1606,8 @@ test_ffi_types_exist(void)
         return;
     }
 
-    if (sizeof(wl_ffi_plan_t) == 0) {
-        FAIL("wl_ffi_plan_t has zero size");
+    if (sizeof(wl_plan_t) == 0) {
+        FAIL("wl_plan_t has zero size");
         return;
     }
 

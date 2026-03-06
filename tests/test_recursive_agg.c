@@ -146,7 +146,7 @@ find_value(const tuple_collector_t *c, const char *relation, uint32_t key_col,
 /* Pipeline Helper                                                          */
 /* ======================================================================== */
 
-static wl_ffi_plan_t *
+static wl_plan_t *
 ffi_plan_from_source(const char *src, wl_dd_plan_t **dd_plan_out)
 {
     wirelog_error_t err;
@@ -160,7 +160,7 @@ ffi_plan_from_source(const char *src, wl_dd_plan_t **dd_plan_out)
     if (rc != 0)
         return NULL;
 
-    wl_ffi_plan_t *ffi = NULL;
+    wl_plan_t *ffi = NULL;
     rc = wl_dd_marshal_plan(dd_plan, &ffi);
     if (rc != 0) {
         wl_dd_plan_free(dd_plan);
@@ -198,7 +198,7 @@ test_min_sssp_triangle(void)
     TEST("MIN: SSSP on triangle graph - correct shortest distances");
 
     wl_dd_plan_t *dd_plan = NULL;
-    wl_ffi_plan_t *ffi = ffi_plan_from_source(
+    wl_plan_t *ffi = ffi_plan_from_source(
         ".decl Edge(x: int32, y: int32, w: int32)\n"
         ".decl Dist(y: int32, d: int32)\n"
         "Dist(y, min(w))       :- Edge(0, y, w).\n"
@@ -212,7 +212,7 @@ test_min_sssp_triangle(void)
 
     wl_dd_worker_t *w = wl_dd_worker_create(1);
     if (!w) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("could not create worker");
         return;
@@ -234,7 +234,7 @@ test_min_sssp_triangle(void)
                  "execute_cb returned %d (iterate+REDUCE not yet supported)",
                  rc);
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
@@ -249,7 +249,7 @@ test_min_sssp_triangle(void)
         char msg[64];
         snprintf(msg, sizeof(msg), "expected 3 Dist tuples, got %d", n);
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
@@ -259,7 +259,7 @@ test_min_sssp_triangle(void)
     int64_t d1[] = { 1, 3 };
     if (!has_tuple(&results, "Dist", d1, 2)) {
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("Dist(1) should be 3, not 4");
         return;
@@ -269,7 +269,7 @@ test_min_sssp_triangle(void)
     int64_t d2[] = { 2, 1 };
     if (!has_tuple(&results, "Dist", d2, 2)) {
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("Dist(2) should be 1");
         return;
@@ -279,14 +279,14 @@ test_min_sssp_triangle(void)
     int64_t d3[] = { 3, 4 };
     if (!has_tuple(&results, "Dist", d3, 2)) {
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("Dist(3) should be 4");
         return;
     }
 
     wl_dd_worker_destroy(w);
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(dd_plan);
     PASS();
 }
@@ -311,7 +311,7 @@ test_min_sssp_fixpoint_convergence(void)
     TEST("MIN: SSSP converges to fixpoint (longer iteration needed)");
 
     wl_dd_plan_t *dd_plan = NULL;
-    wl_ffi_plan_t *ffi = ffi_plan_from_source(
+    wl_plan_t *ffi = ffi_plan_from_source(
         ".decl Edge(x: int32, y: int32, w: int32)\n"
         ".decl Dist(y: int32, d: int32)\n"
         "Dist(y, min(w))       :- Edge(0, y, w).\n"
@@ -325,7 +325,7 @@ test_min_sssp_fixpoint_convergence(void)
 
     wl_dd_worker_t *w = wl_dd_worker_create(1);
     if (!w) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("could not create worker");
         return;
@@ -346,7 +346,7 @@ test_min_sssp_fixpoint_convergence(void)
                  "execute_cb returned %d (iterate+REDUCE not yet supported)",
                  rc);
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
@@ -359,14 +359,14 @@ test_min_sssp_fixpoint_convergence(void)
         snprintf(msg, sizeof(msg), "Dist(1) should be 3 (fixpoint), got %lld",
                  (long long)val);
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
     }
 
     wl_dd_worker_destroy(w);
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(dd_plan);
     PASS();
 }
@@ -387,7 +387,7 @@ test_min_sssp_disconnected(void)
     TEST("MIN: SSSP - unreachable nodes absent from Dist");
 
     wl_dd_plan_t *dd_plan = NULL;
-    wl_ffi_plan_t *ffi = ffi_plan_from_source(
+    wl_plan_t *ffi = ffi_plan_from_source(
         ".decl Edge(x: int32, y: int32, w: int32)\n"
         ".decl Dist(y: int32, d: int32)\n"
         "Dist(y, min(w))       :- Edge(0, y, w).\n"
@@ -401,7 +401,7 @@ test_min_sssp_disconnected(void)
 
     wl_dd_worker_t *w = wl_dd_worker_create(1);
     if (!w) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("could not create worker");
         return;
@@ -420,7 +420,7 @@ test_min_sssp_disconnected(void)
                  "execute_cb returned %d (iterate+REDUCE not yet supported)",
                  rc);
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
@@ -432,7 +432,7 @@ test_min_sssp_disconnected(void)
         char msg[64];
         snprintf(msg, sizeof(msg), "expected 1 Dist tuple, got %d", n);
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
@@ -441,14 +441,14 @@ test_min_sssp_disconnected(void)
     int64_t d1[] = { 1, 5 };
     if (!has_tuple(&results, "Dist", d1, 2)) {
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("Dist(1) = 5 missing");
         return;
     }
 
     wl_dd_worker_destroy(w);
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(dd_plan);
     PASS();
 }
@@ -479,7 +479,7 @@ test_max_longest_path(void)
     TEST("MAX: longest path in DAG - correct maximum distances");
 
     wl_dd_plan_t *dd_plan = NULL;
-    wl_ffi_plan_t *ffi = ffi_plan_from_source(
+    wl_plan_t *ffi = ffi_plan_from_source(
         ".decl Edge(x: int32, y: int32, w: int32)\n"
         ".decl LDist(y: int32, d: int32)\n"
         "LDist(y, max(w))       :- Edge(0, y, w).\n"
@@ -493,7 +493,7 @@ test_max_longest_path(void)
 
     wl_dd_worker_t *w = wl_dd_worker_create(1);
     if (!w) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("could not create worker");
         return;
@@ -514,7 +514,7 @@ test_max_longest_path(void)
                  "execute_cb returned %d (iterate+REDUCE not yet supported)",
                  rc);
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
@@ -524,7 +524,7 @@ test_max_longest_path(void)
     int64_t d3[] = { 3, 5 };
     if (!has_tuple(&results, "LDist", d3, 2)) {
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("LDist(3) should be 5 (longest path via node 2)");
         return;
@@ -534,7 +534,7 @@ test_max_longest_path(void)
     int64_t d2[] = { 2, 4 };
     if (!has_tuple(&results, "LDist", d2, 2)) {
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("LDist(2) should be 4");
         return;
@@ -544,14 +544,14 @@ test_max_longest_path(void)
     int64_t d1[] = { 1, 1 };
     if (!has_tuple(&results, "LDist", d1, 2)) {
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("LDist(1) should be 1");
         return;
     }
 
     wl_dd_worker_destroy(w);
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(dd_plan);
     PASS();
 }
@@ -571,7 +571,7 @@ test_max_longest_path_convergence(void)
     TEST("MAX: longest path converges to global maximum (multi-iteration)");
 
     wl_dd_plan_t *dd_plan = NULL;
-    wl_ffi_plan_t *ffi = ffi_plan_from_source(
+    wl_plan_t *ffi = ffi_plan_from_source(
         ".decl Edge(x: int32, y: int32, w: int32)\n"
         ".decl LDist(y: int32, d: int32)\n"
         "LDist(y, max(w))       :- Edge(0, y, w).\n"
@@ -585,7 +585,7 @@ test_max_longest_path_convergence(void)
 
     wl_dd_worker_t *w = wl_dd_worker_create(1);
     if (!w) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("could not create worker");
         return;
@@ -604,7 +604,7 @@ test_max_longest_path_convergence(void)
                  "execute_cb returned %d (iterate+REDUCE not yet supported)",
                  rc);
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
@@ -617,14 +617,14 @@ test_max_longest_path_convergence(void)
         snprintf(msg, sizeof(msg), "LDist(1) should be 7 (max path), got %lld",
                  (long long)val);
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
     }
 
     wl_dd_worker_destroy(w);
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(dd_plan);
     PASS();
 }
@@ -643,7 +643,7 @@ test_min_single_edge(void)
     TEST("MIN: single edge graph - Dist(1) = 7");
 
     wl_dd_plan_t *dd_plan = NULL;
-    wl_ffi_plan_t *ffi = ffi_plan_from_source(
+    wl_plan_t *ffi = ffi_plan_from_source(
         ".decl Edge(x: int32, y: int32, w: int32)\n"
         ".decl Dist(y: int32, d: int32)\n"
         "Dist(y, min(w))       :- Edge(0, y, w).\n"
@@ -657,7 +657,7 @@ test_min_single_edge(void)
 
     wl_dd_worker_t *w = wl_dd_worker_create(1);
     if (!w) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("could not create worker");
         return;
@@ -676,7 +676,7 @@ test_min_single_edge(void)
                  "execute_cb returned %d (iterate+REDUCE not yet supported)",
                  rc);
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
@@ -685,14 +685,14 @@ test_min_single_edge(void)
     int64_t d1[] = { 1, 7 };
     if (!has_tuple(&results, "Dist", d1, 2)) {
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("Dist(1) = 7 missing");
         return;
     }
 
     wl_dd_worker_destroy(w);
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(dd_plan);
     PASS();
 }
@@ -719,7 +719,7 @@ test_min_multiple_components(void)
     TEST("MIN: SSSP with two disjoint components - independent min paths");
 
     wl_dd_plan_t *dd_plan = NULL;
-    wl_ffi_plan_t *ffi = ffi_plan_from_source(
+    wl_plan_t *ffi = ffi_plan_from_source(
         ".decl Edge(x: int32, y: int32, w: int32)\n"
         ".decl Dist(y: int32, d: int32)\n"
         "Dist(y, min(w))       :- Edge(0, y, w).\n"
@@ -733,7 +733,7 @@ test_min_multiple_components(void)
 
     wl_dd_worker_t *w = wl_dd_worker_create(1);
     if (!w) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("could not create worker");
         return;
@@ -755,7 +755,7 @@ test_min_multiple_components(void)
                  "execute_cb returned %d (iterate+REDUCE not yet supported)",
                  rc);
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
@@ -766,14 +766,14 @@ test_min_multiple_components(void)
     int64_t d1_wrong[] = { 1, 5 };
     if (has_tuple(&results, "Dist", d1_wrong, 2)) {
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("Dist(1)=5 present (wrong - should be 3 via shorter path)");
         return;
     }
     if (!has_tuple(&results, "Dist", d1_correct, 2)) {
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("Dist(1)=3 missing");
         return;
@@ -783,14 +783,14 @@ test_min_multiple_components(void)
     int64_t d2[] = { 2, 2 };
     if (!has_tuple(&results, "Dist", d2, 2)) {
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("Dist(2)=2 missing");
         return;
     }
 
     wl_dd_worker_destroy(w);
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(dd_plan);
     PASS();
 }
@@ -805,7 +805,7 @@ test_max_empty_graph(void)
     TEST("MAX: empty graph produces no LDist tuples");
 
     wl_dd_plan_t *dd_plan = NULL;
-    wl_ffi_plan_t *ffi = ffi_plan_from_source(
+    wl_plan_t *ffi = ffi_plan_from_source(
         ".decl Edge(x: int32, y: int32, w: int32)\n"
         ".decl LDist(y: int32, d: int32)\n"
         "LDist(y, max(w))       :- Edge(0, y, w).\n"
@@ -819,7 +819,7 @@ test_max_empty_graph(void)
 
     wl_dd_worker_t *w = wl_dd_worker_create(1);
     if (!w) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("could not create worker");
         return;
@@ -837,7 +837,7 @@ test_max_empty_graph(void)
                  "execute_cb returned %d (iterate+REDUCE not yet supported)",
                  rc);
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
@@ -848,14 +848,14 @@ test_max_empty_graph(void)
         char msg[64];
         snprintf(msg, sizeof(msg), "expected 0 LDist tuples, got %d", n);
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
     }
 
     wl_dd_worker_destroy(w);
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(dd_plan);
     PASS();
 }

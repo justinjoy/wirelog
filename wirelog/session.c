@@ -24,9 +24,8 @@
 #include <stddef.h>
 
 int
-wl_session_create(const wl_compute_backend_t *backend,
-                  const wl_ffi_plan_t *plan, uint32_t num_workers,
-                  wl_session_t **out)
+wl_session_create(const wl_compute_backend_t *backend, const wl_plan_t *plan,
+                  uint32_t num_workers, wl_session_t **out)
 {
     int rc;
     if (!backend || !backend->session_create || !out)

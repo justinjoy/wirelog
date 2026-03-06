@@ -193,7 +193,8 @@ serialize_expr_node(const wl_ir_expr_t *expr, expr_buf_t *b)
 }
 
 int
-wl_ffi_expr_serialize(const struct wl_ir_expr *expr, wl_plan_expr_buffer_t *out)
+wl_plan_expr_serialize(const struct wl_ir_expr *expr,
+                       wl_plan_expr_buffer_t *out)
 {
     if (!expr) {
         out->data = NULL;
@@ -227,7 +228,7 @@ wl_ffi_expr_serialize(const struct wl_ir_expr *expr, wl_plan_expr_buffer_t *out)
  * Returns 0 on success, -1 on memory error, -3 on expr error.
  */
 static int
-marshal_op(const wl_dd_op_t *src, wl_ffi_op_t *dst)
+marshal_op(const wl_dd_op_t *src, wl_plan_op_t *dst)
 {
     memset(dst, 0, sizeof(*dst));
 
@@ -262,8 +263,8 @@ marshal_op(const wl_dd_op_t *src, wl_ffi_op_t *dst)
                 return -1;
             for (uint32_t i = 0; i < src->project_count; i++) {
                 if (src->project_exprs[i]) {
-                    int rc = wl_ffi_expr_serialize(src->project_exprs[i],
-                                                   &bufs[i]);
+                    int rc = wl_plan_expr_serialize(src->project_exprs[i],
+                                                    &bufs[i]);
                     if (rc != 0) {
                         for (uint32_t j = 0; j < i; j++)
                             free(bufs[j].data);
@@ -281,7 +282,8 @@ marshal_op(const wl_dd_op_t *src, wl_ffi_op_t *dst)
     case WL_FFI_DD_FILTER:
         dst->op = WL_PLAN_OP_FILTER;
         if (src->filter_expr) {
-            int rc = wl_ffi_expr_serialize(src->filter_expr, &dst->filter_expr);
+            int rc
+                = wl_plan_expr_serialize(src->filter_expr, &dst->filter_expr);
             if (rc != 0)
                 return rc == -1 ? -1 : -3;
         }
@@ -407,7 +409,8 @@ marshal_op(const wl_dd_op_t *src, wl_ffi_op_t *dst)
         }
         /* Serialize right-side filter if present */
         if (src->filter_expr) {
-            int rc = wl_ffi_expr_serialize(src->filter_expr, &dst->filter_expr);
+            int rc
+                = wl_plan_expr_serialize(src->filter_expr, &dst->filter_expr);
             if (rc != 0)
                 return rc == -1 ? -1 : -3;
         }
@@ -505,7 +508,7 @@ marshal_op(const wl_dd_op_t *src, wl_ffi_op_t *dst)
 /* ======================================================================== */
 
 static void
-ffi_op_free_fields(wl_ffi_op_t *op)
+ffi_op_free_fields(wl_plan_op_t *op)
 {
     free((void *)op->relation_name);
     free((void *)op->right_relation);
@@ -538,12 +541,12 @@ ffi_op_free_fields(wl_ffi_op_t *op)
 /* ======================================================================== */
 
 int
-wl_dd_marshal_plan(const wl_dd_plan_t *plan, wl_ffi_plan_t **out)
+wl_dd_marshal_plan(const wl_dd_plan_t *plan, wl_plan_t **out)
 {
     if (!plan || !out)
         return -2;
 
-    wl_ffi_plan_t *ffi = (wl_ffi_plan_t *)calloc(1, sizeof(wl_ffi_plan_t));
+    wl_plan_t *ffi = (wl_plan_t *)calloc(1, sizeof(wl_plan_t));
     if (!ffi)
         return -1;
 
@@ -573,7 +576,7 @@ wl_dd_marshal_plan(const wl_dd_plan_t *plan, wl_ffi_plan_t **out)
         wl_plan_stratum_t *strata = (wl_plan_stratum_t *)calloc(
             plan->stratum_count, sizeof(wl_plan_stratum_t));
         if (!strata) {
-            wl_ffi_plan_free(ffi);
+            wl_plan_free(ffi);
             return -1;
         }
         ffi->strata = strata;
@@ -590,7 +593,7 @@ wl_dd_marshal_plan(const wl_dd_plan_t *plan, wl_ffi_plan_t **out)
                 wl_plan_relation_t *rels = (wl_plan_relation_t *)calloc(
                     src_s->relation_count, sizeof(wl_plan_relation_t));
                 if (!rels) {
-                    wl_ffi_plan_free(ffi);
+                    wl_plan_free(ffi);
                     return -1;
                 }
                 dst_s->relations = rels;
@@ -604,7 +607,7 @@ wl_dd_marshal_plan(const wl_dd_plan_t *plan, wl_ffi_plan_t **out)
                     if (src_r->name) {
                         char *n = strdup_safe(src_r->name);
                         if (!n) {
-                            wl_ffi_plan_free(ffi);
+                            wl_plan_free(ffi);
                             return -1;
                         }
                         dst_r->name = n;
@@ -612,10 +615,10 @@ wl_dd_marshal_plan(const wl_dd_plan_t *plan, wl_ffi_plan_t **out)
 
                     /* Marshal ops */
                     if (src_r->op_count > 0) {
-                        wl_ffi_op_t *ops = (wl_ffi_op_t *)calloc(
-                            src_r->op_count, sizeof(wl_ffi_op_t));
+                        wl_plan_op_t *ops = (wl_plan_op_t *)calloc(
+                            src_r->op_count, sizeof(wl_plan_op_t));
                         if (!ops) {
-                            wl_ffi_plan_free(ffi);
+                            wl_plan_free(ffi);
                             return -1;
                         }
                         dst_r->ops = ops;
@@ -624,7 +627,7 @@ wl_dd_marshal_plan(const wl_dd_plan_t *plan, wl_ffi_plan_t **out)
                         for (uint32_t o = 0; o < src_r->op_count; o++) {
                             int rc = marshal_op(&src_r->ops[o], &ops[o]);
                             if (rc != 0) {
-                                wl_ffi_plan_free(ffi);
+                                wl_plan_free(ffi);
                                 return rc;
                             }
                         }
@@ -643,7 +646,7 @@ wl_dd_marshal_plan(const wl_dd_plan_t *plan, wl_ffi_plan_t **out)
 /* ======================================================================== */
 
 void
-wl_ffi_plan_free(wl_ffi_plan_t *plan)
+wl_plan_free(wl_plan_t *plan)
 {
     if (!plan)
         return;
@@ -661,7 +664,7 @@ wl_ffi_plan_free(wl_ffi_plan_t *plan)
                     wl_plan_relation_t *rp = &rels[r];
                     free((void *)rp->name);
                     if (rp->ops) {
-                        wl_ffi_op_t *ops = (wl_ffi_op_t *)(uintptr_t)rp->ops;
+                        wl_plan_op_t *ops = (wl_plan_op_t *)(uintptr_t)rp->ops;
                         for (uint32_t o = 0; o < rp->op_count; o++)
                             ffi_op_free_fields(&ops[o]);
                         free(ops);

@@ -122,7 +122,7 @@ count_tuples(const tuple_collector_t *c, const char *relation)
 /* Pipeline Helper                                                          */
 /* ======================================================================== */
 
-static wl_ffi_plan_t *
+static wl_plan_t *
 ffi_plan_from_source(const char *src, wl_dd_plan_t **dd_plan_out)
 {
     wirelog_error_t err;
@@ -136,7 +136,7 @@ ffi_plan_from_source(const char *src, wl_dd_plan_t **dd_plan_out)
     if (rc != 0)
         return NULL;
 
-    wl_ffi_plan_t *ffi = NULL;
+    wl_plan_t *ffi = NULL;
     rc = wl_dd_marshal_plan(dd_plan, &ffi);
     if (rc != 0) {
         wl_dd_plan_free(dd_plan);
@@ -164,12 +164,11 @@ test_baseline_transitive_closure(void)
     TEST("baseline: TC recursive - all transitive pairs computed");
 
     wl_dd_plan_t *dd_plan = NULL;
-    wl_ffi_plan_t *ffi
-        = ffi_plan_from_source(".decl Arc(x: int32, y: int32)\n"
-                               ".decl Tc(x: int32, y: int32)\n"
-                               "Tc(x, y) :- Arc(x, y).\n"
-                               "Tc(x, y) :- Tc(x, z), Arc(z, y).\n",
-                               &dd_plan);
+    wl_plan_t *ffi = ffi_plan_from_source(".decl Arc(x: int32, y: int32)\n"
+                                          ".decl Tc(x: int32, y: int32)\n"
+                                          "Tc(x, y) :- Arc(x, y).\n"
+                                          "Tc(x, y) :- Tc(x, z), Arc(z, y).\n",
+                                          &dd_plan);
 
     if (!ffi) {
         FAIL("could not generate FFI plan");
@@ -178,7 +177,7 @@ test_baseline_transitive_closure(void)
 
     wl_dd_worker_t *w = wl_dd_worker_create(1);
     if (!w) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("could not create worker");
         return;
@@ -196,7 +195,7 @@ test_baseline_transitive_closure(void)
         char msg[64];
         snprintf(msg, sizeof(msg), "execute_cb returned %d", rc);
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
@@ -207,7 +206,7 @@ test_baseline_transitive_closure(void)
         char msg[64];
         snprintf(msg, sizeof(msg), "expected 6 TC tuples, got %d", n);
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
@@ -217,14 +216,14 @@ test_baseline_transitive_closure(void)
     int64_t t14[] = { 1, 4 };
     if (!has_tuple(&results, "Tc", t14, 2)) {
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("missing transitive pair (1,4)");
         return;
     }
 
     wl_dd_worker_destroy(w);
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(dd_plan);
     PASS();
 }
@@ -251,7 +250,7 @@ test_baseline_connected_components(void)
     TEST("baseline: connected components - two separate components");
 
     wl_dd_plan_t *dd_plan = NULL;
-    wl_ffi_plan_t *ffi
+    wl_plan_t *ffi
         = ffi_plan_from_source(".decl Edge(x: int32, y: int32)\n"
                                ".decl Reach(x: int32, y: int32)\n"
                                "Reach(x, y) :- Edge(x, y).\n"
@@ -266,7 +265,7 @@ test_baseline_connected_components(void)
 
     wl_dd_worker_t *w = wl_dd_worker_create(1);
     if (!w) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("could not create worker");
         return;
@@ -284,7 +283,7 @@ test_baseline_connected_components(void)
         char msg[64];
         snprintf(msg, sizeof(msg), "execute_cb returned %d", rc);
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
@@ -297,7 +296,7 @@ test_baseline_connected_components(void)
     if (!has_tuple(&results, "Reach", t13, 2)
         || !has_tuple(&results, "Reach", t31, 2)) {
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("nodes 1 and 3 should be mutually reachable");
         return;
@@ -307,14 +306,14 @@ test_baseline_connected_components(void)
     int64_t t14[] = { 1, 4 };
     if (has_tuple(&results, "Reach", t14, 2)) {
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("nodes 1 and 4 should NOT be reachable");
         return;
     }
 
     wl_dd_worker_destroy(w);
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(dd_plan);
     PASS();
 }
@@ -335,7 +334,7 @@ test_baseline_graph_reachability(void)
     TEST("baseline: graph reachability without distances");
 
     wl_dd_plan_t *dd_plan = NULL;
-    wl_ffi_plan_t *ffi = ffi_plan_from_source(
+    wl_plan_t *ffi = ffi_plan_from_source(
         ".decl Arc(x: int32, y: int32)\n"
         ".decl Reachable(x: int32, y: int32)\n"
         "Reachable(x, y) :- Arc(x, y).\n"
@@ -349,7 +348,7 @@ test_baseline_graph_reachability(void)
 
     wl_dd_worker_t *w = wl_dd_worker_create(1);
     if (!w) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("could not create worker");
         return;
@@ -367,7 +366,7 @@ test_baseline_graph_reachability(void)
         char msg[64];
         snprintf(msg, sizeof(msg), "execute_cb returned %d", rc);
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
@@ -381,14 +380,14 @@ test_baseline_graph_reachability(void)
         || !has_tuple(&results, "Reachable", r02, 2)
         || !has_tuple(&results, "Reachable", r03, 2)) {
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("node 0 should reach nodes 1, 2, and 3");
         return;
     }
 
     wl_dd_worker_destroy(w);
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(dd_plan);
     PASS();
 }
@@ -403,12 +402,11 @@ test_baseline_empty_edb(void)
     TEST("baseline: recursive program with no EDB facts produces no IDB");
 
     wl_dd_plan_t *dd_plan = NULL;
-    wl_ffi_plan_t *ffi
-        = ffi_plan_from_source(".decl Arc(x: int32, y: int32)\n"
-                               ".decl Tc(x: int32, y: int32)\n"
-                               "Tc(x, y) :- Arc(x, y).\n"
-                               "Tc(x, y) :- Tc(x, z), Arc(z, y).\n",
-                               &dd_plan);
+    wl_plan_t *ffi = ffi_plan_from_source(".decl Arc(x: int32, y: int32)\n"
+                                          ".decl Tc(x: int32, y: int32)\n"
+                                          "Tc(x, y) :- Arc(x, y).\n"
+                                          "Tc(x, y) :- Tc(x, z), Arc(z, y).\n",
+                                          &dd_plan);
 
     if (!ffi) {
         FAIL("could not generate FFI plan");
@@ -417,7 +415,7 @@ test_baseline_empty_edb(void)
 
     wl_dd_worker_t *w = wl_dd_worker_create(1);
     if (!w) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("could not create worker");
         return;
@@ -434,7 +432,7 @@ test_baseline_empty_edb(void)
         char msg[64];
         snprintf(msg, sizeof(msg), "execute_cb returned %d", rc);
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
@@ -445,14 +443,14 @@ test_baseline_empty_edb(void)
         char msg[64];
         snprintf(msg, sizeof(msg), "expected 0 Tc tuples, got %d", n);
         wl_dd_worker_destroy(w);
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL(msg);
         return;
     }
 
     wl_dd_worker_destroy(w);
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(dd_plan);
     PASS();
 }

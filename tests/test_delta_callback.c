@@ -51,7 +51,7 @@ static int tests_failed = 0;
 /* Plan Helper                                                             */
 /* ======================================================================== */
 
-static wl_ffi_plan_t *
+static wl_plan_t *
 ffi_plan_from_source(const char *src, wl_dd_plan_t **dd_plan_out)
 {
     wirelog_error_t err;
@@ -65,7 +65,7 @@ ffi_plan_from_source(const char *src, wl_dd_plan_t **dd_plan_out)
     if (rc != 0)
         return NULL;
 
-    wl_ffi_plan_t *ffi = NULL;
+    wl_plan_t *ffi = NULL;
     rc = wl_dd_marshal_plan(dd_plan, &ffi);
     if (rc != 0) {
         wl_dd_plan_free(dd_plan);
@@ -134,10 +134,10 @@ test_delta_callback_invoked(void)
 
     /* Program: r(x) :- a(x).  EDB: a={42}  Expected delta: r(42) diff=+1 */
     wl_dd_plan_t *dd_plan = NULL;
-    wl_ffi_plan_t *ffi = ffi_plan_from_source(".decl a(x: int32)\n"
-                                              ".decl r(x: int32)\n"
-                                              "r(x) :- a(x).\n",
-                                              &dd_plan);
+    wl_plan_t *ffi = ffi_plan_from_source(".decl a(x: int32)\n"
+                                          ".decl r(x: int32)\n"
+                                          "r(x) :- a(x).\n",
+                                          &dd_plan);
     if (!ffi) {
         FAIL("could not generate FFI plan");
         return 1;
@@ -146,7 +146,7 @@ test_delta_callback_invoked(void)
     wl_session_t *session = NULL;
     int rc = wl_session_create(wl_backend_columnar(), ffi, 1, &session);
     if (rc != 0 || !session) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("session_create failed");
         return 1;
@@ -161,7 +161,7 @@ test_delta_callback_invoked(void)
     rc = wl_session_step(session);
 
     wl_session_destroy(session);
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(dd_plan);
 
     if (rc != 0) {
@@ -210,10 +210,10 @@ test_delta_set_difference(void)
      * Step 2: insert a(2) → delta fires r(2) diff=+1, NOT r(1) again
      */
     wl_dd_plan_t *dd_plan = NULL;
-    wl_ffi_plan_t *ffi = ffi_plan_from_source(".decl a(x: int32)\n"
-                                              ".decl r(x: int32)\n"
-                                              "r(x) :- a(x).\n",
-                                              &dd_plan);
+    wl_plan_t *ffi = ffi_plan_from_source(".decl a(x: int32)\n"
+                                          ".decl r(x: int32)\n"
+                                          "r(x) :- a(x).\n",
+                                          &dd_plan);
     if (!ffi) {
         FAIL("could not generate FFI plan");
         return 1;
@@ -222,7 +222,7 @@ test_delta_set_difference(void)
     wl_session_t *session = NULL;
     int rc = wl_session_create(wl_backend_columnar(), ffi, 1, &session);
     if (rc != 0 || !session) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("session_create failed");
         return 1;
@@ -244,7 +244,7 @@ test_delta_set_difference(void)
     rc = wl_session_step(session);
 
     wl_session_destroy(session);
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(dd_plan);
 
     if (rc != 0) {
@@ -310,10 +310,10 @@ test_delta_multi_step(void)
      * Step 2 (no new EDB) → no new deltas (convergence)
      */
     wl_dd_plan_t *dd_plan = NULL;
-    wl_ffi_plan_t *ffi = ffi_plan_from_source(".decl a(x: int32)\n"
-                                              ".decl r(x: int32)\n"
-                                              "r(x) :- a(x).\n",
-                                              &dd_plan);
+    wl_plan_t *ffi = ffi_plan_from_source(".decl a(x: int32)\n"
+                                          ".decl r(x: int32)\n"
+                                          "r(x) :- a(x).\n",
+                                          &dd_plan);
     if (!ffi) {
         FAIL("could not generate FFI plan");
         return 1;
@@ -322,7 +322,7 @@ test_delta_multi_step(void)
     wl_session_t *session = NULL;
     int rc = wl_session_create(wl_backend_columnar(), ffi, 1, &session);
     if (rc != 0 || !session) {
-        wl_ffi_plan_free(ffi);
+        wl_plan_free(ffi);
         wl_dd_plan_free(dd_plan);
         FAIL("session_create failed");
         return 1;
@@ -344,7 +344,7 @@ test_delta_multi_step(void)
     int count_step2 = deltas.count;
 
     wl_session_destroy(session);
-    wl_ffi_plan_free(ffi);
+    wl_plan_free(ffi);
     wl_dd_plan_free(dd_plan);
 
     if (rc != 0) {

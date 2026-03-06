@@ -55,9 +55,8 @@ struct wl_session {
  *   -1 on allocation failure or backend initialization error.
  */
 int
-wl_session_create(const wl_compute_backend_t *backend,
-                  const wl_ffi_plan_t *plan, uint32_t num_workers,
-                  wl_session_t **out);
+wl_session_create(const wl_compute_backend_t *backend, const wl_plan_t *plan,
+                  uint32_t num_workers, wl_session_t **out);
 
 /**
  * wl_session_destroy:

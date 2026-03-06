@@ -85,7 +85,7 @@ typedef void (*wl_on_delta_fn)(const char *relation, const int64_t *row,
 typedef struct {
     const char *name;
 
-    int (*session_create)(const wl_ffi_plan_t *plan, uint32_t num_workers,
+    int (*session_create)(const wl_plan_t *plan, uint32_t num_workers,
                           wl_session_t **out);
     void (*session_destroy)(wl_session_t *session);
 

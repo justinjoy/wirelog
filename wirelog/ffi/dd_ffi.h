@@ -25,16 +25,16 @@
  *
  *   Internal (dd_plan.h)         FFI (dd_ffi.h)
  *   -------------------------    ---------------------------
- *   wl_dd_op_t                   wl_ffi_op_t
+ *   wl_dd_op_t                   wl_plan_op_t
  *   wl_dd_relation_plan_t        wl_plan_relation_t
  *   wl_dd_stratum_plan_t         wl_plan_stratum_t
- *   wl_dd_plan_t                 wl_ffi_plan_t
+ *   wl_dd_plan_t                 wl_plan_t
  *   wl_ir_expr (tree)            wl_plan_expr_buffer_t (flat)
  *
  * A marshalling step (wl_dd_marshal_plan) converts the internal plan
  * to the FFI representation.  The Rust side receives a const pointer
  * to the FFI plan, reads its contents, and returns.  The C side then
- * frees the FFI plan with wl_ffi_plan_free().
+ * frees the FFI plan with wl_plan_free().
  *
  * Pipeline position:
  *   Parse -> IR -> Stratify -> DD Plan -> [Marshal] -> FFI -> Rust DD
@@ -45,14 +45,14 @@
  *
  * Ownership model: C allocates, C frees.  Rust borrows.
  *
- * All memory within wl_ffi_plan_t is owned by the C side.  The Rust
+ * All memory within wl_plan_t is owned by the C side.  The Rust
  * FFI entry point receives a *const* pointer and must NOT free, modify,
  * or retain any pointer from the FFI plan beyond the duration of the
  * call.  If Rust needs data after the FFI call returns, it must copy
  * the data into Rust-owned memory.
  *
  * Ownership chain:
- *   wl_ffi_plan_t                      (C allocates, C frees)
+ *   wl_plan_t                      (C allocates, C frees)
  *     -> edb_relations[]               (owned array of const char*)
  *     -> strata[]                      (owned array)
  *       -> relations[]                 (owned array)
@@ -68,9 +68,9 @@
  *
  * Lifecycle:
  *   1. C calls wl_dd_marshal_plan() to convert internal -> FFI plan
- *   2. C passes const wl_ffi_plan_t* to Rust via wl_dd_execute()
+ *   2. C passes const wl_plan_t* to Rust via wl_dd_execute()
  *   3. Rust reads the plan, builds DD dataflow, executes, returns
- *   4. C calls wl_ffi_plan_free() to release all FFI memory
+ *   4. C calls wl_plan_free() to release all FFI memory
  *
  * ========================================================================
  * Filter Expression Serialization
@@ -129,7 +129,7 @@
  *   int rc = wl_dd_plan_generate(program, &plan);
  *   if (rc != 0) { handle error }
  *
- *   wl_ffi_plan_t *ffi_plan = NULL;
+ *   wl_plan_t *ffi_plan = NULL;
  *   rc = wl_dd_marshal_plan(plan, &ffi_plan);
  *   if (rc != 0) { handle error }
  *
@@ -137,7 +137,7 @@
  *   rc = wl_dd_execute(ffi_plan, worker);
  *
  *   wl_dd_worker_destroy(worker);
- *   wl_ffi_plan_free(ffi_plan);
+ *   wl_plan_free(ffi_plan);
  *   wl_dd_plan_free(plan);
  */
 
@@ -147,8 +147,8 @@
 /*
  * exec_plan.h provides the backend-agnostic plan types:
  *   wl_ffi_expr_tag_t, wl_plan_expr_buffer_t, wl_plan_op_type_t,
- *   wl_ffi_op_t, wl_plan_relation_t, wl_plan_stratum_t,
- *   wl_ffi_plan_t
+ *   wl_plan_op_t, wl_plan_relation_t, wl_plan_stratum_t,
+ *   wl_plan_t
  *
  * These types are shared with the columnar C11 backend (Phase 2A).
  */
@@ -160,7 +160,7 @@
 /*
  * dd_plan.h provides wl_dd_plan_t (the internal DD plan type).
  * Both headers are internal (not installed), so this include is safe.
- * The marshalling functions below convert wl_dd_plan_t -> wl_ffi_plan_t.
+ * The marshalling functions below convert wl_dd_plan_t -> wl_plan_t.
  */
 #include "dd_plan.h"
 
@@ -233,7 +233,7 @@ wl_dd_worker_destroy(wl_dd_worker_t *worker);
  *   -2: Invalid arguments (NULL plan or worker).
  */
 int
-wl_dd_execute(const wl_ffi_plan_t *plan, wl_dd_worker_t *worker);
+wl_dd_execute(const wl_plan_t *plan, wl_dd_worker_t *worker);
 
 /* ======================================================================== */
 /* EDB Data Loading (Rust-side)                                             */
@@ -293,7 +293,7 @@ typedef void (*wl_dd_on_tuple_fn)(const char *relation, const int64_t *row,
  *   -2: Invalid arguments (NULL plan or worker).
  */
 int
-wl_dd_execute_cb(const wl_ffi_plan_t *plan, wl_dd_worker_t *worker,
+wl_dd_execute_cb(const wl_plan_t *plan, wl_dd_worker_t *worker,
                  wl_dd_on_tuple_fn on_tuple, void *user_data);
 
 /* ======================================================================== */
@@ -309,7 +309,7 @@ wl_dd_execute_cb(const wl_ffi_plan_t *plan, wl_dd_worker_t *worker,
  * wl_dd_marshal_plan:
  * @plan: (borrow): Internal DD plan to convert.  Must not be NULL.
  * @out:  (out): On success, receives the marshalled FFI plan.
- *        The caller must free the result with wl_ffi_plan_free().
+ *        The caller must free the result with wl_plan_free().
  *
  * Convert an internal DD execution plan into an FFI-safe representation.
  * All strings are copied (the FFI plan does not alias the internal plan).
@@ -324,10 +324,10 @@ wl_dd_execute_cb(const wl_ffi_plan_t *plan, wl_dd_worker_t *worker,
  * On error, *out is unchanged (remains NULL if initialized to NULL).
  */
 int
-wl_dd_marshal_plan(const wl_dd_plan_t *plan, wl_ffi_plan_t **out);
+wl_dd_marshal_plan(const wl_dd_plan_t *plan, wl_plan_t **out);
 
 /**
- * wl_ffi_plan_free:
+ * wl_plan_free:
  * @plan: (transfer full): FFI plan to free (NULL-safe).
  *
  * Free a marshalled FFI plan and all owned memory, including all
@@ -335,17 +335,17 @@ wl_dd_marshal_plan(const wl_dd_plan_t *plan, wl_ffi_plan_t **out);
  * plan structure itself.
  */
 void
-wl_ffi_plan_free(wl_ffi_plan_t *plan);
+wl_plan_free(wl_plan_t *plan);
 
 /**
- * wl_ffi_expr_serialize:
+ * wl_plan_expr_serialize:
  * @expr: (borrow): Expression tree to serialize.  May be NULL.
  * @out:  (out): On success, receives the serialized buffer.
  *        If @expr is NULL, out->data is set to NULL and out->size to 0.
  *
  * Serialize an IR expression tree into a flat postfix byte buffer
  * suitable for FFI transport.  The caller owns the buffer and must
- * free out->data with free() when done (or let wl_ffi_plan_free()
+ * free out->data with free() when done (or let wl_plan_free()
  * handle it as part of the plan).
  *
  * Returns:
@@ -354,8 +354,8 @@ wl_ffi_plan_free(wl_ffi_plan_t *plan);
  *   -3: Malformed expression tree (unknown node type).
  */
 int
-wl_ffi_expr_serialize(const struct wl_ir_expr *expr,
-                      wl_plan_expr_buffer_t *out);
+wl_plan_expr_serialize(const struct wl_ir_expr *expr,
+                       wl_plan_expr_buffer_t *out);
 
 /* ======================================================================== */
 /* Persistent Session Handle (opaque)                                       */
@@ -412,7 +412,7 @@ typedef void (*wl_dd_on_delta_fn)(const char *relation, const int64_t *row,
  *   -2: Invalid arguments (NULL pointers).
  */
 int
-wl_dd_session_create(const wl_ffi_plan_t *plan, uint32_t num_workers,
+wl_dd_session_create(const wl_plan_t *plan, uint32_t num_workers,
                      wl_dd_persistent_session_t **out);
 
 /**
