@@ -70,16 +70,16 @@ typedef void (*wl_on_delta_fn)(const char *relation, const int64_t *row,
  * wl_compute_backend_t:
  *
  * Vtable for execution operations, abstracting over backend platforms
- * (e.g., Differential Dataflow, nanoarrow). Allow for future engine
+ * (e.g., columnar nanoarrow, FPGA). Allow for future engine
  * swappability while maintaining the same C-level session semantics.
  *
- * @name: Identifier for this backend (e.g., "dd").
+ * @name: Identifier for this backend (e.g., "columnar").
  * @session_create: Initialize a session for a given ir plan.
  * @session_destroy: Deallocate session state.
  * @session_insert: Insert EDB facts.
  * @session_remove: Retract EDB facts (for incremental backends).
  * @session_step: Perform one epoch advance (incremental).
- * @session_set_delta_cb: Set differential callback on updates.
+ * @session_set_delta_cb: Set delta callback on updates.
  * @session_snapshot: Batch execution evaluating full rules synchronously.
  */
 typedef struct {
@@ -107,15 +107,15 @@ typedef struct {
 } wl_compute_backend_t;
 
 /**
- * wl_backend_dd:
+ * wl_backend_columnar:
  *
- * Obtain the singleton static vtable instance for the Differential
- * Dataflow (Rust-based) pipeline compute backend.
+ * Obtain the singleton static vtable instance for the columnar nanoarrow
+ * compute backend.
  *
- * Returns: Pointer to the Differential Dataflow compute backend vtable.
+ * Returns: Pointer to the columnar compute backend vtable.
  */
 const wl_compute_backend_t *
-wl_backend_dd(void);
+wl_backend_columnar(void);
 
 #ifdef __cplusplus
 }
