@@ -662,6 +662,36 @@ col_op_filter(const wl_plan_op_t *op, eval_stack_t *stack)
     return eval_stack_push(stack, out, true);
 }
 
+/* --- Hash join helpers --------------------------------------------------- */
+
+static uint32_t
+next_pow2(uint32_t n)
+{
+    if (n < 16)
+        return 16;
+    n--;
+    n |= n >> 1;
+    n |= n >> 2;
+    n |= n >> 4;
+    n |= n >> 8;
+    n |= n >> 16;
+    return n + 1;
+}
+
+static uint32_t
+hash_int64_keys(const int64_t *row, const uint32_t *key_cols, uint32_t kc)
+{
+    uint32_t h = 2166136261u; /* FNV-1a offset basis */
+    for (uint32_t i = 0; i < kc; i++) {
+        uint64_t v = (uint64_t)row[key_cols[i]];
+        h ^= (uint32_t)(v & 0xffffffff);
+        h *= 16777619u;
+        h ^= (uint32_t)(v >> 32);
+        h *= 16777619u;
+    }
+    return h;
+}
+
 /* --- JOIN ---------------------------------------------------------------- */
 
 static int
@@ -730,10 +760,36 @@ col_op_join(const wl_plan_op_t *op, eval_stack_t *stack, wl_col_session_t *sess)
         return ENOMEM;
     }
 
-    /* Nested-loop join */
-    for (uint32_t lr = 0; lr < left->nrows; lr++) {
+    /* Hash join: build hash table from right relation, probe with left. */
+    uint32_t nbuckets = next_pow2(right->nrows > 0 ? right->nrows * 2 : 1);
+    uint32_t *ht_head = (uint32_t *)calloc(nbuckets, sizeof(uint32_t));
+    uint32_t *ht_next = (uint32_t *)malloc((right->nrows + 1) * sizeof(uint32_t));
+    if (!ht_head || !ht_next) {
+        free(ht_head);
+        free(ht_next);
+        free(tmp);
+        col_rel_free_contents(out);
+        free(out);
+        free(lk);
+        free(rk);
+        if (left_e.owned) {
+            col_rel_free_contents(left);
+            free(left);
+        }
+        return ENOMEM;
+    }
+    for (uint32_t rr = 0; rr < right->nrows; rr++) {
+        const int64_t *rrow = right->data + (size_t)rr * right->ncols;
+        uint32_t h = hash_int64_keys(rrow, rk, kc) & (nbuckets - 1);
+        ht_next[rr] = ht_head[h];
+        ht_head[h] = rr + 1; /* 1-based index; 0 = end of chain */
+    }
+    int join_rc = 0;
+    for (uint32_t lr = 0; lr < left->nrows && join_rc == 0; lr++) {
         const int64_t *lrow = left->data + (size_t)lr * left->ncols;
-        for (uint32_t rr = 0; rr < right->nrows; rr++) {
+        uint32_t h = hash_int64_keys(lrow, lk, kc) & (nbuckets - 1);
+        for (uint32_t e = ht_head[h]; e != 0; e = ht_next[e - 1]) {
+            uint32_t rr = e - 1;
             const int64_t *rrow = right->data + (size_t)rr * right->ncols;
             bool match = true;
             for (uint32_t k = 0; k < kc && match; k++)
@@ -742,20 +798,24 @@ col_op_join(const wl_plan_op_t *op, eval_stack_t *stack, wl_col_session_t *sess)
                 continue;
             memcpy(tmp, lrow, sizeof(int64_t) * left->ncols);
             memcpy(tmp + left->ncols, rrow, sizeof(int64_t) * right->ncols);
-            int rc = col_rel_append_row(out, tmp);
-            if (rc != 0) {
-                free(tmp);
-                col_rel_free_contents(out);
-                free(out);
-                free(lk);
-                free(rk);
-                if (left_e.owned) {
-                    col_rel_free_contents(left);
-                    free(left);
-                }
-                return rc;
-            }
+            join_rc = col_rel_append_row(out, tmp);
+            if (join_rc != 0)
+                break;
         }
+    }
+    free(ht_head);
+    free(ht_next);
+    if (join_rc != 0) {
+        free(tmp);
+        col_rel_free_contents(out);
+        free(out);
+        free(lk);
+        free(rk);
+        if (left_e.owned) {
+            col_rel_free_contents(left);
+            free(left);
+        }
+        return join_rc;
     }
 
     free(tmp);
@@ -817,10 +877,36 @@ col_op_antijoin(const wl_plan_op_t *op, eval_stack_t *stack,
         return ENOMEM;
     }
 
-    for (uint32_t lr = 0; lr < left->nrows; lr++) {
+    /* Hash antijoin: build hash set from right, iterate left. */
+    uint32_t aj_nbuckets = next_pow2(right->nrows > 0 ? right->nrows * 2 : 1);
+    uint32_t *aj_head = (uint32_t *)calloc(aj_nbuckets, sizeof(uint32_t));
+    uint32_t *aj_next = (uint32_t *)malloc((right->nrows + 1) * sizeof(uint32_t));
+    if (!aj_head || !aj_next) {
+        free(aj_head);
+        free(aj_next);
+        col_rel_free_contents(out);
+        free(out);
+        free(lk);
+        free(rk);
+        if (left_e.owned) {
+            col_rel_free_contents(left);
+            free(left);
+        }
+        return ENOMEM;
+    }
+    for (uint32_t rr = 0; rr < right->nrows; rr++) {
+        const int64_t *rrow = right->data + (size_t)rr * right->ncols;
+        uint32_t h = hash_int64_keys(rrow, rk, kc) & (aj_nbuckets - 1);
+        aj_next[rr] = aj_head[h];
+        aj_head[h] = rr + 1;
+    }
+    int aj_rc = 0;
+    for (uint32_t lr = 0; lr < left->nrows && aj_rc == 0; lr++) {
         const int64_t *lrow = left->data + (size_t)lr * left->ncols;
+        uint32_t h = hash_int64_keys(lrow, lk, kc) & (aj_nbuckets - 1);
         bool found = false;
-        for (uint32_t rr = 0; rr < right->nrows && !found; rr++) {
+        for (uint32_t e = aj_head[h]; e != 0 && !found; e = aj_next[e - 1]) {
+            uint32_t rr = e - 1;
             const int64_t *rrow = right->data + (size_t)rr * right->ncols;
             bool match = true;
             for (uint32_t k = 0; k < kc && match; k++)
@@ -828,20 +914,21 @@ col_op_antijoin(const wl_plan_op_t *op, eval_stack_t *stack,
             if (match)
                 found = true;
         }
-        if (!found) {
-            int rc = col_rel_append_row(out, lrow);
-            if (rc != 0) {
-                col_rel_free_contents(out);
-                free(out);
-                free(lk);
-                free(rk);
-                if (left_e.owned) {
-                    col_rel_free_contents(left);
-                    free(left);
-                }
-                return rc;
-            }
+        if (!found)
+            aj_rc = col_rel_append_row(out, lrow);
+    }
+    free(aj_head);
+    free(aj_next);
+    if (aj_rc != 0) {
+        col_rel_free_contents(out);
+        free(out);
+        free(lk);
+        free(rk);
+        if (left_e.owned) {
+            col_rel_free_contents(left);
+            free(left);
         }
+        return aj_rc;
     }
 
     free(lk);
