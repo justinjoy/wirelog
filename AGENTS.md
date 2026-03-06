@@ -23,7 +23,7 @@ python script.py
 `wirelog/wirelog.h`, `wirelog/wirelog-types.h`, `wirelog/wirelog-ir.h`, `wirelog/wirelog-parser.h`, `wirelog/wirelog-optimizer.h`
 
 **Internal headers** (not installed):
-Everything under `wirelog/parser/`, `wirelog/ir/`, `wirelog/ffi/`, `wirelog/io/`, and `wirelog/backend.h`, `wirelog/session.h`, `wirelog/intern.h`
+Everything under `wirelog/parser/`, `wirelog/ir/`, `wirelog/backend/`, `wirelog/io/`, and `wirelog/backend.h`, `wirelog/session.h`, `wirelog/intern.h`
 
 ### Subdirectory Encoding
 
@@ -36,7 +36,8 @@ wirelog/{subdir}/{file}.h  →  wl_{subdir}_{file}_*
 Examples:
 - `wirelog/parser/ast.h` → `wl_parser_ast_node_t`, `wl_parser_ast_node_create()`
 - `wirelog/ir/stratify.h` → `wl_ir_stratify_dep_graph_t`
-- `wirelog/ffi/dd_ffi.h` → `wl_ffi_plan_t`, `wl_ffi_op_t`
+- `wirelog/backend/dd/dd_ffi.h` → `wl_plan_t`, `wl_plan_op_t` (backend-agnostic plan types)
+- `wirelog/backend/dd/dd_plan.h` → `wl_dd_plan_t`, `wl_dd_op_t` (DD-specific plan types)
 
 Top-level internal headers use the file name: `wl_backend_*`, `wl_session_*`, `wl_intern_*`
 
