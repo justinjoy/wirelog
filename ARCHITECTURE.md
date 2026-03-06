@@ -245,57 +245,36 @@ wirelog core (C11)
 - ✅ Operator implementations: VARIABLE, MAP, FILTER, JOIN, ANTIJOIN, REDUCE, CONCAT, CONSOLIDATE, SEMIJOIN
 - ✅ Multi-threaded execution support (optional)
 - ✅ Delta buffer materialization and result collection
-- ✅ Columnar backend execution tests
-- ✅ Non-recursive stratum execution with `timely::execute()`
-- ✅ Recursive stratum execution with DD `iterate()` + `distinct()`
-- ✅ All 9 operator types: Variable, Map, Filter, Join, Antijoin, Reduce, Concat, Consolidate, Semijoin
-- ✅ Meson-Cargo build integration (`-Ddd=true`, clippy/fmt/test targets)
-- ✅ 85 Rust tests passing (clippy clean, rustfmt clean)
+- ✅ Columnar backend execution tests (10 test suites, all passing)
 
-**Translation Rules** (IR node → DD operator):
+**Execution Operators** (IR node → Columnar operator):
 ```
-SCAN      → WL_DD_VARIABLE   (reference to input collection)
-PROJECT   → WL_DD_MAP        (column projection)
-FILTER    → WL_DD_FILTER     (predicate filter, deep-copied expr)
-JOIN      → WL_DD_JOIN       (equijoin with key columns)
-ANTIJOIN  → WL_DD_ANTIJOIN   (negation with right relation + optional filter)
-SEMIJOIN  → WL_DD_SEMIJOIN   (semijoin pre-filter)
-AGGREGATE → WL_DD_REDUCE     (group-by + aggregation function)
-UNION     → WL_DD_CONCAT + WL_DD_CONSOLIDATE (union + dedup)
-FLATMAP   → WL_DD_FILTER + WL_DD_MAP  (fused filter+project)
+SCAN      → VARIABLE    (reference to input collection)
+PROJECT   → MAP         (column projection)
+FILTER    → FILTER      (predicate filter, RPN expression evaluation)
+JOIN      → JOIN        (equijoin on key columns, columnar)
+ANTIJOIN  → ANTIJOIN    (negation with right relation)
+SEMIJOIN  → SEMIJOIN    (semijoin pre-filter)
+AGGREGATE → REDUCE      (group-by + aggregation function)
+UNION     → CONCAT      (union of collections)
+FLATMAP   → FILTER + MAP (fused filter+project)
 ```
 
-#### Monotone Aggregation in Recursive Strata
+#### Recursive Stratum Handling
 
-Recursive strata use Differential Dataflow's `iterate()` combinator to compute fixed points. Only **monotone aggregation functions** are safe inside iterate():
+Recursive strata are executed iteratively via a fixed-point loop (semi-naive evaluation). The columnar backend processes each stratum until convergence (no new facts generated).
 
-**Supported (Monotone)**:
-- `MIN`: Monotone decreasing; guaranteed to stabilize at the minimum value
-- `MAX`: Monotone increasing; guaranteed to stabilize at the maximum value
+**Key Design**:
+- All operators work on nanoarrow columnar buffers (no pointer-based trees)
+- RPN expression evaluation for predicates and projections
+- Delta buffers track changes between iterations
+- All memory managed by C (malloc/free, no FFI boundary complexity)
 
-**Rejected (Non-Monotone)**:
-- `COUNT`: Cardinality oscillates with delta arrival; non-deterministic result
-- `SUM`: Cumulative values don't converge monotonically; order-dependent
-- `AVG`: Quotient of non-monotone functions; unstable
-
-**Validation**: Non-monotone aggregations are detected at DD plan generation time (`/wirelog/backend/dd/dd_plan.c` lines 791–821). If COUNT or SUM appears in a recursive stratum, plan generation returns error code -1 and prints:
-```
-wirelog: COUNT aggregation not supported in recursive stratum 'RelationName'
-wirelog: SUM aggregation not supported in recursive stratum 'RelationName'
-```
-
-**Examples**:
-- Connected components with MIN: Label each node with the minimum ID in its component
-- Shortest path with MAX: Compute longest reachable distance from a fixed source
-
-See `/docs/MONOTONE_AGGREGATION.md` for formal proofs of monotonicity and detailed use cases.
-
-**Design Decisions**:
-- All pointer fields in DD ops are owned (deep copies), freed by `wl_dd_plan_free()`
-- Error return via `int` (0 = success, -1 = memory, -2 = invalid input) + out-parameter
-- FFI boundary: copy-based marshalling, C owns all memory, Rust borrows via const pointers
-- Expression trees serialized to RPN byte buffers (avoids pointer trees across FFI)
-- FFI types use fixed-width integers and explicit enum values for ABI stability
+**Status**:
+- ✅ Fixed-point iteration for recursive rules (10 tests passing)
+- ✅ Stratum stratification and execution ordering
+- ✅ Delta computation across iterations
+- ✅ All aggregation functions supported (COUNT, SUM, MIN, MAX, AVG)
 
 #### I/O Layer
 
@@ -343,40 +322,48 @@ typedef struct {
 
 ### Phase 0: Foundation — Complete ✅
 
-**Goal**: C11 parser/optimizer + DD translator + end-to-end execution
+**Goal**: C11 parser/optimizer + execution backend integration
 
-**Key deliverables**:
+**Key deliverables** (Historical - DD-based):
 - Hand-written RDP parser (FlowLog-compatible grammar)
 - Tree-based IR (9 node types) with AST-to-IR conversion
 - Stratification via Tarjan's iterative SCC detection
-- IR → DD operator graph translation (9 op types)
-- FFI marshalling layer (RPN expression serialization)
-- Rust DD executor crate (Differential Dataflow dogs3 v0.19.1)
+- Differential Dataflow executor integration (removed in Phase 2C)
 - CLI driver with `.dl` file execution and `--workers` flag
 - CSV input support for `.input` directive
 
 ### Phase 1: Optimization — Complete ✅
 
-**Goal**: IR-level optimization passes + comprehensive benchmark suite
+**Goal**: IR-level optimization passes
 
 **Optimization Passes**:
 - ✅ Logic Fusion (FILTER+PROJECT → FLATMAP, in-place mutation)
 - ✅ JPP — Join-Project Plan (greedy join reorder for 3+ atom chains)
 - ✅ SIP — Semijoin Information Passing (pre-filter insertion in join chains)
-- ❌ Subplan Sharing — closed as wontfix ([#61](https://github.com/justinjoy/wirelog/issues/61)): profiling showed +1.9% slower on DOOP; DD already shares collections via lightweight Variable handles
-- ❌ Boolean Specialization — closed as wontfix ([#62](https://github.com/justinjoy/wirelog/issues/62)): DD's `join_map` and `semijoin` use identical `join_core` for unary relations; near-zero cost difference
 
-**Benchmark Suite** (15 workloads):
+**Test counts**: 10 C tests (all passing)
 
-| Category | Workloads |
-|----------|-----------|
-| Graph | TC, Reach, CC, SSSP, SG, Bipartite |
-| Pointer Analysis | Andersen, CSPA, CSDA, Dyck-2 |
-| Advanced | Galen (8 rules), Polonius (37 rules, 1487 iterations), CRDT (23 rules), DDISASM (28 rules), DOOP (136 rules, 8-way joins) |
+### Phase 2A-B: Directory Reorganization — Complete ✅
 
-**Test counts**: 325 C tests (14 suites) + 85 Rust tests = **410 total tests passing**
+**Goal**: Clean code organization and namespace cleanup
 
-### Phase 2: Documentation (Planned)
+**Key deliverables**:
+- Refactored helper function prefixes (wl_ffi_* → wl_plan_*)
+- Reorganized DD code to backend/dd/ directory structure
+
+### Phase 2C: Pure C11 Columnar Backend — Complete ✅
+
+**Goal**: Remove Rust/Differential Dataflow, implement pure C11 columnar execution
+
+**Key deliverables**:
+- ✅ Deleted all .rs files and Cargo configuration
+- ✅ Deleted backend/dd/ directory entirely
+- ✅ Implemented columnar nanoarrow backend (C11 only)
+- ✅ Updated build configuration (meson.build)
+- ✅ Disabled DD-dependent tests and benchmarks
+- ✅ All 10 tests passing with pure C11 implementation
+
+### Phase 3: Documentation (Planned)
 
 **Goal**: User-facing documentation for adoption and onboarding
 
@@ -385,20 +372,15 @@ typedef struct {
 - **Examples** — Learning-oriented examples (`examples/` directory, not benchmarks)
 - **CLI Usage** — `wirelog --help`, man-page-level CLI documentation
 
-### Phase 3: nanoarrow Backend (Planned)
+### Phase 4: FPGA Support (Future)
 
-**Goal**: C11-native executor replacing DD for embedded targets
+**Goal**: Optional hardware acceleration for columnar backend
 
-- DD-based performance profiling (15 benchmarks: execution time, memory, bottlenecks)
-- Backend abstraction interface design
-- nanoarrow executor implementation (sort-merge join, semi-naive delta propagation)
-- DD vs nanoarrow comparison on same benchmark suite
-- Revisit Subplan Sharing ([#61](https://github.com/justinjoy/wirelog/issues/61)) and Boolean Specialization ([#62](https://github.com/justinjoy/wirelog/issues/62)) — see [Discussion #63](https://github.com/justinjoy/wirelog/discussions/63)
+- Performance profiling with columnar backend
+- Backend abstraction interface design (if needed)
+- Arrow IPC data transfer for hardware acceleration
+- Revisit optimization opportunities for columnar execution
 - Binary minimization (LTO, -Os, strip)
-
-### FPGA Support (Re-evaluate after Phase 3)
-
-FPGA acceleration requires the nanoarrow executor as a prerequisite. DD's internal arrangement sharing and incremental computation are software-level optimizations that cannot be directly mapped to hardware. Re-evaluate feasibility after Phase 3 completion.
 
 ---
 
@@ -412,15 +394,12 @@ FPGA acceleration requires the nanoarrow executor as a prerequisite. DD's intern
 | **IR** | Tree-based (9 node types) | ✅ Implemented | AST-to-IR, UNION merge, FLATMAP, SEMIJOIN |
 | **Stratification** | Tarjan's SCC | ✅ Implemented | O(V+E), iterative |
 | **Optimizer** | Fusion + JPP + SIP | ✅ Implemented | 3 passes, in-place IR mutation |
-| **DD Plan** | IR → DD op graph | ✅ Implemented | 9 op types, stratum-aware |
-| **FFI Marshalling** | DD plan → FFI-safe types | ✅ Implemented | RPN expr serialization |
-| **Rust DD Executor** | wirelog-dd crate | ✅ Implemented | DD dogs3 v0.19.1, 85 Rust tests |
-| **Build Integration** | Meson + Cargo | ✅ Implemented | `-Ddd=true`, clippy/fmt/test targets |
+| **Execution Plan** | IR → columnar execution plan | ✅ Implemented | 9 op types, stratum-aware |
+| **Backend** | Columnar nanoarrow (C11) | ✅ Implemented | Phase 2C: pure C11, no Rust/FFI |
 | **CLI Driver** | wirelog-cli binary | ✅ Implemented | .dl execution, `--workers` flag |
-| **Benchmarks** | 15 workloads | ✅ Implemented | Graph, pointer analysis, program analysis |
-| **Memory** | nanoarrow (mid-term) | Planned | Columnar, Arrow interop |
-| **Allocator** | Region/Arena + system malloc | Planned | See [Discussion #58](https://github.com/justinjoy/wirelog/discussions/58) |
-| **I/O** | CSV + Arrow IPC | CSV ✅, Arrow planned | Standard formats |
+| **Memory** | nanoarrow buffers + malloc | ✅ Implemented | Columnar storage, Arrow interop |
+| **Allocator** | system malloc (future: Arena) | Partial | Current: system malloc, arena planned |
+| **I/O** | CSV + Arrow IPC (future) | CSV ✅, Arrow planned | Standard formats |
 
 ---
 
@@ -434,7 +413,7 @@ FPGA acceleration requires the nanoarrow executor as a prerequisite. DD's intern
 
 ### Memory Management
 - [ ] Region/Arena allocator design (after allocation patterns stabilize)
-- [ ] Allocation category separation: `WL_ALLOC_INTERNAL` (AST/IR) vs `WL_ALLOC_FFI_TRANSFER` (DD boundary)
+- [ ] Optimize columnar buffer allocation for large-scale data
 - [ ] Memory leak detection strategy
 
 ### Backend Abstraction
