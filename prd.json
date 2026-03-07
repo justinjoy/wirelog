@@ -71,7 +71,7 @@
       "title": "Integration: Replace old_data snapshot loop in col_eval_stratum",
       "description": "Remove old_data snapshot pattern, integrate new delta-output consolidation. Eliminate O(N × iterations) memory traffic.",
       "priority": "critical",
-      "passes": false,
+      "passes": true,
       "acceptanceCriteria": [
         "old_data malloc/memcpy loop (lines 1883-1900) REMOVED",
         "snap[ri] row count only (O(1) snapshot)",
