@@ -180,6 +180,10 @@ arena_src = files(
   '../wirelog/arena/arena.c',
 )
 
+workqueue_src = files(
+  '../wirelog/workqueue.c',
+)
+
 test_plan_gen_exe = executable(
   'test_plan_gen',
   files('test_plan_gen.c'),
@@ -189,11 +193,32 @@ test_plan_gen_exe = executable(
   backend_src,
   io_src,
   arena_src,
+  workqueue_src,
   include_directories: [wirelog_inc, wirelog_src_inc],
-  dependencies: [nanoarrow_dep],
+  dependencies: [nanoarrow_dep, threads_dep],
 )
 
 test('plan_gen', test_plan_gen_exe)
+
+# ============================================================================
+# Workqueue Tests (Phase B-lite)
+# ============================================================================
+
+test_workqueue_exe = executable(
+  'test_workqueue',
+  files('test_workqueue.c'),
+  parser_src,
+  ir_src,
+  optimizer_src,
+  backend_src,
+  io_src,
+  arena_src,
+  workqueue_src,
+  include_directories: [wirelog_inc, wirelog_src_inc],
+  dependencies: [nanoarrow_dep, threads_dep],
+)
+
+test('workqueue', test_workqueue_exe)
 
 # ============================================================================
 # Recursive Aggregation Plan Tests - DISABLED in Phase 2C
