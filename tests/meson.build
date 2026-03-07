@@ -282,6 +282,18 @@ test_consolidate_incremental_delta_exe = executable(
 test('consolidate_incremental_delta', test_consolidate_incremental_delta_exe)
 
 # ============================================================================
+# CSE Cache Hit Rate Tests (US-001 TDD)
+# ============================================================================
+
+test_cse_cache_hit_rate_exe = executable(
+  'test_cse_cache_hit_rate',
+  files('test_cse_cache_hit_rate.c'),
+  include_directories: [wirelog_inc, wirelog_src_inc],
+)
+
+test('cse_cache_hit_rate', test_cse_cache_hit_rate_exe)
+
+# ============================================================================
 # Recursive Aggregation Plan Tests - DISABLED in Phase 2C
 # ============================================================================
 #
