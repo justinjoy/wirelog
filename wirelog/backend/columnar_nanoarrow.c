@@ -584,13 +584,34 @@ col_op_variable(const wl_plan_op_t *op, eval_stack_t *stack,
     col_rel_t *full_rel = session_find_rel(sess, op->relation_name);
     if (!full_rel)
         return ENOENT;
-    /* Prefer delta only when it is a genuine strict subset of the full
-     * relation (nrows < full.nrows). On the first iteration after a
-     * relation is populated its delta equals the full, so we use full
-     * to avoid doubling the work vs. naive evaluation. */
+
+    /* Delta mode controls whether we use delta or full relation.
+     * FORCE_FULL:  always use the full relation (no delta substitution).
+     * FORCE_DELTA: always use the delta relation; if no delta exists or
+     *              it is empty, push an empty relation so that the rule
+     *              copy produces no output (correct semi-naive behavior).
+     * AUTO:        heuristic -- prefer delta only when it is a genuine
+     *              strict subset of the full relation (nrows < full). */
     char dname[256];
     snprintf(dname, sizeof(dname), "$d$%s", op->relation_name);
     col_rel_t *delta = session_find_rel(sess, dname);
+
+    if (op->delta_mode == WL_DELTA_FORCE_FULL) {
+        return eval_stack_push_delta(stack, full_rel, false, false);
+    }
+    if (op->delta_mode == WL_DELTA_FORCE_DELTA) {
+        if (delta && delta->nrows > 0) {
+            return eval_stack_push_delta(stack, delta, false, true);
+        }
+        /* No delta available: push empty relation so this rule copy
+         * produces no tuples (correct semi-naive behavior). */
+        col_rel_t *empty = col_rel_new_like("$empty", full_rel);
+        if (!empty)
+            return ENOMEM;
+        return eval_stack_push_delta(stack, empty, true, true);
+    }
+
+    /* WL_DELTA_AUTO: original heuristic */
     bool use_delta
         = (delta && delta->nrows > 0 && delta->nrows < full_rel->nrows);
     col_rel_t *rel = use_delta ? delta : full_rel;
@@ -750,12 +771,36 @@ col_op_join(const wl_plan_op_t *op, eval_stack_t *stack, wl_col_session_t *sess)
         return ENOENT;
     }
 
-    /* Pass 1 (right-delta): substitute delta of right when left is a full
-     * relation. This covers the A_full × ΔB variant of semi-naive:
-     * when left is NOT a delta (full relation), substitute the delta of
-     * right if it exists and is strictly smaller than the full right. */
+    /* Right-side delta substitution controlled by delta_mode:
+     * FORCE_DELTA: always substitute delta of right if available; if no
+     *              delta exists, short-circuit with an empty result (this
+     *              rule copy produces no tuples from this permutation).
+     * FORCE_FULL:  never substitute delta; always use full right.
+     * AUTO:        heuristic -- substitute delta when left is not already
+     *              a delta and right-delta is strictly smaller than full. */
     bool used_right_delta = false;
-    if (!left_e.is_delta && op->right_relation) {
+    if (op->delta_mode == WL_DELTA_FORCE_DELTA && op->right_relation) {
+        char rdname[256];
+        snprintf(rdname, sizeof(rdname), "$d$%s", op->right_relation);
+        col_rel_t *rdelta = session_find_rel(sess, rdname);
+        if (rdelta && rdelta->nrows > 0) {
+            right = rdelta;
+            used_right_delta = true;
+        } else {
+            /* No delta available: push empty result and return early. */
+            uint32_t ocols = left_e.rel->ncols + right->ncols;
+            if (left_e.owned) {
+                col_rel_free_contents(left_e.rel);
+                free(left_e.rel);
+            }
+            col_rel_t *empty = col_rel_new_auto("$join", ocols);
+            if (!empty)
+                return ENOMEM;
+            return eval_stack_push_delta(stack, empty, true, true);
+        }
+    } else if (op->delta_mode != WL_DELTA_FORCE_FULL && !left_e.is_delta
+               && op->right_relation) {
+        /* AUTO: original heuristic */
         char rdname[256];
         snprintf(rdname, sizeof(rdname), "$d$%s", op->right_relation);
         col_rel_t *rdelta = session_find_rel(sess, rdname);
