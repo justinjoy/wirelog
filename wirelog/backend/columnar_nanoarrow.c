@@ -10,7 +10,6 @@
 #include "memory.h"
 #include "../session.h"
 #include "../wirelog-internal.h"
-#include "../workqueue.h"
 #include "arena/arena.h"
 
 #include "nanoarrow/nanoarrow.h"
@@ -252,8 +251,6 @@ typedef struct {
     wl_on_delta_fn delta_cb; /* delta callback (NULL = disabled)       */
     void *delta_data;        /* opaque user context for delta_cb       */
     wl_arena_t *eval_arena;  /* arena for per-iteration temporaries    */
-    wl_work_queue_t *wq;     /* workqueue for parallel non-recursive   */
-    uint32_t num_workers;    /* thread pool size (0 = single-threaded) */
 } wl_col_session_t;
 
 /*
@@ -1066,21 +1063,18 @@ col_op_concat(eval_stack_t *stack)
 
 /* --- CONSOLIDATE --------------------------------------------------------- */
 
-/* Comparison for qsort_r: lexicographic int64 row order. */
-typedef struct {
-    uint32_t ncols;
-} row_cmp_ctx_t;
+/* Comparison for qsort: lexicographic int64 row order. */
+static uint32_t g_consolidate_ncols; /* qsort context (single-threaded) */
 
 static int
-row_cmp_fn(void *ctx, const void *a, const void *b)
+row_cmp(const void *a, const void *b)
 {
-    const row_cmp_ctx_t *c = (const row_cmp_ctx_t *)ctx;
     const int64_t *ra = (const int64_t *)a;
     const int64_t *rb = (const int64_t *)b;
-    for (uint32_t i = 0; i < c->ncols; i++) {
-        if (ra[i] < rb[i])
+    for (uint32_t c = 0; c < g_consolidate_ncols; c++) {
+        if (ra[c] < rb[c])
             return -1;
-        if (ra[i] > rb[i])
+        if (ra[c] > rb[c])
             return 1;
     }
     return 0;
@@ -1117,8 +1111,8 @@ col_op_consolidate(eval_stack_t *stack)
         work_owned = true;
     }
 
-    row_cmp_ctx_t ctx = { .ncols = nc };
-    qsort_r(work->data, nr, sizeof(int64_t) * nc, &ctx, row_cmp_fn);
+    g_consolidate_ncols = nc;
+    qsort(work->data, nr, sizeof(int64_t) * nc, row_cmp);
 
     /* Compact: keep only unique rows */
     uint32_t out_r = 1; /* first row always kept */
@@ -1137,56 +1131,55 @@ col_op_consolidate(eval_stack_t *stack)
     return eval_stack_push(stack, work, work_owned);
 }
 
-/* --- CONSOLIDATE (incremental) ------------------------------------------- */
-
 /*
- * col_op_consolidate_incremental: O(D log D + N) incremental merge.
+ * col_op_consolidate_incremental:
+ * Incremental sort+dedup for semi-naive evaluation.
  *
- * Assumes rel->data[0..old_nrows) is already sorted+unique from a prior
- * consolidation pass.  New (delta) rows are in [old_nrows..nrows).
+ * Precondition: rel->data[0..old_nrows) is already sorted+unique from
+ * the previous iteration's consolidation. New rows appended during this
+ * iteration live in [old_nrows..rel->nrows).
  *
- *  Phase 1: sort delta, dedup within delta.
- *  Phase 2: merge sorted old with sorted delta into a fresh buffer.
- *           If delta_out is non-NULL, new-only rows (from delta, not in old)
- *           are appended to *delta_out during the merge — this is a free
- *           byproduct and eliminates the need for a separate snapshot+walk.
- *  Phase 3: swap buffer, update relation.
+ * Algorithm:
+ *   1. Sort only the delta rows: O(D log D)
+ *   2. Dedup within delta: O(D)
+ *   3. Merge sorted old with sorted delta, skipping duplicates: O(N + D)
+ *
+ * Total: O(D log D + N) vs O(N log N) for full re-sort.
  */
 static int
-col_op_consolidate_incremental(col_rel_t *rel, uint32_t old_nrows,
-                               col_rel_t *delta_out)
+col_op_consolidate_incremental(col_rel_t *rel, uint32_t old_nrows)
 {
     uint32_t nc = rel->ncols;
     uint32_t nr = rel->nrows;
 
     if (nr <= 1 || old_nrows >= nr)
-        return 0; /* nothing new */
+        return 0; /* nothing new or trivially sorted */
 
-    /* Phase 1: sort only the new delta rows [old_nrows .. nr) */
     uint32_t delta_count = nr - old_nrows;
     int64_t *delta_start = rel->data + (size_t)old_nrows * nc;
-    row_cmp_ctx_t ctx = { .ncols = nc };
-    qsort_r(delta_start, delta_count, sizeof(int64_t) * nc, &ctx, row_cmp_fn);
+    size_t row_bytes = (size_t)nc * sizeof(int64_t);
+
+    /* Phase 1: sort only the new delta rows */
+    g_consolidate_ncols = nc;
+    qsort(delta_start, delta_count, row_bytes, row_cmp);
 
     /* Phase 1b: dedup within delta */
     uint32_t d_unique = 1;
     for (uint32_t i = 1; i < delta_count; i++) {
         if (memcmp(delta_start + (size_t)(i - 1) * nc,
-                   delta_start + (size_t)i * nc, sizeof(int64_t) * nc)
+                   delta_start + (size_t)i * nc, row_bytes)
             != 0) {
             if (d_unique != i)
                 memcpy(delta_start + (size_t)d_unique * nc,
-                       delta_start + (size_t)i * nc, sizeof(int64_t) * nc);
+                       delta_start + (size_t)i * nc, row_bytes);
             d_unique++;
         }
     }
 
-    /* Phase 2: merge sorted old [0..old_nrows) with sorted delta.
-     * Both are sorted+unique.  Output: sorted+unique merged result.
-     * When delta_out is provided, new-only rows are captured as a byproduct. */
+    /* Phase 2: merge sorted old [0..old_nrows) with sorted+unique delta.
+     * Allocate temporary buffer for merge output. */
     size_t max_rows = (size_t)old_nrows + d_unique;
-    size_t row_bytes = (size_t)nc * sizeof(int64_t);
-    int64_t *merged = (int64_t *)malloc(max_rows * row_bytes);
+    int64_t *merged = (int64_t *)malloc(max_rows * nc * sizeof(int64_t));
     if (!merged)
         return ENOMEM;
 
@@ -1206,30 +1199,26 @@ col_op_consolidate_incremental(col_rel_t *rel, uint32_t old_nrows,
             out++; /* skip duplicate from delta */
         } else {
             memcpy(merged + (size_t)out * nc, drow, row_bytes);
-            if (delta_out)
-                col_rel_append_row(delta_out, drow);
             di++;
             out++;
         }
     }
-    /* Copy remaining delta rows — all are new (old exhausted) */
-    while (di < d_unique) {
-        const int64_t *drow = delta_start + (size_t)di * nc;
-        memcpy(merged + (size_t)out * nc, drow, row_bytes);
-        if (delta_out)
-            col_rel_append_row(delta_out, drow);
-        di++;
-        out++;
-    }
-    /* Copy remaining old rows */
+    /* Copy remaining from old */
     if (oi < old_nrows) {
-        uint32_t rem = old_nrows - oi;
+        uint32_t remaining = old_nrows - oi;
         memcpy(merged + (size_t)out * nc, rel->data + (size_t)oi * nc,
-               (size_t)rem * row_bytes);
-        out += rem;
+               (size_t)remaining * row_bytes);
+        out += remaining;
+    }
+    /* Copy remaining from delta */
+    if (di < d_unique) {
+        uint32_t remaining = d_unique - di;
+        memcpy(merged + (size_t)out * nc, delta_start + (size_t)di * nc,
+               (size_t)remaining * row_bytes);
+        out += remaining;
     }
 
-    /* Phase 3: swap buffer */
+    /* Swap buffer */
     free(rel->data);
     rel->data = merged;
     rel->nrows = out;
@@ -1503,125 +1492,10 @@ col_eval_relation_plan(const wl_plan_relation_t *rplan, eval_stack_t *stack,
 }
 
 /*
- * Workqueue integration: per-relation worker context for parallel
- * non-recursive stratum evaluation (collect-then-merge pattern).
- *
- * Each worker evaluates one relation plan independently.  The session
- * is read-only during non-recursive evaluation (EDB lookups only),
- * so concurrent reads are safe.  Each worker owns its own eval_stack_t
- * (stack-allocated inside the worker function).
- *
- * After all workers complete, the main thread merges results
- * sequentially into the session.
- */
-typedef struct {
-    const wl_plan_relation_t *rplan; /* borrowed: relation plan to evaluate */
-    wl_col_session_t *sess;          /* borrowed: session (read-only access) */
-    col_rel_t *result;               /* output: worker-produced relation     */
-    bool result_owned;               /* true if result was owned by stack    */
-    int rc;                          /* output: 0 on success, errno on error */
-} wq_eval_ctx_t;
-
-static void
-wq_eval_relation(void *arg)
-{
-    wq_eval_ctx_t *ctx = (wq_eval_ctx_t *)arg;
-
-    eval_stack_t stack;
-    eval_stack_init(&stack);
-
-    ctx->rc = col_eval_relation_plan(ctx->rplan, &stack, ctx->sess);
-    if (ctx->rc != 0) {
-        eval_stack_drain(&stack);
-        ctx->result = NULL;
-        ctx->result_owned = false;
-        return;
-    }
-
-    if (stack.top == 0) {
-        ctx->result = NULL;
-        ctx->result_owned = false;
-        return;
-    }
-
-    eval_entry_t entry = eval_stack_pop(&stack);
-    eval_stack_drain(&stack);
-
-    ctx->result = entry.rel;
-    ctx->result_owned = entry.owned;
-}
-
-/*
- * col_merge_worker_result:
- * Merge one worker's result relation into the session (main thread only).
- * Implements the same logic as the original sequential non-recursive path.
- *
- * Returns 0 on success, non-zero on error.
- */
-static int
-col_merge_worker_result(wq_eval_ctx_t *ctx, wl_col_session_t *sess)
-{
-    if (!ctx->result)
-        return 0; /* no output (empty plan) */
-
-    const char *name = ctx->rplan->name;
-    col_rel_t *target = session_find_rel(sess, name);
-
-    if (!target) {
-        if (ctx->result_owned) {
-            free(ctx->result->name);
-            ctx->result->name = wl_strdup(name);
-            if (!ctx->result->name) {
-                col_rel_free_contents(ctx->result);
-                free(ctx->result);
-                return ENOMEM;
-            }
-            int rc = session_add_rel(sess, ctx->result);
-            if (rc != 0) {
-                col_rel_free_contents(ctx->result);
-                free(ctx->result);
-                return rc;
-            }
-            ctx->result_owned = false;
-        } else {
-            col_rel_t *copy = col_rel_new_like(name, ctx->result);
-            if (!copy)
-                return ENOMEM;
-            int rc = col_rel_append_all(copy, ctx->result);
-            if (rc != 0) {
-                col_rel_free_contents(copy);
-                free(copy);
-                return rc;
-            }
-            rc = session_add_rel(sess, copy);
-            if (rc != 0) {
-                col_rel_free_contents(copy);
-                free(copy);
-                return rc;
-            }
-        }
-    } else {
-        int rc = col_rel_append_all(target, ctx->result);
-        if (ctx->result_owned) {
-            col_rel_free_contents(ctx->result);
-            free(ctx->result);
-        }
-        if (rc != 0)
-            return rc;
-    }
-    return 0;
-}
-
-/*
  * col_eval_stratum:
  * Evaluate one stratum, writing results into session relations.
- * Non-recursive strata are evaluated once (optionally in parallel).
+ * Non-recursive strata are evaluated once.
  * Recursive strata use semi-naive fixed-point iteration.
- *
- * When a workqueue is available (num_workers > 1), non-recursive
- * relations are evaluated in parallel using the collect-then-merge
- * pattern: all relation plans are submitted as work items, then
- * results are merged sequentially after wait_all().
  *
  * Returns 0 on success, non-zero on error.
  */
@@ -1629,72 +1503,7 @@ static int
 col_eval_stratum(const wl_plan_stratum_t *sp, wl_col_session_t *sess)
 {
     if (!sp->is_recursive) {
-        /*
-         * Parallel path: submit each relation plan to the workqueue.
-         * Workers evaluate independently; main thread merges after barrier.
-         */
-        if (sess->wq && sp->relation_count > 1) {
-            wq_eval_ctx_t *ctxs = (wq_eval_ctx_t *)calloc(
-                sp->relation_count, sizeof(wq_eval_ctx_t));
-            if (!ctxs)
-                return ENOMEM;
-
-            for (uint32_t ri = 0; ri < sp->relation_count; ri++) {
-                ctxs[ri].rplan = &sp->relations[ri];
-                ctxs[ri].sess = sess;
-                ctxs[ri].result = NULL;
-                ctxs[ri].result_owned = false;
-                ctxs[ri].rc = 0;
-
-                int rc = wl_workqueue_submit(sess->wq, wq_eval_relation,
-                                             &ctxs[ri]);
-                if (rc != 0) {
-                    /* Submission failed: wait for already-submitted, cleanup */
-                    wl_workqueue_wait_all(sess->wq);
-                    for (uint32_t j = 0; j < ri; j++) {
-                        if (ctxs[j].result && ctxs[j].result_owned) {
-                            col_rel_free_contents(ctxs[j].result);
-                            free(ctxs[j].result);
-                        }
-                    }
-                    free(ctxs);
-                    return ENOMEM;
-                }
-            }
-
-            wl_workqueue_wait_all(sess->wq);
-
-            /* Check for worker errors and merge results sequentially */
-            int merge_rc = 0;
-            for (uint32_t ri = 0; ri < sp->relation_count; ri++) {
-                if (ctxs[ri].rc != 0) {
-                    merge_rc = ctxs[ri].rc;
-                    /* Free remaining results */
-                    for (uint32_t j = ri; j < sp->relation_count; j++) {
-                        if (ctxs[j].result && ctxs[j].result_owned) {
-                            col_rel_free_contents(ctxs[j].result);
-                            free(ctxs[j].result);
-                        }
-                    }
-                    break;
-                }
-                merge_rc = col_merge_worker_result(&ctxs[ri], sess);
-                if (merge_rc != 0) {
-                    /* Free remaining results */
-                    for (uint32_t j = ri + 1; j < sp->relation_count; j++) {
-                        if (ctxs[j].result && ctxs[j].result_owned) {
-                            col_rel_free_contents(ctxs[j].result);
-                            free(ctxs[j].result);
-                        }
-                    }
-                    break;
-                }
-            }
-            free(ctxs);
-            return merge_rc;
-        }
-
-        /* Sequential fallback: single worker or single relation */
+        /* Non-recursive: evaluate each relation plan once */
         for (uint32_t ri = 0; ri < sp->relation_count; ri++) {
             const wl_plan_relation_t *rp = &sp->relations[ri];
 
@@ -1812,17 +1621,26 @@ col_eval_stratum(const wl_plan_stratum_t *sp, wl_col_session_t *sess)
             delta_rels[ri] = NULL; /* session now owns it */
         }
 
-        /* Record per-relation row counts before evaluation.  snap[ri] is the
-         * boundary between sorted-old and unsorted-new rows used by
-         * col_op_consolidate_incremental to sort only the delta. */
+        /* Record per-relation row counts and save sorted snapshots for delta
+         * computation after consolidation. old_data[ri] is a copy of the
+         * pre-evaluation sorted+unique relation; delta = R_new - R_old. */
         uint32_t *snap = (uint32_t *)malloc(nrels * sizeof(uint32_t));
-        if (!snap) {
+        int64_t **old_data = (int64_t **)calloc(nrels, sizeof(int64_t *));
+        if (!snap || !old_data) {
+            free(snap);
+            free(old_data);
             free(delta_rels);
             return ENOMEM;
         }
         for (uint32_t ri = 0; ri < nrels; ri++) {
             col_rel_t *r = session_find_rel(sess, sp->relations[ri].name);
             snap[ri] = r ? r->nrows : 0;
+            if (snap[ri] > 0 && r && r->ncols > 0) {
+                size_t bytes = (size_t)snap[ri] * r->ncols * sizeof(int64_t);
+                old_data[ri] = (int64_t *)malloc(bytes);
+                if (old_data[ri])
+                    memcpy(old_data[ri], r->data, bytes);
+            }
         }
 
         /* Single-pass semi-naive evaluation. VARIABLE prefers delta when it
@@ -1923,32 +1741,77 @@ col_eval_stratum(const wl_plan_stratum_t *sp, wl_col_session_t *sess)
             session_remove_rel(sess, dname);
         }
 
-        /* Consolidate + compute delta in a single pass.
-         * col_op_consolidate_incremental sorts only the new delta rows
-         * O(D log D), merges with sorted old O(N), and captures new-only
-         * rows into delta_out as a free byproduct of the merge walk.
-         * This eliminates the old_data snapshot and separate merge walk. */
+        /* Consolidate all IDB relations to remove duplicates */
+        for (uint32_t ri = 0; ri < nrels; ri++) {
+            col_rel_t *r = session_find_rel(sess, sp->relations[ri].name);
+            if (!r || r->nrows == 0)
+                continue;
+
+            eval_stack_t stk;
+            eval_stack_init(&stk);
+            eval_stack_push(&stk, r, false); /* borrowed */
+            col_op_consolidate(&stk);
+
+            if (stk.top > 0) {
+                eval_entry_t ce = eval_stack_pop(&stk);
+                if (ce.owned && ce.rel != r) {
+                    /* Replace relation contents */
+                    free(r->data);
+                    r->data = ce.rel->data;
+                    r->nrows = ce.rel->nrows;
+                    r->capacity = ce.rel->capacity;
+                    ce.rel->data = NULL;
+                    col_rel_free_contents(ce.rel);
+                    free(ce.rel);
+                }
+            }
+        }
+
+        /* Compute proper delta: R_new - R_old via sorted merge walk.
+         * Both old_data[ri] and r->data are sorted+unique (old from previous
+         * consolidation, new from consolidation just done above).
+         * This ensures delta contains only truly new tuples, preventing the
+         * base-case re-evaluation from polluting delta with known rows. */
         bool any_new = false;
         for (uint32_t ri = 0; ri < nrels; ri++) {
             col_rel_t *r = session_find_rel(sess, sp->relations[ri].name);
             if (!r || r->nrows == 0 || r->ncols == 0)
                 continue;
-
             char dname[256];
             snprintf(dname, sizeof(dname), "$d$%s", sp->relations[ri].name);
             col_rel_t *delta = col_rel_new_like(dname, r);
             if (!delta)
                 continue;
-
-            if (snap[ri] == 0) {
-                /* First iteration: full sort, all rows are new */
-                col_op_consolidate_incremental(r, 0, NULL);
+            uint32_t nc = r->ncols;
+            size_t row_bytes = (size_t)nc * sizeof(int64_t);
+            int64_t *old = old_data[ri];
+            uint32_t old_n = snap[ri];
+            if (old == NULL || old_n == 0) {
+                /* First time: all consolidated rows are new */
                 col_rel_append_all(delta, r); /* best-effort */
             } else {
-                /* Incremental: merge captures new-only rows into delta */
-                col_op_consolidate_incremental(r, snap[ri], delta);
+                /* Merge walk: emit rows in R_new not present in R_old */
+                uint32_t oi = 0, ni = 0;
+                while (ni < r->nrows) {
+                    const int64_t *nrow = r->data + (size_t)ni * nc;
+                    if (oi < old_n) {
+                        const int64_t *orow = old + (size_t)oi * nc;
+                        int cmp = memcmp(nrow, orow, row_bytes);
+                        if (cmp < 0) {
+                            col_rel_append_row(delta, nrow);
+                            ni++;
+                        } else if (cmp == 0) {
+                            ni++;
+                            oi++;
+                        } else {
+                            oi++;
+                        }
+                    } else {
+                        col_rel_append_row(delta, nrow);
+                        ni++;
+                    }
+                }
             }
-
             if (delta->nrows > 0) {
                 delta_rels[ri] = delta;
                 any_new = true;
@@ -1957,6 +1820,11 @@ col_eval_stratum(const wl_plan_stratum_t *sp, wl_col_session_t *sess)
                 free(delta);
             }
         }
+
+        /* Free pre-evaluation snapshots */
+        for (uint32_t ri = 0; ri < nrels; ri++)
+            free(old_data[ri]);
+        free(old_data);
         free(snap);
 
         if (!any_new)
@@ -1987,7 +1855,7 @@ col_eval_stratum(const wl_plan_stratum_t *sp, wl_col_session_t *sess)
  * Implements wl_compute_backend_t.session_create vtable slot.
  *
  * @param plan:        Execution plan (borrowed, must outlive session)
- * @param num_workers: Thread pool size (1 = single-threaded, >1 = parallel)
+ * @param num_workers: Ignored; columnar backend is single-threaded
  * @param out:         (out) Receives &sess->base on success
  *
  * Memory initialization order:
@@ -2006,6 +1874,8 @@ static int
 col_session_create(const wl_plan_t *plan, uint32_t num_workers,
                    wl_session_t **out)
 {
+    (void)num_workers; /* columnar backend is single-threaded */
+
     if (!plan || !out)
         return EINVAL;
 
@@ -2028,18 +1898,6 @@ col_session_create(const wl_plan_t *plan, uint32_t num_workers,
         free(sess->rels);
         free(sess);
         return ENOMEM;
-    }
-
-    /* Create workqueue for parallel non-recursive stratum evaluation */
-    sess->num_workers = num_workers;
-    if (num_workers > 1) {
-        sess->wq = wl_workqueue_create(num_workers);
-        if (!sess->wq) {
-            wl_arena_free(sess->eval_arena);
-            free(sess->rels);
-            free(sess);
-            return ENOMEM;
-        }
     }
 
     /* Pre-register EDB relations (ncols determined at first insert) */
@@ -2091,8 +1949,6 @@ col_session_destroy(wl_session_t *session)
     free(sess->rels);
     if (sess->eval_arena)
         wl_arena_free(sess->eval_arena);
-    if (sess->wq)
-        wl_workqueue_destroy(sess->wq);
     free(sess);
 }
 
