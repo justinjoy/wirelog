@@ -20,6 +20,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef __AVX2__
+#include <immintrin.h>
+#endif
+
+#ifdef __ARM_NEON__
+#include <arm_neon.h>
+#endif
+
 /* ======================================================================== */
 /* Relation Storage                                                          */
 /* ======================================================================== */
@@ -1495,6 +1503,124 @@ row_cmp_lex(const int64_t *a, const int64_t *b, uint32_t ncols)
     return 0;
 }
 
+#ifdef __AVX2__
+/* row_cmp_simd_avx2 - AVX2-accelerated lexicographic int64_t row comparison.
+ *
+ * Compares rows a and b (each ncols int64_t values) and returns -1, 0, or +1,
+ * identical in semantics to row_cmp_lex().  Processes 4 elements per SIMD
+ * iteration then falls back to scalar for the remainder.
+ *
+ * No alignment assumptions: unaligned loads (_mm256_loadu_si256) are used.
+ */
+static inline int
+row_cmp_simd_avx2(const int64_t *a, const int64_t *b, uint32_t ncols)
+{
+    uint32_t i = 0;
+
+    /* Process 4 int64_t elements per iteration (256-bit vectors). */
+    for (; i + 4 <= ncols; i += 4) {
+        __m256i va = _mm256_loadu_si256((const __m256i *)(a + i));
+        __m256i vb = _mm256_loadu_si256((const __m256i *)(b + i));
+
+        /* eq_mask: 0xFFFFFFFFFFFFFFFF for equal lanes, 0 otherwise. */
+        __m256i eq_mask = _mm256_cmpeq_epi64(va, vb);
+
+        /* Collapse equality mask to 4-bit scalar (one bit per byte-group of 8).
+         * movemask gives one bit per byte; equal lane -> 8 bits set -> 0xFF.
+         * We check for a fully-equal lane by looking at 8-bit groups. */
+        int eq_bits = _mm256_movemask_epi8(eq_mask); /* 32 bits, 8 per lane */
+
+        if (eq_bits == (int)0xFFFFFFFF) {
+            /* All 4 lanes are equal; continue to next chunk. */
+            continue;
+        }
+
+        /* At least one lane differs.  Find the lowest-index differing lane.
+         * eq_bits has 8 consecutive bits set for an equal lane.
+         * Lane k occupies bits [8k .. 8k+7].  A differing lane has at least
+         * one of those bits clear, so (~eq_bits) has a set bit in that range.
+         */
+        int neq = ~eq_bits;
+        /* ctz gives the position of the first differing byte; divide by 8
+         * gives the lane index within this 4-element chunk. */
+        int lane = __builtin_ctz((unsigned int)neq) / 8;
+        int64_t av = a[i + (uint32_t)lane];
+        int64_t bv = b[i + (uint32_t)lane];
+        return (av < bv) ? -1 : 1;
+    }
+
+    /* Scalar fallback for the remaining ncols % 4 elements. */
+    for (; i < ncols; i++) {
+        if (a[i] < b[i])
+            return -1;
+        if (a[i] > b[i])
+            return 1;
+    }
+    return 0;
+}
+#endif /* __AVX2__ */
+
+#ifdef __ARM_NEON__
+/* row_cmp_simd_neon - NEON-accelerated lexicographic int64_t row comparison.
+ *
+ * Compares rows a and b (each ncols int64_t values) and returns -1, 0, or +1,
+ * identical in semantics to row_cmp_lex().  Processes 2 elements per SIMD
+ * iteration then falls back to scalar for the remainder.
+ *
+ * No alignment assumptions: unaligned loads (vld1q_s64) are used.
+ */
+static inline int
+row_cmp_simd_neon(const int64_t *a, const int64_t *b, uint32_t ncols)
+{
+    uint32_t i = 0;
+
+    /* Process 2 int64_t elements per iteration (128-bit vectors). */
+    for (; i + 2 <= ncols; i += 2) {
+        int64x2_t va = vld1q_s64(a + i);
+        int64x2_t vb = vld1q_s64(b + i);
+
+        /* eq_mask: all-ones (0xFFFFFFFFFFFFFFFF) for equal lanes, 0 otherwise. */
+        uint64x2_t eq_mask = vceqq_s64(va, vb);
+
+        uint64_t eq0 = vgetq_lane_u64(eq_mask, 0);
+        uint64_t eq1 = vgetq_lane_u64(eq_mask, 1);
+
+        if (eq0 && eq1) {
+            /* Both lanes equal; continue to next pair. */
+            continue;
+        }
+
+        /* First differing lane is 0 if lane 0 differs, else 1. */
+        int lane = eq0 ? 1 : 0;
+        int64_t av
+            = (lane == 0) ? vgetq_lane_s64(va, 0) : vgetq_lane_s64(va, 1);
+        int64_t bv
+            = (lane == 0) ? vgetq_lane_s64(vb, 0) : vgetq_lane_s64(vb, 1);
+        return (av < bv) ? -1 : 1;
+    }
+
+    /* Scalar fallback for the remaining ncols % 2 element. */
+    if (i < ncols) {
+        if (a[i] < b[i])
+            return -1;
+        if (a[i] > b[i])
+            return 1;
+    }
+    return 0;
+}
+#endif /* __ARM_NEON__ */
+
+/* Dispatcher: Select best row comparison at compile time.
+ * Automatically chooses AVX2, NEON, or scalar fallback.
+ */
+#ifdef __AVX2__
+#define row_cmp_optimized row_cmp_simd_avx2
+#elif defined(__ARM_NEON__)
+#define row_cmp_optimized row_cmp_simd_neon
+#else
+#define row_cmp_optimized row_cmp_lex
+#endif
+
 /*
  * col_op_consolidate_incremental_delta - Incremental consolidation with delta output
  *
@@ -1550,8 +1676,8 @@ col_op_consolidate_incremental_delta(col_rel_t *rel, uint32_t old_nrows,
     /* Phase 1b: dedup within delta */
     uint32_t d_unique = 1;
     for (uint32_t i = 1; i < delta_count; i++) {
-        if (row_cmp_lex(delta_start + (size_t)(i - 1) * nc,
-                        delta_start + (size_t)i * nc, nc)
+        if (row_cmp_optimized(delta_start + (size_t)(i - 1) * nc,
+                              delta_start + (size_t)i * nc, nc)
             != 0) {
             if (d_unique != i)
                 memcpy(delta_start + (size_t)d_unique * nc,
@@ -1571,7 +1697,7 @@ col_op_consolidate_incremental_delta(col_rel_t *rel, uint32_t old_nrows,
     while (oi < old_nrows && di < d_unique) {
         const int64_t *orow = rel->data + (size_t)oi * nc;
         const int64_t *drow = delta_start + (size_t)di * nc;
-        int cmp = row_cmp_lex(orow, drow, nc);
+        int cmp = row_cmp_optimized(orow, drow, nc);
         if (cmp < 0) {
             memcpy(merged + (size_t)out * nc, orow, row_bytes);
             oi++;
