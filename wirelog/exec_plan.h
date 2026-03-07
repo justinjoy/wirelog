@@ -124,6 +124,39 @@ typedef struct {
 } wl_plan_expr_buffer_t;
 
 /* ======================================================================== */
+/* Delta Mode (Semi-Naive Multi-Way Join Expansion)                         */
+/* ======================================================================== */
+
+/**
+ * wl_delta_mode_t:
+ *
+ * Controls delta/full relation selection in VARIABLE and JOIN operators
+ * for multi-way semi-naive evaluation.
+ *
+ * For a K-atom recursive rule (K >= 3), the plan generator emits K
+ * copies of the rule plan, each with exactly one body atom forced to
+ * use its delta relation and the rest forced to use full relations.
+ * This ensures every ΔR_i × R_1_full × ... × R_K_full permutation
+ * is covered, which is required for correct semi-naive evaluation.
+ *
+ * WL_DELTA_AUTO:        Heuristic selection (current default behavior).
+ *                       VARIABLE picks delta when it is a strict subset
+ *                       of full; JOIN applies right-delta heuristically.
+ * WL_DELTA_FORCE_DELTA: Force delta version of the relation.
+ *                       VARIABLE selects "$d$<name>" if it exists and
+ *                       has rows; otherwise produces empty result.
+ *                       JOIN forces right-delta substitution.
+ * WL_DELTA_FORCE_FULL:  Force full version of the relation.
+ *                       VARIABLE always selects the full relation.
+ *                       JOIN skips right-delta substitution.
+ */
+typedef enum {
+    WL_DELTA_AUTO = 0,
+    WL_DELTA_FORCE_DELTA = 1,
+    WL_DELTA_FORCE_FULL = 2,
+} wl_delta_mode_t;
+
+/* ======================================================================== */
 /* Operator Types                                                           */
 /* ======================================================================== */
 
@@ -200,6 +233,8 @@ typedef struct {
 
     wl_plan_expr_buffer_t *map_exprs;
     uint32_t map_expr_count;
+
+    wl_delta_mode_t delta_mode; /* semi-naive delta/full selection control */
 } wl_plan_op_t;
 
 /* ======================================================================== */
