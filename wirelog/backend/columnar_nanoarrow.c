@@ -1922,30 +1922,14 @@ col_eval_stratum(const wl_plan_stratum_t *sp, wl_col_session_t *sess)
             session_remove_rel(sess, dname);
         }
 
-        /* Consolidate all IDB relations to remove duplicates */
+        /* Consolidate all IDB relations: incremental sort+merge.
+         * snap[ri] marks the boundary between sorted-old and unsorted-new
+         * rows, so we sort only the delta and merge it in O(D log D + N). */
         for (uint32_t ri = 0; ri < nrels; ri++) {
             col_rel_t *r = session_find_rel(sess, sp->relations[ri].name);
             if (!r || r->nrows == 0)
                 continue;
-
-            eval_stack_t stk;
-            eval_stack_init(&stk);
-            eval_stack_push(&stk, r, false); /* borrowed */
-            col_op_consolidate(&stk);
-
-            if (stk.top > 0) {
-                eval_entry_t ce = eval_stack_pop(&stk);
-                if (ce.owned && ce.rel != r) {
-                    /* Replace relation contents */
-                    free(r->data);
-                    r->data = ce.rel->data;
-                    r->nrows = ce.rel->nrows;
-                    r->capacity = ce.rel->capacity;
-                    ce.rel->data = NULL;
-                    col_rel_free_contents(ce.rel);
-                    free(ce.rel);
-                }
-            }
+            col_op_consolidate_incremental(r, snap[ri]);
         }
 
         /* Compute proper delta: R_new - R_old via sorted merge walk.
