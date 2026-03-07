@@ -68,4 +68,15 @@
 const wl_compute_backend_t *
 wl_backend_columnar(void);
 
+/**
+ * col_session_get_iteration_count:
+ *
+ * Return the number of fixed-point iterations performed during the last
+ * evaluation.  Returns 0 if no evaluation has occurred yet.
+ *
+ * @param sess  A wl_session_t* backed by the columnar backend.
+ */
+uint32_t
+col_session_get_iteration_count(wl_session_t *sess);
+
 #endif /* WL_BACKEND_COLUMNAR_NANOARROW_H */

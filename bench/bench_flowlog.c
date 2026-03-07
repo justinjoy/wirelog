@@ -19,6 +19,7 @@
 #include "bench_util.h"
 
 #include "../wirelog/backend.h"
+#include "../wirelog/backend/columnar_nanoarrow.h"
 #include "../wirelog/exec_plan_gen.h"
 #include "../wirelog/passes/fusion.h"
 #include "../wirelog/passes/jpp.h"
@@ -203,7 +204,8 @@ count_tuple_cb(const char *relation, const int64_t *row, uint32_t ncols,
  * ---------------------------------------------------------------- */
 
 static int
-run_pipeline_count(const char *source, uint32_t num_workers, int64_t *out_count)
+run_pipeline_count(const char *source, uint32_t num_workers, int64_t *out_count,
+                   uint32_t *out_iters)
 {
     if (!source)
         return -1;
@@ -252,12 +254,16 @@ run_pipeline_count(const char *source, uint32_t num_workers, int64_t *out_count)
     struct count_ctx ctx = { 0 };
     rc = wl_session_snapshot(sess, count_tuple_cb, &ctx);
 
+    uint32_t total_iters = col_session_get_iteration_count(sess);
+
     wl_session_destroy(sess);
     wl_plan_free(plan);
     wirelog_program_free(prog);
 
     if (rc == 0 && out_count)
         *out_count = ctx.count;
+    if (out_iters)
+        *out_iters = total_iters;
 
     return rc;
 }
@@ -306,12 +312,14 @@ run_workload(int wl_id, const char *data_path, uint32_t workers, int repeat)
 
     int64_t tuples = 0;
     int64_t peak_rss = -1;
+    uint32_t total_iters = 0;
     int status_ok = 1;
 
     for (int r = 0; r < repeat; r++) {
         bench_time_t t0 = bench_time_now();
         int64_t cnt = 0;
-        int rc = run_pipeline_count(source, workers, &cnt);
+        uint32_t iters = 0;
+        int rc = run_pipeline_count(source, workers, &cnt, &iters);
         bench_time_t t1 = bench_time_now();
 
         times[r] = bench_time_diff_ms(t0, t1);
@@ -321,6 +329,7 @@ run_workload(int wl_id, const char *data_path, uint32_t workers, int repeat)
             break;
         }
         tuples = cnt;
+        total_iters = iters;
     }
 
     peak_rss = bench_peak_rss_kb();
@@ -335,11 +344,11 @@ run_workload(int wl_id, const char *data_path, uint32_t workers, int repeat)
         int32_t nodes = (edge_count > 0) ? edge_count + 1 : 0;
 
         printf("%s\t%d\t%d\t%u\t%d\t%.1f\t%.1f\t%.1f\t%" PRId64 "\t%" PRId64
-               "\t%s\n",
+               "\t%u\t%s\n",
                wl_names[wl_id], nodes, edge_count, workers, repeat, min_ms,
-               median_ms, max_ms, peak_rss, tuples, "OK");
+               median_ms, max_ms, peak_rss, tuples, total_iters, "OK");
     } else {
-        printf("%s\t-\t-\t%u\t%d\t-\t-\t-\t-\t-\tFAIL\n", wl_names[wl_id],
+        printf("%s\t-\t-\t%u\t%d\t-\t-\t-\t-\t-\t-\tFAIL\n", wl_names[wl_id],
                workers, repeat);
     }
 
@@ -430,12 +439,14 @@ run_andersen_workload(const char *data_dir, uint32_t workers, int repeat)
 
     int64_t tuples = 0;
     int64_t peak_rss = -1;
+    uint32_t total_iters = 0;
     int status_ok = 1;
 
     for (int r = 0; r < repeat; r++) {
         bench_time_t t0 = bench_time_now();
         int64_t cnt = 0;
-        int rc = run_pipeline_count(source, workers, &cnt);
+        uint32_t iters = 0;
+        int rc = run_pipeline_count(source, workers, &cnt, &iters);
         bench_time_t t1 = bench_time_now();
 
         times[r] = bench_time_diff_ms(t0, t1);
@@ -445,6 +456,7 @@ run_andersen_workload(const char *data_dir, uint32_t workers, int repeat)
             break;
         }
         tuples = cnt;
+        total_iters = iters;
     }
 
     peak_rss = bench_peak_rss_kb();
@@ -456,11 +468,11 @@ run_andersen_workload(const char *data_dir, uint32_t workers, int repeat)
         double max_ms = times[repeat - 1];
 
         printf("andersen\t-\t%d\t%u\t%d\t%.1f\t%.1f\t%.1f\t%" PRId64
-               "\t%" PRId64 "\t%s\n",
+               "\t%" PRId64 "\t%u\t%s\n",
                total_facts, workers, repeat, min_ms, median_ms, max_ms,
-               peak_rss, tuples, "OK");
+               peak_rss, tuples, total_iters, "OK");
     } else {
-        printf("andersen\t-\t-\t%u\t%d\t-\t-\t-\t-\t-\tFAIL\n", workers,
+        printf("andersen\t-\t-\t%u\t%d\t-\t-\t-\t-\t-\t-\tFAIL\n", workers,
                repeat);
     }
 
@@ -552,12 +564,14 @@ run_dyck_workload(const char *data_dir, uint32_t workers, int repeat)
 
     int64_t tuples = 0;
     int64_t peak_rss = -1;
+    uint32_t total_iters = 0;
     int status_ok = 1;
 
     for (int r = 0; r < repeat; r++) {
         bench_time_t t0 = bench_time_now();
         int64_t cnt = 0;
-        int rc = run_pipeline_count(source, workers, &cnt);
+        uint32_t iters = 0;
+        int rc = run_pipeline_count(source, workers, &cnt, &iters);
         bench_time_t t1 = bench_time_now();
 
         times[r] = bench_time_diff_ms(t0, t1);
@@ -567,6 +581,7 @@ run_dyck_workload(const char *data_dir, uint32_t workers, int repeat)
             break;
         }
         tuples = cnt;
+        total_iters = iters;
     }
 
     peak_rss = bench_peak_rss_kb();
@@ -578,11 +593,11 @@ run_dyck_workload(const char *data_dir, uint32_t workers, int repeat)
         double max_ms = times[repeat - 1];
 
         printf("dyck\t-\t%d\t%u\t%d\t%.1f\t%.1f\t%.1f\t%" PRId64 "\t%" PRId64
-               "\t%s\n",
+               "\t%u\t%s\n",
                total_facts, workers, repeat, min_ms, median_ms, max_ms,
-               peak_rss, tuples, "OK");
+               peak_rss, tuples, total_iters, "OK");
     } else {
-        printf("dyck\t-\t-\t%u\t%d\t-\t-\t-\t-\t-\tFAIL\n", workers, repeat);
+        printf("dyck\t-\t-\t%u\t%d\t-\t-\t-\t-\t-\t-\tFAIL\n", workers, repeat);
     }
 
     free(times);
@@ -674,12 +689,14 @@ run_cspa_workload(const char *data_dir, uint32_t workers, int repeat)
 
     int64_t tuples = 0;
     int64_t peak_rss = -1;
+    uint32_t total_iters = 0;
     int status_ok = 1;
 
     for (int r = 0; r < repeat; r++) {
         bench_time_t t0 = bench_time_now();
         int64_t cnt = 0;
-        int rc = run_pipeline_count(source, workers, &cnt);
+        uint32_t iters = 0;
+        int rc = run_pipeline_count(source, workers, &cnt, &iters);
         bench_time_t t1 = bench_time_now();
 
         times[r] = bench_time_diff_ms(t0, t1);
@@ -689,6 +706,7 @@ run_cspa_workload(const char *data_dir, uint32_t workers, int repeat)
             break;
         }
         tuples = cnt;
+        total_iters = iters;
     }
 
     peak_rss = bench_peak_rss_kb();
@@ -700,11 +718,11 @@ run_cspa_workload(const char *data_dir, uint32_t workers, int repeat)
         double max_ms = times[repeat - 1];
 
         printf("cspa\t-\t%d\t%u\t%d\t%.1f\t%.1f\t%.1f\t%" PRId64 "\t%" PRId64
-               "\t%s\n",
+               "\t%u\t%s\n",
                total_facts, workers, repeat, min_ms, median_ms, max_ms,
-               peak_rss, tuples, "OK");
+               peak_rss, tuples, total_iters, "OK");
     } else {
-        printf("cspa\t-\t-\t%u\t%d\t-\t-\t-\t-\t-\tFAIL\n", workers, repeat);
+        printf("cspa\t-\t-\t%u\t%d\t-\t-\t-\t-\t-\t-\tFAIL\n", workers, repeat);
     }
 
     free(times);
@@ -784,12 +802,14 @@ run_csda_workload(const char *data_dir, uint32_t workers, int repeat)
 
     int64_t tuples = 0;
     int64_t peak_rss = -1;
+    uint32_t total_iters = 0;
     int status_ok = 1;
 
     for (int r = 0; r < repeat; r++) {
         bench_time_t t0 = bench_time_now();
         int64_t cnt = 0;
-        int rc = run_pipeline_count(source, workers, &cnt);
+        uint32_t iters = 0;
+        int rc = run_pipeline_count(source, workers, &cnt, &iters);
         bench_time_t t1 = bench_time_now();
 
         times[r] = bench_time_diff_ms(t0, t1);
@@ -799,6 +819,7 @@ run_csda_workload(const char *data_dir, uint32_t workers, int repeat)
             break;
         }
         tuples = cnt;
+        total_iters = iters;
     }
 
     peak_rss = bench_peak_rss_kb();
@@ -810,11 +831,11 @@ run_csda_workload(const char *data_dir, uint32_t workers, int repeat)
         double max_ms = times[repeat - 1];
 
         printf("csda\t-\t%d\t%u\t%d\t%.1f\t%.1f\t%.1f\t%" PRId64 "\t%" PRId64
-               "\t%s\n",
+               "\t%u\t%s\n",
                total_facts, workers, repeat, min_ms, median_ms, max_ms,
-               peak_rss, tuples, "OK");
+               peak_rss, tuples, total_iters, "OK");
     } else {
-        printf("csda\t-\t-\t%u\t%d\t-\t-\t-\t-\t-\tFAIL\n", workers, repeat);
+        printf("csda\t-\t-\t%u\t%d\t-\t-\t-\t-\t-\t-\tFAIL\n", workers, repeat);
     }
 
     free(times);
@@ -913,12 +934,14 @@ run_galen_workload(const char *data_dir, uint32_t workers, int repeat)
 
     int64_t tuples = 0;
     int64_t peak_rss = -1;
+    uint32_t total_iters = 0;
     int status_ok = 1;
 
     for (int r = 0; r < repeat; r++) {
         bench_time_t t0 = bench_time_now();
         int64_t cnt = 0;
-        int rc = run_pipeline_count(source, workers, &cnt);
+        uint32_t iters = 0;
+        int rc = run_pipeline_count(source, workers, &cnt, &iters);
         bench_time_t t1 = bench_time_now();
 
         times[r] = bench_time_diff_ms(t0, t1);
@@ -928,6 +951,7 @@ run_galen_workload(const char *data_dir, uint32_t workers, int repeat)
             break;
         }
         tuples = cnt;
+        total_iters = iters;
     }
 
     peak_rss = bench_peak_rss_kb();
@@ -939,11 +963,12 @@ run_galen_workload(const char *data_dir, uint32_t workers, int repeat)
         double max_ms = times[repeat - 1];
 
         printf("galen\t-\t%d\t%u\t%d\t%.1f\t%.1f\t%.1f\t%" PRId64 "\t%" PRId64
-               "\t%s\n",
+               "\t%u\t%s\n",
                total_facts, workers, repeat, min_ms, median_ms, max_ms,
-               peak_rss, tuples, "OK");
+               peak_rss, tuples, total_iters, "OK");
     } else {
-        printf("galen\t-\t-\t%u\t%d\t-\t-\t-\t-\t-\tFAIL\n", workers, repeat);
+        printf("galen\t-\t-\t%u\t%d\t-\t-\t-\t-\t-\t-\tFAIL\n", workers,
+               repeat);
     }
 
     free(times);
@@ -1174,12 +1199,14 @@ run_polonius_workload(const char *data_dir, uint32_t workers, int repeat)
 
     int64_t tuples = 0;
     int64_t peak_rss = -1;
+    uint32_t total_iters = 0;
     int status_ok = 1;
 
     for (int r = 0; r < repeat; r++) {
         bench_time_t t0 = bench_time_now();
         int64_t cnt = 0;
-        int rc = run_pipeline_count(source, workers, &cnt);
+        uint32_t iters = 0;
+        int rc = run_pipeline_count(source, workers, &cnt, &iters);
         bench_time_t t1 = bench_time_now();
 
         times[r] = bench_time_diff_ms(t0, t1);
@@ -1189,6 +1216,7 @@ run_polonius_workload(const char *data_dir, uint32_t workers, int repeat)
             break;
         }
         tuples = cnt;
+        total_iters = iters;
     }
 
     peak_rss = bench_peak_rss_kb();
@@ -1200,11 +1228,11 @@ run_polonius_workload(const char *data_dir, uint32_t workers, int repeat)
         double max_ms = times[repeat - 1];
 
         printf("polonius\t-\t%d\t%u\t%d\t%.1f\t%.1f\t%.1f\t%" PRId64
-               "\t%" PRId64 "\t%s\n",
+               "\t%" PRId64 "\t%u\t%s\n",
                total_facts, workers, repeat, min_ms, median_ms, max_ms,
-               peak_rss, tuples, "OK");
+               peak_rss, tuples, total_iters, "OK");
     } else {
-        printf("polonius\t-\t-\t%u\t%d\t-\t-\t-\t-\t-\tFAIL\n", workers,
+        printf("polonius\t-\t-\t%u\t%d\t-\t-\t-\t-\t-\t-\tFAIL\n", workers,
                repeat);
     }
 
@@ -1364,12 +1392,14 @@ run_ddisasm_workload(const char *data_dir, uint32_t workers, int repeat)
 
     int64_t tuples = 0;
     int64_t peak_rss = -1;
+    uint32_t total_iters = 0;
     int status_ok = 1;
 
     for (int r = 0; r < repeat; r++) {
         bench_time_t t0 = bench_time_now();
         int64_t cnt = 0;
-        int rc = run_pipeline_count(source, workers, &cnt);
+        uint32_t iters = 0;
+        int rc = run_pipeline_count(source, workers, &cnt, &iters);
         bench_time_t t1 = bench_time_now();
 
         times[r] = bench_time_diff_ms(t0, t1);
@@ -1379,6 +1409,7 @@ run_ddisasm_workload(const char *data_dir, uint32_t workers, int repeat)
             break;
         }
         tuples = cnt;
+        total_iters = iters;
     }
 
     peak_rss = bench_peak_rss_kb();
@@ -1390,11 +1421,12 @@ run_ddisasm_workload(const char *data_dir, uint32_t workers, int repeat)
         double max_ms = times[repeat - 1];
 
         printf("ddisasm\t-\t%d\t%u\t%d\t%.1f\t%.1f\t%.1f\t%" PRId64 "\t%" PRId64
-               "\t%s\n",
+               "\t%u\t%s\n",
                total_facts, workers, repeat, min_ms, median_ms, max_ms,
-               peak_rss, tuples, "OK");
+               peak_rss, tuples, total_iters, "OK");
     } else {
-        printf("ddisasm\t-\t-\t%u\t%d\t-\t-\t-\t-\t-\tFAIL\n", workers, repeat);
+        printf("ddisasm\t-\t-\t%u\t%d\t-\t-\t-\t-\t-\t-\tFAIL\n", workers,
+               repeat);
     }
 
     free(times);
@@ -1534,12 +1566,14 @@ run_crdt_workload(const char *data_dir, uint32_t workers, int repeat)
 
     int64_t tuples = 0;
     int64_t peak_rss = -1;
+    uint32_t total_iters = 0;
     int status_ok = 1;
 
     for (int r = 0; r < repeat; r++) {
         bench_time_t t0 = bench_time_now();
         int64_t cnt = 0;
-        int rc = run_pipeline_count(source, workers, &cnt);
+        uint32_t iters = 0;
+        int rc = run_pipeline_count(source, workers, &cnt, &iters);
         bench_time_t t1 = bench_time_now();
 
         times[r] = bench_time_diff_ms(t0, t1);
@@ -1549,6 +1583,7 @@ run_crdt_workload(const char *data_dir, uint32_t workers, int repeat)
             break;
         }
         tuples = cnt;
+        total_iters = iters;
     }
 
     peak_rss = bench_peak_rss_kb();
@@ -1560,11 +1595,11 @@ run_crdt_workload(const char *data_dir, uint32_t workers, int repeat)
         double max_ms = times[repeat - 1];
 
         printf("crdt\t-\t%d\t%u\t%d\t%.1f\t%.1f\t%.1f\t%" PRId64 "\t%" PRId64
-               "\t%s\n",
+               "\t%u\t%s\n",
                total_facts, workers, repeat, min_ms, median_ms, max_ms,
-               peak_rss, tuples, "OK");
+               peak_rss, tuples, total_iters, "OK");
     } else {
-        printf("crdt\t-\t-\t%u\t%d\t-\t-\t-\t-\t-\tFAIL\n", workers, repeat);
+        printf("crdt\t-\t-\t%u\t%d\t-\t-\t-\t-\t-\t-\tFAIL\n", workers, repeat);
     }
 
     free(times);
@@ -2102,12 +2137,14 @@ run_doop_workload(const char *data_dir, uint32_t workers, int repeat)
 
     int64_t tuples = 0;
     int64_t peak_rss = -1;
+    uint32_t total_iters = 0;
     int status_ok = 1;
 
     for (int r = 0; r < repeat; r++) {
         bench_time_t t0 = bench_time_now();
         int64_t cnt = 0;
-        int rc = run_pipeline_count(source, workers, &cnt);
+        uint32_t iters = 0;
+        int rc = run_pipeline_count(source, workers, &cnt, &iters);
         bench_time_t t1 = bench_time_now();
 
         times[r] = bench_time_diff_ms(t0, t1);
@@ -2117,6 +2154,7 @@ run_doop_workload(const char *data_dir, uint32_t workers, int repeat)
             break;
         }
         tuples = cnt;
+        total_iters = iters;
     }
 
     peak_rss = bench_peak_rss_kb();
@@ -2128,11 +2166,11 @@ run_doop_workload(const char *data_dir, uint32_t workers, int repeat)
         double max_ms = times[repeat - 1];
 
         printf("doop\t-\t%d\t%u\t%d\t%.1f\t%.1f\t%.1f\t%" PRId64 "\t%" PRId64
-               "\t%s\n",
+               "\t%u\t%s\n",
                total_facts, workers, repeat, min_ms, median_ms, max_ms,
-               peak_rss, tuples, "OK");
+               peak_rss, tuples, total_iters, "OK");
     } else {
-        printf("doop\t-\t-\t%u\t%d\t-\t-\t-\t-\t-\tFAIL\n", workers, repeat);
+        printf("doop\t-\t-\t%u\t%d\t-\t-\t-\t-\t-\t-\tFAIL\n", workers, repeat);
     }
 
     free(times);
@@ -2148,7 +2186,7 @@ static void
 print_header(void)
 {
     printf("workload\tnodes\tedges\tworkers\trepeat\tmin_ms\tmedian_ms"
-           "\tmax_ms\tpeak_rss_kb\ttuples\tstatus\n");
+           "\tmax_ms\tpeak_rss_kb\ttuples\titerations\tstatus\n");
 }
 
 static void

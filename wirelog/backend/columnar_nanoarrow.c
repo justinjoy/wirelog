@@ -456,6 +456,7 @@ typedef struct {
     void *delta_data;          /* opaque user context for delta_cb       */
     wl_arena_t *eval_arena;    /* arena for per-iteration temporaries    */
     col_mat_cache_t mat_cache; /* materialization cache (US-006)        */
+    uint32_t total_iterations; /* fixed-point iterations in last eval   */
 } wl_col_session_t;
 
 /*
@@ -1996,7 +1997,8 @@ col_eval_stratum(const wl_plan_stratum_t *sp, wl_col_session_t *sess)
     if (!delta_rels)
         return ENOMEM;
 
-    for (uint32_t iter = 0; iter < MAX_ITERATIONS; iter++) {
+    uint32_t iter;
+    for (iter = 0; iter < MAX_ITERATIONS; iter++) {
         /* Register delta relations from previous iteration into session */
         for (uint32_t ri = 0; ri < nrels; ri++) {
             if (!delta_rels[ri])
@@ -2163,9 +2165,12 @@ col_eval_stratum(const wl_plan_stratum_t *sp, wl_col_session_t *sess)
         /* Clear materialization cache between iterations (relation data changed) */
         col_mat_cache_clear(&sess->mat_cache);
 
-        if (!any_new)
+        if (!any_new) {
+            sess->total_iterations = iter;
             break;
+        }
     }
+    sess->total_iterations = iter;
 
     /* Cleanup any remaining pending delta relations */
     for (uint32_t ri = 0; ri < nrels; ri++) {
@@ -2180,6 +2185,24 @@ col_eval_stratum(const wl_plan_stratum_t *sp, wl_col_session_t *sess)
     free(delta_rels);
     col_mat_cache_clear(&sess->mat_cache);
     return 0;
+}
+
+/* ======================================================================== */
+/* Public Accessors                                                          */
+/* ======================================================================== */
+
+/*
+ * col_session_get_iteration_count:
+ *
+ * Return the number of fixed-point iterations performed during the last
+ * call to col_eval_stratum.  Returns 0 if no evaluation has occurred yet.
+ *
+ * @param sess  A wl_session_t* backed by the columnar backend.
+ */
+uint32_t
+col_session_get_iteration_count(wl_session_t *sess)
+{
+    return COL_SESSION(sess)->total_iterations;
 }
 
 /* ======================================================================== */
