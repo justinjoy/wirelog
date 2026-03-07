@@ -318,17 +318,50 @@ col_materialized_join_invalidate(col_materialized_join_t *mj)
 #define COL_MAT_CACHE_MAX 64u
 #define COL_MAT_CACHE_LIMIT_BYTES (100ULL * 1024ULL * 1024ULL)
 
+/**
+ * col_mat_cache_key_content - Content-based hash of a col_rel_t.
+ *
+ * FNV-1a over first min(100, nrows) rows + shape (nrows, ncols).
+ * Deterministic: same sorted data layout -> same hash.
+ * Bounded cost: O(min(100, nrows)) independent of relation size.
+ */
+static uint64_t
+col_mat_cache_key_content(const col_rel_t *rel)
+{
+    if (!rel || rel->nrows == 0)
+        return 0;
+
+    uint64_t hash = 14695981039346656037ULL; /* FNV-1a offset basis */
+    uint32_t k = rel->nrows < 100 ? rel->nrows : 100;
+
+    for (uint32_t i = 0; i < k; i++) {
+        for (uint32_t j = 0; j < rel->ncols; j++) {
+            uint64_t val = (uint64_t)rel->data[i * rel->ncols + j];
+            hash ^= val;
+            hash *= 1099511628211ULL; /* FNV-1a prime */
+        }
+    }
+
+    /* Mix in shape to distinguish relations with identical prefixes */
+    hash ^= (uint64_t)rel->nrows;
+    hash *= 1099511628211ULL;
+    hash ^= (uint64_t)rel->ncols;
+    hash *= 1099511628211ULL;
+
+    return hash;
+}
+
 /*
  * col_mat_entry_t: one entry in the materialization cache.
- * Keyed by (left_ptr, right_ptr) — stable session relation pointers.
+ * Keyed by content hashes of left and right input relations.
  * The cache owns result; freed when the entry is evicted or cache cleared.
  */
 typedef struct {
-    const col_rel_t *left_ptr;  /* cache key: left input relation ptr  */
-    const col_rel_t *right_ptr; /* cache key: right input relation ptr */
-    col_rel_t *result;          /* owned cached join result            */
-    size_t mem_bytes;           /* bytes used by result->data          */
-    uint64_t lru_clock;         /* logical time of last access         */
+    uint64_t left_hash;  /* content hash of left input relation  */
+    uint64_t right_hash; /* content hash of right input relation */
+    col_rel_t *result;   /* owned cached join result             */
+    size_t mem_bytes;    /* bytes used by result->data           */
+    uint64_t lru_clock;  /* logical time of last access          */
 } col_mat_entry_t;
 
 typedef struct {
@@ -353,9 +386,11 @@ static col_rel_t *
 col_mat_cache_lookup(col_mat_cache_t *cache, const col_rel_t *left,
                      const col_rel_t *right)
 {
+    uint64_t lh = col_mat_cache_key_content(left);
+    uint64_t rh = col_mat_cache_key_content(right);
     for (uint32_t i = 0; i < cache->count; i++) {
-        if (cache->entries[i].left_ptr == left
-            && cache->entries[i].right_ptr == right) {
+        if (cache->entries[i].left_hash == lh
+            && cache->entries[i].right_hash == rh) {
             cache->entries[i].lru_clock = ++cache->clock;
             return cache->entries[i].result;
         }
@@ -404,8 +439,8 @@ col_mat_cache_insert(col_mat_cache_t *cache, const col_rel_t *left,
     }
 
     col_mat_entry_t *e = &cache->entries[cache->count++];
-    e->left_ptr = left;
-    e->right_ptr = right;
+    e->left_hash = col_mat_cache_key_content(left);
+    e->right_hash = col_mat_cache_key_content(right);
     e->result = result;
     e->mem_bytes = result_bytes;
     e->lru_clock = ++cache->clock;
