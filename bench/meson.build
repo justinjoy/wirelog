@@ -37,6 +37,10 @@ bench_arena_src = files(
   subdir_wirelog / 'arena/arena.c',
 )
 
+bench_workqueue_src = files(
+  subdir_wirelog / 'workqueue.c',
+)
+
 bench_flowlog = executable(
   'bench_flowlog',
   files('bench_flowlog.c'),
@@ -46,8 +50,9 @@ bench_flowlog = executable(
   bench_backend_src,
   bench_io_src,
   bench_arena_src,
+  bench_workqueue_src,
   include_directories: [wirelog_inc, wirelog_src_inc],
-  dependencies: [nanoarrow_dep],
+  dependencies: [nanoarrow_dep, threads_dep],
   install: false,
 )
 

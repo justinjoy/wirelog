@@ -33,6 +33,12 @@ wirelog_optimizer_src = files('passes/fusion.c', 'passes/jpp.c', 'passes/sip.c',
 
 wirelog_arena_src = files('arena/arena.c', )
 
+#== == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == ==
+#Work Queue Module(Phase B - lite)
+#== == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == ==
+
+wirelog_workqueue_src = files('workqueue.c', )
+
 #== == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == ==
 #Columnar Backend Module(Phase 2A)
 #== == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == ==
