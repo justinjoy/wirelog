@@ -1053,7 +1053,7 @@ expand_multiway_delta(const wl_plan_op_t *ops, uint32_t op_count,
 
 /**
  * Apply multi-way delta expansion to all recursive strata in the plan.
- * For each relation in a recursive stratum with K >= 3 IDB body atoms,
+ * For each relation in a recursive stratum with K >= 2 IDB body atoms,
  * replaces the relation's ops with K expanded copies annotated with
  * delta_mode and materialization hints.
  */
@@ -1349,7 +1349,7 @@ wl_plan_from_program(const struct wirelog_program *prog, wl_plan_t **out)
     plan->stratum_count = stratum_count;
 
     /* Rewrite K-atom recursive rules for complete semi-naive evaluation.
-     * For rules with K >= 3 IDB body atoms, emit K copies with CSE
+     * For rules with K >= 2 IDB body atoms, emit K copies with CSE
      * materialization hints to avoid the regression seen without CSE. */
     rewrite_multiway_delta(plan);
 

@@ -133,7 +133,7 @@ typedef struct {
  * Controls delta/full relation selection in VARIABLE and JOIN operators
  * for multi-way semi-naive evaluation.
  *
- * For a K-atom recursive rule (K >= 3), the plan generator emits K
+ * For a K-atom recursive rule (K >= 2), the plan generator emits K
  * copies of the rule plan, each with exactly one body atom forced to
  * use its delta relation and the rest forced to use full relations.
  * This ensures every ΔR_i × R_1_full × ... × R_K_full permutation
