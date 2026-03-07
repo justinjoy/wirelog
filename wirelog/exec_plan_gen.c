@@ -1084,7 +1084,7 @@ rewrite_multiway_delta(wl_plan_t *plan)
             uint32_t k = count_delta_positions(
                 rel->ops, rel->op_count, idb_names, st->relation_count, dpos);
 
-            if (k >= 3) {
+            if (k >= 2) {
                 uint32_t new_count = 0;
                 wl_plan_op_t *new_ops = expand_multiway_delta(
                     rel->ops, rel->op_count, dpos, k, &new_count);
