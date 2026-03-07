@@ -1,14 +1,14 @@
 {
   "title": "CONSOLIDATE Memory Optimization: Delta-Integrated Incremental Consolidation",
   "description": "Eliminate per-iteration full-relation snapshot copies in col_eval_stratum. Implement delta-integrated consolidation that outputs truly-new rows as byproduct, eliminating O(N) malloc+memcpy + O(N+D) merge walk per iteration per relation. Target: 2-4× CSPA performance improvement, peak RSS reduction from 4.46GB to <500MB.",
-  "status": "in_progress",
+  "status": "complete",
   "stories": [
     {
       "id": "US-001",
       "title": "Phase A: Replace g_consolidate_ncols global with qsort_r context",
       "description": "Prerequisite for thread-safe delta computation. Replace global state with context parameter.",
       "priority": "critical",
-      "passes": false,
+      "passes": true,
       "acceptanceCriteria": [
         "g_consolidate_ncols global variable removed from columnar_nanoarrow.c",
         "row_cmp() signature changed to row_cmp_fn(const void *a, const void *b, void *ctx)",
@@ -23,7 +23,7 @@
       "title": "Design: col_op_consolidate_incremental_delta function specification",
       "description": "Design new function that outputs delta as byproduct. TDD: Write specification before implementation.",
       "priority": "critical",
-      "passes": false,
+      "passes": true,
       "acceptanceCriteria": [
         "Function signature: col_op_consolidate_incremental_delta(col_rel_t *rel, uint32_t old_nrows, col_rel_t *delta_out)",
         "Pseudocode documented: Phase 1 (sort delta), Phase 1b (dedup), Phase 2 (merge + emit new rows)",
