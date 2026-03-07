@@ -1137,6 +1137,96 @@ col_op_consolidate(eval_stack_t *stack)
     return eval_stack_push(stack, work, work_owned);
 }
 
+/* --- CONSOLIDATE (incremental) ------------------------------------------- */
+
+/*
+ * col_op_consolidate_incremental: O(D log D + N) incremental merge.
+ *
+ * Assumes rel->data[0..old_nrows) is already sorted+unique from a prior
+ * consolidation pass.  New (delta) rows are in [old_nrows..nrows).
+ *
+ *  Phase 1: sort delta, dedup within delta.
+ *  Phase 2: merge sorted old with sorted delta into a fresh buffer.
+ *  Phase 3: swap buffer, update relation.
+ */
+static int
+col_op_consolidate_incremental(col_rel_t *rel, uint32_t old_nrows)
+{
+    uint32_t nc = rel->ncols;
+    uint32_t nr = rel->nrows;
+
+    if (nr <= 1 || old_nrows >= nr)
+        return 0; /* nothing new */
+
+    /* Phase 1: sort only the new delta rows [old_nrows .. nr) */
+    uint32_t delta_count = nr - old_nrows;
+    int64_t *delta_start = rel->data + (size_t)old_nrows * nc;
+    row_cmp_ctx_t ctx = { .ncols = nc };
+    qsort_r(delta_start, delta_count, sizeof(int64_t) * nc, &ctx, row_cmp_fn);
+
+    /* Phase 1b: dedup within delta */
+    uint32_t d_unique = 1;
+    for (uint32_t i = 1; i < delta_count; i++) {
+        if (memcmp(delta_start + (size_t)(i - 1) * nc,
+                   delta_start + (size_t)i * nc, sizeof(int64_t) * nc)
+            != 0) {
+            if (d_unique != i)
+                memcpy(delta_start + (size_t)d_unique * nc,
+                       delta_start + (size_t)i * nc, sizeof(int64_t) * nc);
+            d_unique++;
+        }
+    }
+
+    /* Phase 2: merge sorted old [0..old_nrows) with sorted delta.
+     * Both are sorted+unique.  Output: sorted+unique merged result. */
+    size_t max_rows = (size_t)old_nrows + d_unique;
+    size_t row_bytes = (size_t)nc * sizeof(int64_t);
+    int64_t *merged = (int64_t *)malloc(max_rows * row_bytes);
+    if (!merged)
+        return ENOMEM;
+
+    uint32_t oi = 0, di = 0, out = 0;
+    while (oi < old_nrows && di < d_unique) {
+        const int64_t *orow = rel->data + (size_t)oi * nc;
+        const int64_t *drow = delta_start + (size_t)di * nc;
+        int cmp = memcmp(orow, drow, row_bytes);
+        if (cmp < 0) {
+            memcpy(merged + (size_t)out * nc, orow, row_bytes);
+            oi++;
+            out++;
+        } else if (cmp == 0) {
+            memcpy(merged + (size_t)out * nc, orow, row_bytes);
+            oi++;
+            di++;
+            out++; /* skip duplicate from delta */
+        } else {
+            memcpy(merged + (size_t)out * nc, drow, row_bytes);
+            di++;
+            out++;
+        }
+    }
+    /* Copy remaining */
+    if (oi < old_nrows) {
+        uint32_t rem = old_nrows - oi;
+        memcpy(merged + (size_t)out * nc, rel->data + (size_t)oi * nc,
+               (size_t)rem * row_bytes);
+        out += rem;
+    }
+    if (di < d_unique) {
+        uint32_t rem = d_unique - di;
+        memcpy(merged + (size_t)out * nc, delta_start + (size_t)di * nc,
+               (size_t)rem * row_bytes);
+        out += rem;
+    }
+
+    /* Phase 3: swap buffer */
+    free(rel->data);
+    rel->data = merged;
+    rel->nrows = out;
+    rel->capacity = (uint32_t)max_rows;
+    return 0;
+}
+
 /* --- SEMIJOIN ------------------------------------------------------------ */
 
 static int
