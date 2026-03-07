@@ -394,6 +394,191 @@ test_expanded_plan_free(void)
 }
 
 /* ========================================================================
+ * K=2 DELTA EXPANSION TESTS (TDD red phase)
+ *
+ * The K=2 program: a(x,z) :- a(x,y), b(y,z) with b(x,y) :- a(x,y)
+ * creates a 2-atom IDB rule.  With the threshold lowered to K >= 2,
+ * the plan rewriter should emit exactly 2 FORCE_DELTA copies.
+ *
+ * These tests FAIL until exec_plan_gen.c lowers the guard to k >= 2.
+ * ======================================================================== */
+
+static const char *k2_src = ".decl a(x: int32, y: int32)\n"
+                            ".decl b(x: int32, y: int32)\n"
+                            "a(1, 2). b(2, 3).\n"
+                            "a(x, z) :- a(x, y), b(y, z).\n"
+                            "b(x, y) :- a(x, y).\n";
+
+static void
+test_2atom_k2_expansion(void)
+{
+    TEST("K=2: 2-atom rule produces EXACTLY 2 FORCE_DELTA copies");
+
+    wl_plan_t *plan = make_plan(k2_src);
+    ASSERT(plan != NULL, "plan generation failed");
+
+    const wl_plan_relation_t *a = find_relation(plan, "a");
+    ASSERT(a != NULL, "relation a not found");
+
+    uint32_t force_delta = count_delta_mode(a, WL_DELTA_FORCE_DELTA);
+    char msg[128];
+    snprintf(msg, sizeof(msg),
+             "expected >= 2 FORCE_DELTA ops for K=2 rule, got %u", force_delta);
+    ASSERT(force_delta >= 2, msg);
+
+    wl_plan_free(plan);
+    PASS();
+}
+
+static void
+test_2atom_k2_force_full(void)
+{
+    TEST("K=2: 2-atom rule has correct FORCE_FULL count");
+
+    wl_plan_t *plan = make_plan(k2_src);
+    ASSERT(plan != NULL, "plan generation failed");
+
+    const wl_plan_relation_t *a = find_relation(plan, "a");
+    ASSERT(a != NULL, "relation a not found");
+
+    /* K=2: each copy has 1 FORCE_DELTA + 1 FORCE_FULL.
+     * 2 copies => 2 FORCE_FULL total. */
+    uint32_t force_full = count_delta_mode(a, WL_DELTA_FORCE_FULL);
+    char msg[128];
+    snprintf(msg, sizeof(msg),
+             "expected >= 2 FORCE_FULL ops for K=2 rule, got %u", force_full);
+    ASSERT(force_full >= 2, msg);
+
+    wl_plan_free(plan);
+    PASS();
+}
+
+static void
+test_2atom_k2_concat_consolidate(void)
+{
+    TEST("K=2: 2-atom rule has CONCAT and CONSOLIDATE operators");
+
+    wl_plan_t *plan = make_plan(k2_src);
+    ASSERT(plan != NULL, "plan generation failed");
+
+    const wl_plan_relation_t *a = find_relation(plan, "a");
+    ASSERT(a != NULL, "relation a not found");
+
+    uint32_t concats = count_ops(a, WL_PLAN_OP_CONCAT);
+    char msg_concat[128];
+    snprintf(msg_concat, sizeof(msg_concat),
+             "expected >= 2 CONCAT ops for K=2 rule, got %u", concats);
+    ASSERT(concats >= 2, msg_concat);
+
+    uint32_t consols = count_ops(a, WL_PLAN_OP_CONSOLIDATE);
+    char msg_consol[128];
+    snprintf(msg_consol, sizeof(msg_consol),
+             "expected >= 1 CONSOLIDATE op for K=2 rule, got %u", consols);
+    ASSERT(consols >= 1, msg_consol);
+
+    wl_plan_free(plan);
+    PASS();
+}
+
+static void
+test_2atom_k2_invariant(void)
+{
+    TEST("K=2: FORCE_DELTA + FORCE_FULL == K*K == 4");
+
+    wl_plan_t *plan = make_plan(k2_src);
+    ASSERT(plan != NULL, "plan generation failed");
+
+    const wl_plan_relation_t *a = find_relation(plan, "a");
+    ASSERT(a != NULL, "relation a not found");
+
+    uint32_t fd = count_delta_mode(a, WL_DELTA_FORCE_DELTA);
+    uint32_t ff = count_delta_mode(a, WL_DELTA_FORCE_FULL);
+    char msg[128];
+    snprintf(msg, sizeof(msg),
+             "expected fd+ff=4 (K*K for K=2), got fd=%u ff=%u", fd, ff);
+    ASSERT(fd + ff == 4, msg);
+
+    wl_plan_free(plan);
+    PASS();
+}
+
+static void
+test_2atom_k2_no_materialization(void)
+{
+    TEST("K=2: 2-atom rule has zero materialization hints (K-2=0)");
+
+    wl_plan_t *plan = make_plan(k2_src);
+    ASSERT(plan != NULL, "plan generation failed");
+
+    const wl_plan_relation_t *a = find_relation(plan, "a");
+    ASSERT(a != NULL, "relation a not found");
+
+    /* K=2: K-2 = 0 intermediate joins to materialize per copy. */
+    uint32_t mat = count_materialized(a);
+    char msg[128];
+    snprintf(msg, sizeof(msg),
+             "expected 0 materialized hints for K=2 rule, got %u", mat);
+    ASSERT(mat == 0, msg);
+
+    wl_plan_free(plan);
+    PASS();
+}
+
+static void
+test_k1_k3_unaffected(void)
+{
+    TEST("K=1 not expanded; K=3 still produces 3 FORCE_DELTA copies");
+
+    /* K=1: single-IDB-atom rule (transitive closure with EDB join).
+     * The body has only 1 IDB atom (tc) so it should NOT be expanded. */
+    const char *tc_src = ".decl edge(x: int32, y: int32)\n"
+                         "edge(1, 2). edge(2, 3).\n"
+                         ".decl tc(x: int32, y: int32)\n"
+                         "tc(x, y) :- edge(x, y).\n"
+                         "tc(x, z) :- tc(x, y), edge(y, z).\n";
+
+    wl_plan_t *plan_tc = make_plan(tc_src);
+    ASSERT(plan_tc != NULL, "TC plan generation failed");
+
+    const wl_plan_relation_t *tc = find_relation(plan_tc, "tc");
+    ASSERT(tc != NULL, "tc not found");
+
+    uint32_t fd_k1 = count_delta_mode(tc, WL_DELTA_FORCE_DELTA);
+    char msg_k1[128];
+    snprintf(msg_k1, sizeof(msg_k1),
+             "K=1 TC should have 0 FORCE_DELTA ops, got %u", fd_k1);
+    ASSERT(fd_k1 == 0, msg_k1);
+
+    wl_plan_free(plan_tc);
+
+    /* K=3: 3-atom recursive rule should still produce exactly 3 copies. */
+    const char *cspa_src = ".decl a(x: int32, y: int32)\n"
+                           ".decl b(x: int32, y: int32)\n"
+                           ".decl c(x: int32, y: int32)\n"
+                           ".decl r(x: int32, w: int32)\n"
+                           "a(1, 2). b(2, 3). c(3, 4).\n"
+                           "r(x, w) :- a(x, y), b(y, z), c(z, w).\n"
+                           "a(x, y) :- r(x, y).\n"
+                           "b(x, y) :- r(x, y).\n"
+                           "c(x, y) :- r(x, y).\n";
+
+    wl_plan_t *plan_cspa = make_plan(cspa_src);
+    ASSERT(plan_cspa != NULL, "CSPA plan generation failed");
+
+    const wl_plan_relation_t *r = find_relation(plan_cspa, "r");
+    ASSERT(r != NULL, "r not found");
+
+    uint32_t fd_k3 = count_delta_mode(r, WL_DELTA_FORCE_DELTA);
+    char msg_k3[128];
+    snprintf(msg_k3, sizeof(msg_k3),
+             "K=3 rule should have 3 FORCE_DELTA ops, got %u", fd_k3);
+    ASSERT(fd_k3 == 3, msg_k3);
+
+    wl_plan_free(plan_cspa);
+    PASS();
+}
+
+/* ========================================================================
  * INTEGRATION TESTS: correctness preservation
  * ======================================================================== */
 
@@ -479,6 +664,15 @@ main(void)
     test_nonrecursive_no_rewrite();
     test_delta_and_full_invariant();
     test_expanded_plan_free();
+
+    /* K=2 delta expansion tests (TDD red phase) */
+    printf("\n--- K=2 Delta Expansion Tests (red phase) ---\n");
+    test_2atom_k2_expansion();
+    test_2atom_k2_force_full();
+    test_2atom_k2_concat_consolidate();
+    test_2atom_k2_invariant();
+    test_2atom_k2_no_materialization();
+    test_k1_k3_unaffected();
 
     /* Integration correctness tests */
     printf("\n--- Integration Tests ---\n");
