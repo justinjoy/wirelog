@@ -221,6 +221,52 @@ test_workqueue_exe = executable(
 test('workqueue', test_workqueue_exe)
 
 # ============================================================================
+# Option 2 CSE Plan Rewriting Tests
+# ============================================================================
+
+test_option2_cse_exe = executable(
+  'test_option2_cse',
+  files('test_option2_cse.c'),
+  parser_src,
+  ir_src,
+  optimizer_src,
+  backend_src,
+  io_src,
+  arena_src,
+  workqueue_src,
+  include_directories: [wirelog_inc, wirelog_src_inc],
+  dependencies: [nanoarrow_dep, threads_dep],
+)
+
+test('option2_cse', test_option2_cse_exe)
+
+# ============================================================================
+# DOOP Validation Tests (US-009/US-010)
+# ============================================================================
+#
+# Infrastructure tests (file checks, parse, synthetic 8-way join) run without
+# the 83MB DOOP dataset.  Data-dependent tests auto-skip when bench/data/doop
+# is absent.  Full DOOP execution uses scripts/run_doop_validation.sh.
+
+test_option2_doop_exe = executable(
+  'test_option2_doop',
+  files('test_option2_doop.c'),
+  parser_src,
+  ir_src,
+  optimizer_src,
+  backend_src,
+  io_src,
+  arena_src,
+  workqueue_src,
+  include_directories: [wirelog_inc, wirelog_src_inc],
+  dependencies: [nanoarrow_dep, threads_dep],
+)
+
+test('option2_doop', test_option2_doop_exe,
+  env: ['DOOP_DATA_DIR=' + meson.project_source_root() / 'bench/data/doop'],
+)
+
+# ============================================================================
 # Recursive Aggregation Plan Tests - DISABLED in Phase 2C
 # ============================================================================
 #

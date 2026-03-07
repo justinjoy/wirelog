@@ -826,6 +826,283 @@ free_op(wl_plan_op_t *op)
 }
 
 /* ======================================================================== */
+/* Multi-Way Delta Expansion (Semi-Naive K-Atom Rewriting with CSE Hints)   */
+/* ======================================================================== */
+
+/**
+ * Count "delta positions" in a relation plan: the initial VARIABLE op
+ * (position 0) plus each subsequent JOIN op whose right_relation is an
+ * IDB relation within this stratum.  Returns the count K, and fills
+ * delta_pos[] with the op indices of the delta-eligible operators.
+ * delta_pos must have room for at least op_count entries.
+ */
+static uint32_t
+count_delta_positions(const wl_plan_op_t *ops, uint32_t op_count,
+                      const char *const *idb_names, uint32_t idb_count,
+                      uint32_t *delta_pos)
+{
+    uint32_t k = 0;
+    for (uint32_t i = 0; i < op_count; i++) {
+        if (ops[i].op == WL_PLAN_OP_VARIABLE) {
+            bool is_idb = false;
+            for (uint32_t r = 0; r < idb_count; r++) {
+                if (ops[i].relation_name && idb_names[r]
+                    && strcmp(ops[i].relation_name, idb_names[r]) == 0) {
+                    is_idb = true;
+                    break;
+                }
+            }
+            if (is_idb)
+                delta_pos[k++] = i;
+        } else if (ops[i].op == WL_PLAN_OP_JOIN) {
+            bool is_idb = false;
+            for (uint32_t r = 0; r < idb_count; r++) {
+                if (ops[i].right_relation && idb_names[r]
+                    && strcmp(ops[i].right_relation, idb_names[r]) == 0) {
+                    is_idb = true;
+                    break;
+                }
+            }
+            if (is_idb)
+                delta_pos[k++] = i;
+        }
+    }
+    return k;
+}
+
+/**
+ * Deep-copy a single plan op (duplicates all owned strings/buffers).
+ */
+static int
+clone_plan_op(const wl_plan_op_t *src, wl_plan_op_t *dst)
+{
+    memset(dst, 0, sizeof(*dst));
+    dst->op = src->op;
+    dst->delta_mode = src->delta_mode;
+    dst->materialized = src->materialized;
+    dst->agg_fn = src->agg_fn;
+    dst->key_count = src->key_count;
+    dst->project_count = src->project_count;
+    dst->group_by_count = src->group_by_count;
+    dst->map_expr_count = src->map_expr_count;
+
+    if (src->relation_name) {
+        dst->relation_name = dup_str(src->relation_name);
+        if (!dst->relation_name)
+            return -1;
+    }
+    if (src->right_relation) {
+        dst->right_relation = dup_str(src->right_relation);
+        if (!dst->right_relation)
+            return -1;
+    }
+    if (src->left_keys && src->key_count > 0) {
+        char **lk = (char **)malloc(src->key_count * sizeof(char *));
+        if (!lk)
+            return -1;
+        for (uint32_t i = 0; i < src->key_count; i++) {
+            lk[i] = dup_str(src->left_keys[i]);
+            if (!lk[i]) {
+                for (uint32_t j = 0; j < i; j++)
+                    free(lk[j]);
+                free(lk);
+                return -1;
+            }
+        }
+        dst->left_keys = (const char *const *)lk;
+    }
+    if (src->right_keys && src->key_count > 0) {
+        char **rk = (char **)malloc(src->key_count * sizeof(char *));
+        if (!rk)
+            return -1;
+        for (uint32_t i = 0; i < src->key_count; i++) {
+            rk[i] = dup_str(src->right_keys[i]);
+            if (!rk[i]) {
+                for (uint32_t j = 0; j < i; j++)
+                    free(rk[j]);
+                free(rk);
+                return -1;
+            }
+        }
+        dst->right_keys = (const char *const *)rk;
+    }
+    dst->project_indices
+        = dup_indices(src->project_indices, src->project_count);
+    dst->group_by_indices
+        = dup_indices(src->group_by_indices, src->group_by_count);
+
+    if (src->filter_expr.data && src->filter_expr.size > 0) {
+        dst->filter_expr.data = (uint8_t *)malloc(src->filter_expr.size);
+        if (!dst->filter_expr.data)
+            return -1;
+        memcpy(dst->filter_expr.data, src->filter_expr.data,
+               src->filter_expr.size);
+        dst->filter_expr.size = src->filter_expr.size;
+    }
+
+    if (src->map_exprs && src->map_expr_count > 0) {
+        dst->map_exprs = (wl_plan_expr_buffer_t *)calloc(
+            src->map_expr_count, sizeof(wl_plan_expr_buffer_t));
+        if (!dst->map_exprs)
+            return -1;
+        for (uint32_t i = 0; i < src->map_expr_count; i++) {
+            if (src->map_exprs[i].data && src->map_exprs[i].size > 0) {
+                dst->map_exprs[i].data
+                    = (uint8_t *)malloc(src->map_exprs[i].size);
+                if (!dst->map_exprs[i].data)
+                    return -1;
+                memcpy(dst->map_exprs[i].data, src->map_exprs[i].data,
+                       src->map_exprs[i].size);
+                dst->map_exprs[i].size = src->map_exprs[i].size;
+            }
+        }
+    }
+    return 0;
+}
+
+/**
+ * Rewrite a single relation plan for multi-way delta expansion with
+ * CSE materialization hints.
+ *
+ * Given original ops [0..op_count-1] with K delta positions, produce
+ * K copies of the entire op sequence.  In copy d, delta_pos[d] gets
+ * FORCE_DELTA and all other delta positions get FORCE_FULL.
+ *
+ * Materialization hints:  For the first K-2 delta positions (the
+ * "shared prefix"), mark the corresponding JOIN ops as materialized
+ * so the evaluator can cache and reuse intermediate join results
+ * across copies.  This reduces effective work from K full passes to
+ * ~2 passes for large K (e.g., 8-way DOOP CallGraphEdge).
+ *
+ * Returns new ops array (caller owns) and sets *out_count.
+ * Returns NULL on failure.
+ */
+static wl_plan_op_t *
+expand_multiway_delta(const wl_plan_op_t *ops, uint32_t op_count,
+                      const uint32_t *delta_pos, uint32_t k,
+                      uint32_t *out_count)
+{
+    /* Total ops: K copies of original + K CONCATs + 1 CONSOLIDATE
+     * (each copy followed by a CONCAT, then CONSOLIDATE at the end) */
+    uint32_t total = k * op_count + k + 1;
+    wl_plan_op_t *new_ops = (wl_plan_op_t *)calloc(total, sizeof(wl_plan_op_t));
+    if (!new_ops)
+        return NULL;
+
+    uint32_t wi = 0;
+
+    for (uint32_t d = 0; d < k; d++) {
+        for (uint32_t i = 0; i < op_count; i++) {
+            if (clone_plan_op(&ops[i], &new_ops[wi]) != 0) {
+                for (uint32_t j = 0; j < wi; j++)
+                    free_op(&new_ops[j]);
+                free(new_ops);
+                return NULL;
+            }
+
+            /* Set delta_mode: position d gets FORCE_DELTA, all other
+             * IDB positions get FORCE_FULL, non-IDB ops stay AUTO. */
+            bool is_delta_pos = false;
+            for (uint32_t p = 0; p < k; p++) {
+                if (delta_pos[p] == i) {
+                    new_ops[wi].delta_mode
+                        = (p == d) ? WL_DELTA_FORCE_DELTA : WL_DELTA_FORCE_FULL;
+                    is_delta_pos = true;
+                    break;
+                }
+            }
+            if (!is_delta_pos)
+                new_ops[wi].delta_mode = WL_DELTA_AUTO;
+
+            /* Materialization hint: mark the first K-2 JOIN operators
+             * (among all delta positions) as materializable. These represent
+             * the shared join prefix that the evaluator can cache and reuse
+             * across all K copies. */
+            if (is_delta_pos && new_ops[wi].op == WL_PLAN_OP_JOIN) {
+                /* Count how many JOINs appear before this one in delta_pos */
+                uint32_t join_idx = 0;
+                for (uint32_t p = 0; p < k; p++) {
+                    if (ops[delta_pos[p]].op == WL_PLAN_OP_JOIN) {
+                        if (delta_pos[p] == i)
+                            break;
+                        join_idx++;
+                    }
+                }
+                /* Materialize if this is one of the first K-2 JOINs */
+                if (join_idx < k - 2)
+                    new_ops[wi].materialized = true;
+            }
+
+            wi++;
+        }
+
+        /* Add CONCAT after each copy to mark boundaries for the evaluator.
+         * The evaluator concatenates K copies before consolidation. */
+        memset(&new_ops[wi], 0, sizeof(wl_plan_op_t));
+        new_ops[wi].op = WL_PLAN_OP_CONCAT;
+        wi++;
+    }
+
+    memset(&new_ops[wi], 0, sizeof(wl_plan_op_t));
+    new_ops[wi].op = WL_PLAN_OP_CONSOLIDATE;
+    wi++;
+
+    *out_count = wi;
+    return new_ops;
+}
+
+/**
+ * Apply multi-way delta expansion to all recursive strata in the plan.
+ * For each relation in a recursive stratum with K >= 3 IDB body atoms,
+ * replaces the relation's ops with K expanded copies annotated with
+ * delta_mode and materialization hints.
+ */
+static void
+rewrite_multiway_delta(wl_plan_t *plan)
+{
+    for (uint32_t s = 0; s < plan->stratum_count; s++) {
+        wl_plan_stratum_t *st = (wl_plan_stratum_t *)&plan->strata[s];
+        if (!st->is_recursive || !st->relations)
+            continue;
+
+        const char **idb_names
+            = (const char **)malloc(st->relation_count * sizeof(char *));
+        if (!idb_names)
+            continue;
+        for (uint32_t r = 0; r < st->relation_count; r++)
+            idb_names[r] = st->relations[r].name;
+
+        for (uint32_t r = 0; r < st->relation_count; r++) {
+            wl_plan_relation_t *rel = (wl_plan_relation_t *)&st->relations[r];
+            if (!rel->ops || rel->op_count == 0)
+                continue;
+
+            uint32_t *dpos
+                = (uint32_t *)malloc(rel->op_count * sizeof(uint32_t));
+            if (!dpos)
+                continue;
+            uint32_t k = count_delta_positions(
+                rel->ops, rel->op_count, idb_names, st->relation_count, dpos);
+
+            if (k >= 3) {
+                uint32_t new_count = 0;
+                wl_plan_op_t *new_ops = expand_multiway_delta(
+                    rel->ops, rel->op_count, dpos, k, &new_count);
+                if (new_ops) {
+                    for (uint32_t o = 0; o < rel->op_count; o++)
+                        free_op((wl_plan_op_t *)&rel->ops[o]);
+                    free((void *)rel->ops);
+                    rel->ops = new_ops;
+                    rel->op_count = new_count;
+                }
+            }
+            free(dpos);
+        }
+        free(idb_names);
+    }
+}
+
+/* ======================================================================== */
 /* Public API                                                               */
 /* ======================================================================== */
 
@@ -1070,6 +1347,11 @@ wl_plan_from_program(const struct wirelog_program *prog, wl_plan_t **out)
 
     plan->strata = strata;
     plan->stratum_count = stratum_count;
+
+    /* Rewrite K-atom recursive rules for complete semi-naive evaluation.
+     * For rules with K >= 3 IDB body atoms, emit K copies with CSE
+     * materialization hints to avoid the regression seen without CSE. */
+    rewrite_multiway_delta(plan);
 
     *out = plan;
     return 0;

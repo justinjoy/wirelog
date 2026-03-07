@@ -1,0 +1,199 @@
+{
+  "title": "Option 2 + Materialization: Multi-way Delta Expansion with CSE (TDD-First)",
+  "description": "Implement corrected Option 2 design: K-atom join delta expansion with Common Subexpression Elimination (CSE) + Progressive Materialization. Avoid the 8.4x regression of original Option 2. Test-driven development approach. Validate on CSPA first, then DOOP. Parallel team execution with Codex for optimization analysis.",
+  "status": "in_progress",
+  "stories": [
+    {
+      "id": "US-001",
+      "title": "Design Phase: Test-first specification for Option 2 + Materialization",
+      "description": "Design the corrected Option 2 approach with CSE + Progressive Materialization. Create detailed test specification BEFORE implementation. Define data structures, algorithms, and test cases.",
+      "priority": "critical",
+      "passes": false,
+      "acceptanceCriteria": [
+        "Design document created: docs/performance/OPTION2-DESIGN.md with algorithm pseudocode and materialization strategy",
+        "Test specification: docs/performance/OPTION2-TESTS.md with 20+ specific test cases covering edge cases (empty delta, all-duplicate delta, 3-way joins, 8-way joins, etc.)",
+        "Data structure design: Extended wl_plan_op_t with delta_mode enum (AUTO, FORCE_DELTA, FORCE_FULL) documented",
+        "CSE materialization strategy documented: which joins to materialize, when, memory cost estimates",
+        "CSPA + DOOP rule analysis: Identify which rules have 3+, 4+, 8-way joins and which benefit from CSE",
+        "Linting check passed: markdown files valid"
+      ]
+    },
+    {
+      "id": "US-002",
+      "title": "Implement test infrastructure for Option 2 validation",
+      "description": "Create unit tests and integration tests for Option 2 before writing production code (TDD). Test harness for correctness verification (identical fact counts before/after).",
+      "priority": "critical",
+      "passes": false,
+      "acceptanceCriteria": [
+        "Test file created: tests/test_option2_cse.c with 20+ unit tests (empty delta, duplicates, CSE correctness, etc.)",
+        "Correctness oracle: Test compares output facts against baseline (must be identical, byte-for-byte within precision)",
+        "CSPA test harness: Integration test that runs CSPA with Option 2 enabled, validates output fact counts match baseline",
+        "DOOP test placeholder: Test skeleton for DOOP (will fill in when DOOP data ready)",
+        "All tests compile with -Wall -Wextra -Werror",
+        "Tests register in tests/meson.build",
+        "Baseline test run: tests/test_option2_cse passes (tests will fail initially until implementation)"
+      ]
+    },
+    {
+      "id": "US-003",
+      "title": "Implement core CSE materialization infrastructure",
+      "description": "Implement the materialized join storage and retrieval mechanism. Foundation for Option 2. Low-level data structures and memory management.",
+      "priority": "high",
+      "passes": false,
+      "acceptanceCriteria": [
+        "New struct: col_materialized_join_t with (data, nrows, ncols, memory_limit, cost_model)",
+        "Functions: col_materialized_join_create(), col_materialized_join_append(), col_materialized_join_lookup(), col_materialized_join_free()",
+        "Memory policy: Materialization only if join size < memory_limit (configurable, default 10MB)",
+        "Cost model: Track materialization cost vs recomputation cost for each join",
+        "Integration into session: Session tracks list of active materializations (create/reuse/evict)",
+        "All new functions tested in tests/test_option2_cse.c",
+        "Compilation succeeds with -Wall -Wextra -Werror",
+        "Linting: clang-format passes"
+      ]
+    },
+    {
+      "id": "US-004",
+      "title": "Implement delta_mode enum and plan op extensions",
+      "description": "Extend wl_plan_op_t with delta_mode field. Prepare evaluator to respect force-delta and force-full hints from plan compiler.",
+      "priority": "high",
+      "passes": false,
+      "acceptanceCriteria": [
+        "Enum added: wl_delta_mode_t with AUTO, FORCE_DELTA, FORCE_FULL values in wirelog/exec_plan.h",
+        "wl_plan_op_t extended: delta_mode field added and serialization updated",
+        "Backward compatibility: Default AUTO mode preserves current behavior",
+        "col_op_variable() updated to respect delta_mode (FORCE_DELTA, FORCE_FULL override heuristic)",
+        "col_op_join() updated to respect delta_mode for right-hand side",
+        "All tests in tests/test_option2_cse.c still pass",
+        "Compilation succeeds: -Wall -Wextra -Werror",
+        "Linting: clang-format passes, no warnings"
+      ]
+    },
+    {
+      "id": "US-005",
+      "title": "Implement plan rewriting for K-way delta expansion (CSE version)",
+      "description": "Extend plan compiler to emit K plan copies for K-atom rules, but WITH CSE materialization hints. This is the corrected Option 2 (not the naive copy approach).",
+      "priority": "critical",
+      "passes": false,
+      "acceptanceCriteria": [
+        "Plan rewriter in wirelog/exec_plan_gen.c: For rules with K >= 3 body atoms in recursive strata, emit K annotated plan copies",
+        "Each copy marked with delta_mode: Copy 1 = FORCE_DELTA(atom 0), others = AUTO; Copy 2 = FORCE_DELTA(atom 1), others = AUTO; etc.",
+        "Materialization hints: Insert MATERIALIZED join ops where CSE saves cost (first K-2 atoms)",
+        "Progressive refinement: First 2 atoms materialized (once), last atom varies by delta position",
+        "CSPA rule rewriting: Verify 2 three-way rules get 3 plan copies each (6 total copies for 2 rules)",
+        "DOOP rule identification: Identify 8-way join rules that would benefit from progressive materialization",
+        "All tests in tests/test_option2_cse.c pass",
+        "Compilation succeeds with -Wall -Wextra -Werror",
+        "Linting: clang-format passes"
+      ]
+    },
+    {
+      "id": "US-006",
+      "title": "Integration: Evaluator respects materialization and delta_mode hints",
+      "description": "Wire up the evaluator (col_eval_stratum) to use materialized joins and respect delta_mode hints from plan ops.",
+      "priority": "critical",
+      "passes": false,
+      "acceptanceCriteria": [
+        "col_eval_stratum updated to check plan ops for MATERIALIZED hint; if present, reuse cached join instead of recomputing",
+        "col_op_variable and col_op_join honor delta_mode flags from plan",
+        "Materialization lifecycle: Create on first eval, reuse for subsequent passes, evict after stratum completes",
+        "Memory tracking: Session tracks cumulative materialization memory; evict LRU if exceeds limit",
+        "All tests in tests/test_option2_cse.c pass",
+        "CSPA integration test: Compiles and runs without errors (may not be faster yet, just correct)"
+      ]
+    },
+    {
+      "id": "US-007",
+      "title": "CSPA validation: Correctness on baseline (CSPA benchmark)",
+      "description": "Validate Option 2 implementation on CSPA. Correctness gate: output fact counts must match baseline exactly. No performance regression allowed.",
+      "priority": "critical",
+      "passes": false,
+      "acceptanceCriteria": [
+        "Benchmark run: ./build/bench/bench_flowlog --workload cspa completes without errors",
+        "Correctness: CSPA output fact count = baseline (20,381 tuples)",
+        "Iteration count: Document actual iteration count vs baseline",
+        "Wall time: Measure wall time; accept if >= baseline (no requirement for speedup at this stage, correctness is gate)",
+        "Memory: Monitor peak RSS; should be <= baseline (materialization reduces per-iteration allocations)",
+        "Linting check: clang-format passes, no warnings",
+        "Atomic commit: Commit integration work with clear message"
+      ]
+    },
+    {
+      "id": "US-008",
+      "title": "Performance optimization: CSE cost model tuning for CSPA",
+      "description": "After correctness validated, tune CSE materialization thresholds and cost model. Goal: iteration count reduction (H2 hypothesis confirmed) + acceptable per-iteration cost.",
+      "priority": "high",
+      "passes": false,
+      "acceptanceCriteria": [
+        "Cost model parameters tuned: memory_limit, materialization threshold optimized for CSPA (3-way joins)",
+        "CSPA iteration count: Measured and documented; reduction >20% from original incomplete semi-naive (H2 hypothesis)",
+        "CSPA wall time: Documented as baseline for Phase 2 (acceptable to be slower than original if memory improved)",
+        "Memory efficiency: Peak RSS reduction >= 30% from original CSPA (materialization reduces per-iteration snapshots)",
+        "Ablation study: Document cost of K plan copies vs CSE optimization savings",
+        "Linting: clang-format passes, no warnings",
+        "Atomic commit: Clear message on tuning changes"
+      ]
+    },
+    {
+      "id": "US-009",
+      "title": "DOOP preparation: Verify Option 2 compiles and runs DOOP workload",
+      "description": "Validate that Option 2 infrastructure handles DOOP's 8-way joins without regression. Correctness gate: DOOP must complete (not DNF).",
+      "priority": "critical",
+      "passes": false,
+      "acceptanceCriteria": [
+        "DOOP data available: Verify bench/data/doop/ has CSV files",
+        "DOOP workload compiles: bench/workloads/doop.dl parses without error",
+        "Benchmark harness ready: ./build/bench/bench_flowlog --workload doop command recognized",
+        "Integration test: Run DOOP with Option 2 enabled; expect completion (currently DNF)",
+        "DOOP test added: tests/test_option2_doop.c created with DOOP-specific correctness checks",
+        "All tests compile and pass with -Wall -Wextra -Werror"
+      ]
+    },
+    {
+      "id": "US-010",
+      "title": "DOOP validation: Correctness on DOOP benchmark",
+      "description": "Run Option 2 on DOOP. Correctness gate: DOOP must complete and produce correct output. Performance gate: acceptable iteration count for 8-way joins (or document as future work).",
+      "priority": "critical",
+      "passes": false,
+      "acceptanceCriteria": [
+        "Benchmark run: ./build/bench/bench_flowlog --workload doop completes (not DNF)",
+        "Wall time: Measured and documented (completion time for DOOP, baseline from original)",
+        "Iteration count: Documented; if reduced from original, confirm H2 hypothesis holds for 8-way joins",
+        "Memory: Peak RSS documented; should be reasonable (not 4+ GB amplification)",
+        "Correctness: Output fact count validated (if baseline available)",
+        "Linting: clang-format passes",
+        "Atomic commit: Clear message on DOOP validation"
+      ]
+    },
+    {
+      "id": "US-011",
+      "title": "Performance comparison: CSPA + DOOP benchmark report",
+      "description": "Generate final performance report comparing Option 2 (with CSE materialization) against original baseline. Document iteration reduction, memory efficiency, and per-iteration cost.",
+      "priority": "high",
+      "passes": false,
+      "acceptanceCriteria": [
+        "Report created: docs/performance/OPTION2-RESULTS.md with detailed metrics",
+        "CSPA metrics: wall time, iteration count, peak RSS vs baseline + H2 hypothesis confirmation",
+        "DOOP metrics: completion (DNF -> completed), wall time, iteration count, memory",
+        "CSE ROI analysis: Materialization cost vs savings (8-way join reduction from 8 copies to ~2 effective passes)",
+        "Comparison to original Option 2: Show that CSE fixes the 8.4x regression",
+        "Recommendations: When to apply CSE (3-way vs 4-way vs 8-way joins), memory limits, tuning params",
+        "Linting check passed"
+      ]
+    },
+    {
+      "id": "US-012",
+      "title": "Final verification: All tests pass, atomic commits maintained, linting clean",
+      "description": "Verify completion: All tests pass, all commits are atomic with strict linting, no regressions on other workloads (TC, Reach, CC, etc.).",
+      "priority": "critical",
+      "passes": false,
+      "acceptanceCriteria": [
+        "All tests pass: meson test -C build (tests/test_option2_cse.c, tests/test_option2_doop.c + all existing tests)",
+        "Benchmark suite: ./build/bench/bench_flowlog --workload all completes for 15 workloads (must not regress TC, Reach, CC, etc.)",
+        "Linting verification: git log shows all new commits pass clang-format, no lint warnings",
+        "Atomic commits verified: Each commit has single clear purpose (design, test harness, CSE infrastructure, delta_mode, plan rewriting, integration, CSPA validation, DOOP validation, results)",
+        "Documentation complete: docs/performance/OPTION2-DESIGN.md, OPTION2-TESTS.md, OPTION2-RESULTS.md all present and coherent",
+        "Clean state: No TODO/FIXME left from Option 2 work, progress.txt records all iterations"
+      ]
+    }
+  ]
+}

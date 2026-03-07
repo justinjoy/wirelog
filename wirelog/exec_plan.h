@@ -235,6 +235,7 @@ typedef struct {
     uint32_t map_expr_count;
 
     wl_delta_mode_t delta_mode; /* semi-naive delta/full selection control */
+    bool materialized; /* hint: cache this intermediate result for CSE reuse */
 } wl_plan_op_t;
 
 /* ======================================================================== */

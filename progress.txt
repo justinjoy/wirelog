@@ -98,6 +98,115 @@
 ### Parallel Efficiency
 - 3 independent execution tracks
 - Stream A and C working simultaneously
+
+---
+
+## NEW ITERATION: Option 2 + Materialization (TDD-First) - RALPH Loop Active 🚀
+
+**Date Started:** 2026-03-07 16:30
+**Status:** IN PROGRESS (Iteration 1 - Design + Test Infrastructure)
+**Methodology:** TDD (Test-First), RALPH (Persistence Loop), Parallel Team Execution
+
+### Team: option2-materialization-tdd
+
+**Active Workers (Wave 1):**
+- `designer-architect` (Claude Opus): US-001 Design documentation
+- `test-engineer` (Claude Sonnet): US-002 Test harness creation
+
+**Upcoming Workers (Wave 2):**
+- `executor` + `codex` (optimization analysis): US-003~006 implementation
+
+### Stories Breakdown
+
+**US-001: Design Phase** [RUNNING - designer-architect]
+- Create OPTION2-DESIGN.md with CSE + Progressive Materialization strategy
+- Create OPTION2-TESTS.md with 20+ test cases
+- Expected: Pseudocode, data structures (col_materialized_join_t, wl_delta_mode_t), edge cases
+
+**US-002: Test Infrastructure** [RUNNING - test-engineer]
+- Create tests/test_option2_cse.c with 20+ unit tests
+- TDD discipline: Tests BEFORE implementation
+- Expected: Correctness oracle, CSPA harness, DOOP placeholder
+
+**US-003~006: Core Implementation** [QUEUED - awaiting US-001,002]
+- US-003: CSE Materialization Infrastructure (col_materialized_join_t functions)
+- US-004: Delta Mode Enum (wl_delta_mode_t, plan op extensions)
+- US-005: Plan Rewriting (K-way delta expansion with CSE hints)
+- US-006: Evaluator Integration (col_eval_stratum wiring)
+
+**US-007~010: CSPA + DOOP Validation** [QUEUED]
+- US-007: CSPA correctness (fact count matching)
+- US-008: CSPA performance (iteration reduction, memory efficiency)
+- US-009: DOOP preparation
+- US-010: DOOP validation (DNF → completion goal)
+
+**US-011~012: Final Verification** [QUEUED]
+- US-011: Performance report (CSPA + DOOP metrics)
+- US-012: All tests pass, atomic commits, linting clean
+
+### Key Design Insights (from US-001)
+
+1. **CSE Materialization vs Original Option 2**:
+   - Original (commit 56c9b32): 8 plan copies for 8-way join → 8.4x regression
+   - CSE approach: Materialize first K-2 atoms, vary last atom → ~2 effective passes
+   - Expected ROI: Fixes 8.4x regression, enables iteration reduction (H2 hypothesis)
+
+2. **Targeted Workloads**:
+   - CSPA: 2 three-way rules (ValueFlow, MemoryAlias) → easier validation
+   - DOOP: 1 eight-way rule (CallGraphEdge) → proof of CSE effectiveness
+
+3. **TDD Discipline**:
+   - Tests are the spec (US-002 defines all acceptance criteria)
+   - No production code without failing test
+   - Correctness oracle: bytewise fact count matching
+
+### Progress Tracking
+
+- [ ] US-001 Design docs complete
+- [ ] US-002 Test harness compiles (tests fail initially as expected)
+- [ ] US-003~006 Implementation pass all tests
+- [ ] US-007~008 CSPA validates (correctness + performance)
+- [ ] US-009~010 DOOP validates (completion, metrics documented)
+- [ ] US-011 Final report (metrics, recommendations)
+- [ ] US-012 Final verification (all tests, atomic commits, linting)
+
+### Execution Status (Iteration 3~4/100)
+
+**Wave 1** (Running in background):
+- ✅ designer-architect@option2-materialization-tdd: OPTION2-DESIGN.md ✅ COMPLETED
+- ⏳ test-engineer@option2-materialization-tdd: tests/test_option2_cse.c (in progress)
+
+**Wave 2** (Running in background):
+- ⏳ codex-optimizer: Generating OPTION2-CSE-ANALYSIS.md (cost models, rule analysis)
+
+**Wave 3** (Running in background):
+- ⏳ executor: US-003 (col_materialized_join_t infrastructure)
+- ✅ executor-004: US-004 ✅ COMPLETED (wl_delta_mode_t enum + plan op extensions)
+- ⏳ executor-005-complex: US-005 (Plan rewriting for K-way delta expansion)
+- ⏳ executor-006: US-006 (Evaluator integration)
+
+**Status (Iteration 4/100)**:
+✅ US-001 Design COMPLETE (OPTION2-DESIGN.md)
+✅ US-004 Delta Mode COMPLETE
+⏳ Wave 1 (test harness, analysis) in progress
+⏳ Wave 3 (implementation) in progress
+⏳ Wave 4 (validation prep) started
+⏳ Wave 5 (final report) queued
+
+**Total Workers**: 9 concurrent (design, test, CSE core, delta mode, plan rewriting, evaluator, codex analysis, CSPA validation, DOOP validation)
+**ETA**: 60-90 minutes to full completion (including architect verification)
+
+### Next Actions
+
+1. **Monitor Wave 1~2 completion** - wait for design docs + test spec
+2. **Validate Wave 1~2 outputs** when received:
+   - OPTION2-DESIGN.md: Verify algorithm pseudocode, data structures, CSE strategy
+   - OPTION2-TESTS.md: Verify 20+ test cases cover edge cases
+   - OPTION2-CSE-ANALYSIS.md: Verify cost models for CSPA (3-way) + DOOP (8-way)
+   - test_option2_cse.c: Verify compiles with test skeleton
+3. **Monitor Wave 3 completion** - wait for CSE infrastructure + delta_mode + plan rewriting
+4. **Once Wave 3 completes**: Spawn Wave 4-6 (CSPA validation, DOOP validation, final report)
+5. **Final gate**: Architect verification before /oh-my-claudecode:cancel
 - Stream B auto-unblocks when A completes (no lead intervention needed)
 - Expected total time: ~15 minutes (vs ~30+ sequential)
 
