@@ -1694,27 +1694,31 @@ col_op_consolidate_incremental_delta(col_rel_t *rel, uint32_t old_nrows,
         return ENOMEM;
 
     uint32_t oi = 0, di = 0, out = 0;
+    const int64_t *o_ptr = rel->data;
+    const int64_t *d_ptr = delta_start;
+    int64_t *merged_ptr = merged;
     while (oi < old_nrows && di < d_unique) {
-        const int64_t *orow = rel->data + (size_t)oi * nc;
-        const int64_t *drow = delta_start + (size_t)di * nc;
-        int cmp = row_cmp_optimized(orow, drow, nc);
-        if (cmp < 0) {
-            memcpy(merged + (size_t)out * nc, orow, row_bytes);
-            oi++;
-            out++;
-        } else if (cmp == 0) {
-            memcpy(merged + (size_t)out * nc, orow, row_bytes);
-            oi++;
+        int cmp = row_cmp_optimized(o_ptr, d_ptr, nc);
+        const int64_t *row_to_copy = (cmp < 0) ? o_ptr : d_ptr;
+        memcpy(merged_ptr, row_to_copy, row_bytes);
+
+        if (cmp == 0) {
+            /* duplicate: skip delta row */
+            d_ptr += nc;
             di++;
-            out++; /* duplicate: skip delta row */
+        }
+        if (cmp <= 0) {
+            o_ptr += nc;
+            oi++;
         } else {
             /* delta row not in old: new fact */
-            memcpy(merged + (size_t)out * nc, drow, row_bytes);
             if (delta_out)
-                col_rel_append_row(delta_out, drow);
+                col_rel_append_row(delta_out, d_ptr);
+            d_ptr += nc;
             di++;
-            out++;
         }
+        merged_ptr += nc;
+        out++;
     }
     /* Remaining old rows */
     if (oi < old_nrows) {
