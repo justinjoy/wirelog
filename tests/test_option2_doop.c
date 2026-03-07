@@ -860,7 +860,10 @@ int
 main(void)
 {
     printf("=== DOOP Validation Tests (US-009/010) ===\n");
-    printf("NOTE: Full DOOP benchmark run -> scripts/run_doop_validation.sh\n\n");
+    printf("NOTE: Infrastructure tests (1-5) PASS immediately.\n");
+    printf("      Synthetic join tests (6-8) FAIL until K-way delta expansion\n");
+    printf("      (Option 2 + CSE) is implemented — this is the TDD RED state.\n");
+    printf("      Full DOOP benchmark -> scripts/run_doop_validation.sh\n\n");
 
     /* --- Infrastructure: data files --- */
     printf("--- Infrastructure: Data Files ---\n");
