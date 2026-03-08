@@ -515,16 +515,23 @@ arr_next_pow2(uint32_t n)
     return n + 1u;
 }
 
-/* Free arrangement contents (not the struct itself). */
+/*
+ * arr_free_contents: free hash table arrays only.
+ * key_cols is NOT freed here — it is always owned by the registry entry
+ * (col_arr_entry_t.key_cols) and freed separately in col_session_destroy.
+ */
 static void
 arr_free_contents(col_arrangement_t *arr)
 {
     if (!arr)
         return;
-    free(arr->key_cols);
     free(arr->ht_head);
     free(arr->ht_next);
-    memset(arr, 0, sizeof(*arr));
+    arr->ht_head = NULL;
+    arr->ht_next = NULL;
+    arr->nbuckets = 0;
+    arr->ht_cap = 0;
+    arr->indexed_rows = 0;
 }
 
 /* Full rebuild: index all nrows rows in rel into arr. */
@@ -1299,53 +1306,114 @@ col_op_join(const wl_plan_op_t *op, eval_stack_t *stack, wl_col_session_t *sess)
         return ENOMEM;
     }
 
-    /* Hash join: build hash table from right relation, probe with left. */
-    uint32_t nbuckets = next_pow2(right->nrows > 0 ? right->nrows * 2 : 1);
-    uint32_t *ht_head = (uint32_t *)calloc(nbuckets, sizeof(uint32_t));
-    uint32_t *ht_next
-        = (uint32_t *)malloc((right->nrows + 1) * sizeof(uint32_t));
-    if (!ht_head || !ht_next) {
-        free(ht_head);
-        free(ht_next);
-        free(tmp);
-        col_rel_free_contents(out);
-        free(out);
-        free(lk);
-        free(rk);
-        if (left_e.owned) {
-            col_rel_free_contents(left);
-            free(left);
+    /* Hash join: use persistent arrangement for the full right relation;
+     * fall back to an ephemeral hash table for delta substitution or when
+     * the arrangement cannot be allocated. */
+    col_arrangement_t *arr = NULL;
+    uint32_t nbuckets_ep = 0;
+    uint32_t *ht_head_ep = NULL;
+    uint32_t *ht_next_ep = NULL;
+
+    if (!used_right_delta && op->right_relation && kc > 0)
+        arr = col_session_get_arrangement(&sess->base, op->right_relation, rk,
+                                          kc);
+
+    if (!arr) {
+        /* Ephemeral hash table (delta path or arrangement unavailable). */
+        nbuckets_ep = next_pow2(right->nrows > 0 ? right->nrows * 2 : 1);
+        ht_head_ep = (uint32_t *)calloc(nbuckets_ep, sizeof(uint32_t));
+        ht_next_ep = (uint32_t *)malloc((right->nrows > 0 ? right->nrows : 1)
+                                        * sizeof(uint32_t));
+        if (!ht_head_ep || !ht_next_ep) {
+            free(ht_head_ep);
+            free(ht_next_ep);
+            free(tmp);
+            col_rel_free_contents(out);
+            free(out);
+            free(lk);
+            free(rk);
+            if (left_e.owned) {
+                col_rel_free_contents(left);
+                free(left);
+            }
+            return ENOMEM;
         }
-        return ENOMEM;
+        for (uint32_t rr = 0; rr < right->nrows; rr++) {
+            const int64_t *rrow = right->data + (size_t)rr * right->ncols;
+            uint32_t h = hash_int64_keys(rrow, rk, kc) & (nbuckets_ep - 1);
+            ht_next_ep[rr] = ht_head_ep[h];
+            ht_head_ep[h] = rr + 1; /* 1-based; 0 = end of chain */
+        }
     }
-    for (uint32_t rr = 0; rr < right->nrows; rr++) {
-        const int64_t *rrow = right->data + (size_t)rr * right->ncols;
-        uint32_t h = hash_int64_keys(rrow, rk, kc) & (nbuckets - 1);
-        ht_next[rr] = ht_head[h];
-        ht_head[h] = rr + 1; /* 1-based index; 0 = end of chain */
+
+    /* key_row scratch buffer for arrangement probe: values placed at rk[]
+     * positions so col_arrangement_find_first() matches correctly. */
+    int64_t *key_row = NULL;
+    if (arr) {
+        key_row = (int64_t *)malloc(sizeof(int64_t)
+                                    * (right->ncols > 0 ? right->ncols : 1));
+        if (!key_row) {
+            free(ht_head_ep);
+            free(ht_next_ep);
+            free(tmp);
+            col_rel_free_contents(out);
+            free(out);
+            free(lk);
+            free(rk);
+            if (left_e.owned) {
+                col_rel_free_contents(left);
+                free(left);
+            }
+            return ENOMEM;
+        }
     }
 
     int join_rc = 0;
     for (uint32_t lr = 0; lr < left->nrows && join_rc == 0; lr++) {
         const int64_t *lrow = left->data + (size_t)lr * left->ncols;
-        uint32_t h = hash_int64_keys(lrow, lk, kc) & (nbuckets - 1);
-        for (uint32_t e = ht_head[h]; e != 0; e = ht_next[e - 1]) {
-            uint32_t rr = e - 1;
-            const int64_t *rrow = right->data + (size_t)rr * right->ncols;
-            bool match = true;
-            for (uint32_t k = 0; k < kc && match; k++)
-                match = (lrow[lk[k]] == rrow[rk[k]]);
-            if (!match)
-                continue;
-            memcpy(tmp, lrow, sizeof(int64_t) * left->ncols);
-            memcpy(tmp + left->ncols, rrow, sizeof(int64_t) * right->ncols);
-            join_rc = col_rel_append_row(out, tmp);
-            if (join_rc != 0)
-                break;
+
+        if (arr) {
+            /* Arrangement probe: fill key_row at right-side positions. */
+            for (uint32_t k = 0; k < kc; k++)
+                key_row[rk[k]] = lrow[lk[k]];
+            uint32_t rr = col_arrangement_find_first(arr, right->data,
+                                                     right->ncols, key_row);
+            while (rr != UINT32_MAX && join_rc == 0) {
+                const int64_t *rrow = right->data + (size_t)rr * right->ncols;
+                /* Verify key match: find_next may return collision rows. */
+                bool match = true;
+                for (uint32_t k = 0; k < kc && match; k++)
+                    match = (lrow[lk[k]] == rrow[rk[k]]);
+                if (match) {
+                    memcpy(tmp, lrow, sizeof(int64_t) * left->ncols);
+                    memcpy(tmp + left->ncols, rrow,
+                           sizeof(int64_t) * right->ncols);
+                    join_rc = col_rel_append_row(out, tmp);
+                }
+                rr = col_arrangement_find_next(arr, rr);
+            }
+        } else {
+            /* Ephemeral hash probe. */
+            uint32_t h = hash_int64_keys(lrow, lk, kc) & (nbuckets_ep - 1);
+            for (uint32_t e = ht_head_ep[h]; e != 0; e = ht_next_ep[e - 1]) {
+                uint32_t rr = e - 1;
+                const int64_t *rrow = right->data + (size_t)rr * right->ncols;
+                bool match = true;
+                for (uint32_t k = 0; k < kc && match; k++)
+                    match = (lrow[lk[k]] == rrow[rk[k]]);
+                if (!match)
+                    continue;
+                memcpy(tmp, lrow, sizeof(int64_t) * left->ncols);
+                memcpy(tmp + left->ncols, rrow, sizeof(int64_t) * right->ncols);
+                join_rc = col_rel_append_row(out, tmp);
+                if (join_rc != 0)
+                    break;
+            }
         }
     }
-    free(ht_head);
-    free(ht_next);
+    free(key_row);
+    free(ht_head_ep);
+    free(ht_next_ep);
     if (join_rc != 0) {
         free(tmp);
         col_rel_free_contents(out);
@@ -3281,6 +3349,9 @@ col_eval_stratum(const wl_plan_stratum_t *sp, wl_col_session_t *sess,
             int rc2 = col_op_consolidate_incremental_delta(r, snap[ri], delta);
             uint64_t cons_elapsed = now_ns() - cons_t0;
             sess->consolidation_ns += cons_elapsed;
+            /* Invalidate arrangements for this relation (data changed). */
+            col_session_invalidate_arrangements(&sess->base,
+                                                sp->relations[ri].name);
             /* Per-call trace: WL_CONSOLIDATION_LOG=1 prints N/D/time per call */
             if (getenv("WL_CONSOLIDATION_LOG")) {
                 fprintf(stderr,

@@ -393,6 +393,46 @@ test_delta_timestamp_exe = executable(
 test('delta_timestamp', test_delta_timestamp_exe)
 
 # ============================================================================
+# Arrangement Layer Tests (Phase 3C - 3C-001)
+# ============================================================================
+
+test_arrangement_exe = executable(
+  'test_arrangement',
+  files('test_arrangement.c'),
+  parser_src,
+  ir_src,
+  optimizer_src,
+  backend_src,
+  io_src,
+  arena_src,
+  workqueue_src,
+  include_directories: [wirelog_inc, wirelog_src_inc],
+  dependencies: [nanoarrow_dep, threads_dep],
+)
+
+test('arrangement', test_arrangement_exe)
+
+# ============================================================================
+# Join Arrangement Integration Tests (Phase 3C - 3C-002)
+# ============================================================================
+
+test_join_arrangement_exe = executable(
+  'test_join_arrangement',
+  files('test_join_arrangement.c'),
+  parser_src,
+  ir_src,
+  optimizer_src,
+  backend_src,
+  io_src,
+  arena_src,
+  workqueue_src,
+  include_directories: [wirelog_inc, wirelog_src_inc],
+  dependencies: [nanoarrow_dep, threads_dep],
+)
+
+test('join_arrangement', test_join_arrangement_exe)
+
+# ============================================================================
 # Recursive Aggregation Plan Tests - DISABLED in Phase 2C
 # ============================================================================
 #
