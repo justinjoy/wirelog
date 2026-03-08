@@ -489,6 +489,18 @@ test_frontier_filtering_exe = executable(
 test('frontier_filtering', test_frontier_filtering_exe)
 
 # ============================================================================
+# Frontier Skip Tests (Phase 3D-Ext - 3D-Ext-001)
+# ============================================================================
+
+test_frontier_skip_exe = executable(
+  'test_frontier_skip',
+  files('test_frontier_skip.c'),
+  include_directories: [wirelog_inc, wirelog_src_inc],
+)
+
+test('frontier_skip', test_frontier_skip_exe)
+
+# ============================================================================
 # Recursive Aggregation Plan Tests - DISABLED in Phase 2C
 # ============================================================================
 #
