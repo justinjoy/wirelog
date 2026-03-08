@@ -37,7 +37,7 @@
  * Set to 1 for parallel K-fusion execution (Phase 2C performance testing).
  */
 #ifndef ENABLE_K_FUSION
-#define ENABLE_K_FUSION 0
+#define ENABLE_K_FUSION 1
 #endif
 
 /* ======================================================================== */

@@ -236,6 +236,7 @@ test_option2_cse_exe = executable(
   workqueue_src,
   include_directories: [wirelog_inc, wirelog_src_inc],
   dependencies: [nanoarrow_dep, threads_dep],
+  c_args: ['-DENABLE_K_FUSION=1'],
 )
 
 test('option2_cse', test_option2_cse_exe)

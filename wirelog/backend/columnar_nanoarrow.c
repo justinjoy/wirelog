@@ -2159,30 +2159,30 @@ col_rel_merge_k(col_rel_t **relations, uint32_t k)
     if (!out)
         return NULL;
 
-    size_t row_bytes = (size_t)nc * sizeof(int64_t);
-
-    /* K=1: Direct copy with dedup */
+    /* K=1: Copy with dedup using append (handles dynamic growth) */
     if (k == 1) {
         col_rel_t *src = relations[0];
+        const int64_t *last_row = NULL;
         for (uint32_t r = 0; r < src->nrows; r++) {
             const int64_t *row = src->data + (size_t)r * nc;
-            if (r == 0
-                || kway_row_cmp(out->data + (size_t)(out->nrows - 1) * nc, row,
-                                nc)
-                       != 0) {
-                memcpy(out->data + (size_t)out->nrows * nc, row, row_bytes);
-                out->nrows++;
+            if (last_row == NULL || kway_row_cmp(last_row, row, nc) != 0) {
+                if (col_rel_append_row(out, row) != 0) {
+                    col_rel_free_contents(out);
+                    free(out);
+                    return NULL;
+                }
+                last_row = out->data + (size_t)(out->nrows - 1) * nc;
             }
         }
         return out;
     }
 
-    /* K=2: Optimized 2-pointer merge */
+    /* K=2: Optimized 2-pointer merge using append */
     if (k == 2) {
         col_rel_t *left = relations[0];
         col_rel_t *right = relations[1];
         uint32_t li = 0, ri = 0;
-        int64_t *last_row = NULL;
+        const int64_t *last_row = NULL;
 
         while (li < left->nrows && ri < right->nrows) {
             const int64_t *lrow = left->data + (size_t)li * nc;
@@ -2205,10 +2205,12 @@ col_rel_merge_k(col_rel_t **relations, uint32_t k)
 
             if (last_row == NULL
                 || kway_row_cmp(last_row, row_to_add, nc) != 0) {
-                memcpy(out->data + (size_t)out->nrows * nc, row_to_add,
-                       row_bytes);
-                last_row = out->data + (size_t)out->nrows * nc;
-                out->nrows++;
+                if (col_rel_append_row(out, row_to_add) != 0) {
+                    col_rel_free_contents(out);
+                    free(out);
+                    return NULL;
+                }
+                last_row = out->data + (size_t)(out->nrows - 1) * nc;
             }
         }
 
@@ -2216,9 +2218,12 @@ col_rel_merge_k(col_rel_t **relations, uint32_t k)
         while (li < left->nrows) {
             const int64_t *row = left->data + (size_t)li * nc;
             if (last_row == NULL || kway_row_cmp(last_row, row, nc) != 0) {
-                memcpy(out->data + (size_t)out->nrows * nc, row, row_bytes);
-                last_row = out->data + (size_t)out->nrows * nc;
-                out->nrows++;
+                if (col_rel_append_row(out, row) != 0) {
+                    col_rel_free_contents(out);
+                    free(out);
+                    return NULL;
+                }
+                last_row = out->data + (size_t)(out->nrows - 1) * nc;
             }
             li++;
         }
@@ -2227,9 +2232,12 @@ col_rel_merge_k(col_rel_t **relations, uint32_t k)
         while (ri < right->nrows) {
             const int64_t *row = right->data + (size_t)ri * nc;
             if (last_row == NULL || kway_row_cmp(last_row, row, nc) != 0) {
-                memcpy(out->data + (size_t)out->nrows * nc, row, row_bytes);
-                last_row = out->data + (size_t)out->nrows * nc;
-                out->nrows++;
+                if (col_rel_append_row(out, row) != 0) {
+                    col_rel_free_contents(out);
+                    free(out);
+                    return NULL;
+                }
+                last_row = out->data + (size_t)(out->nrows - 1) * nc;
             }
             ri++;
         }
@@ -2237,8 +2245,7 @@ col_rel_merge_k(col_rel_t **relations, uint32_t k)
         return out;
     }
 
-    /* K >= 3: Min-heap merge (simplified: use sequential merge) */
-    /* For now, fallback to pairwise merge to avoid complexity */
+    /* K >= 3: Pairwise merge fallback */
     col_rel_t *temp = relations[0];
     for (uint32_t i = 1; i < k; i++) {
         col_rel_t *pair[2] = { temp, relations[i] };
@@ -2246,6 +2253,10 @@ col_rel_merge_k(col_rel_t **relations, uint32_t k)
         if (!merged) {
             col_rel_free_contents(out);
             free(out);
+            if (i > 1) {
+                col_rel_free_contents(temp);
+                free(temp);
+            }
             return NULL;
         }
         if (i > 1) {
@@ -2255,11 +2266,22 @@ col_rel_merge_k(col_rel_t **relations, uint32_t k)
         temp = merged;
     }
 
-    /* Copy final result into output */
-    memcpy(out->data, temp->data, (size_t)temp->nrows * nc * sizeof(int64_t));
-    out->nrows = temp->nrows;
-
-    if (k > 1) {
+    /* Move final result into output using append */
+    {
+        const int64_t *last_row = NULL;
+        for (uint32_t r = 0; r < temp->nrows; r++) {
+            const int64_t *row = temp->data + (size_t)r * nc;
+            if (last_row == NULL || kway_row_cmp(last_row, row, nc) != 0) {
+                if (col_rel_append_row(out, row) != 0) {
+                    col_rel_free_contents(out);
+                    free(out);
+                    col_rel_free_contents(temp);
+                    free(temp);
+                    return NULL;
+                }
+                last_row = out->data + (size_t)(out->nrows - 1) * nc;
+            }
+        }
         col_rel_free_contents(temp);
         free(temp);
     }
@@ -2290,26 +2312,89 @@ col_op_k_fusion_worker(void *ctx)
 }
 
 /**
- * K-Fusion operator: evaluate K copies of a relation plan in parallel,
+ * K-Fusion operator: evaluate K copies of a relation plan sequentially,
  * merge results with deduplication, and push result onto stack.
  *
- * Note: K-fusion requires plan generation changes to create K-fusion nodes
- * with proper metadata. For now this is a placeholder that returns EINVAL.
- * The core merging logic (col_rel_merge_k) is complete and ready for use.
+ * Each of the K operator sequences in opaque_data is evaluated
+ * independently into a temporary eval stack.  The K resulting relations
+ * are then merged via col_rel_merge_k() and pushed onto the caller's stack.
  */
 static int
 col_op_k_fusion(const wl_plan_op_t *op, eval_stack_t *stack,
                 wl_col_session_t *sess)
 {
-    (void)op;    /* unused */
-    (void)stack; /* unused */
-    (void)sess;  /* unused */
+    if (!op->opaque_data)
+        return EINVAL;
 
-    /* K-fusion not yet implemented: requires plan generation changes
-     * to instantiate K-fusion nodes with metadata pointing to K operator
-     * copies. When implemented, this will use col_rel_merge_k() to combine
-     * K sorted relations in parallel. */
-    return EINVAL;
+    wl_plan_op_k_fusion_t *meta = (wl_plan_op_k_fusion_t *)op->opaque_data;
+    uint32_t k = meta->k;
+    if (k == 0)
+        return EINVAL;
+
+    col_rel_t **results = (col_rel_t **)calloc(k, sizeof(col_rel_t *));
+    if (!results)
+        return ENOMEM;
+
+    int rc = 0;
+    for (uint32_t d = 0; d < k; d++) {
+        wl_plan_relation_t synthetic;
+        synthetic.name = "<k_fusion_copy>";
+        synthetic.ops = meta->k_ops[d];
+        synthetic.op_count = meta->k_op_counts[d];
+
+        eval_stack_t tmp;
+        eval_stack_init(&tmp);
+        rc = col_eval_relation_plan(&synthetic, &tmp, sess);
+        if (rc != 0) {
+            eval_stack_drain(&tmp);
+            goto cleanup;
+        }
+
+        eval_entry_t e = eval_stack_pop(&tmp);
+        if (!e.rel) {
+            rc = EINVAL;
+            goto cleanup;
+        }
+        /* If not owned, make a copy we can hand to merge */
+        if (!e.owned) {
+            col_rel_t *copy = col_rel_new_like("<k_fusion_copy>", e.rel);
+            if (!copy) {
+                rc = ENOMEM;
+                goto cleanup;
+            }
+            size_t row_bytes = (size_t)e.rel->ncols * sizeof(int64_t);
+            memcpy(copy->data, e.rel->data,
+                   (size_t)e.rel->nrows * row_bytes);
+            copy->nrows = e.rel->nrows;
+            results[d] = copy;
+        } else {
+            results[d] = e.rel;
+        }
+        eval_stack_drain(&tmp);
+    }
+
+    {
+        col_rel_t *merged = col_rel_merge_k(results, k);
+        if (!merged) {
+            rc = ENOMEM;
+            goto cleanup;
+        }
+        rc = eval_stack_push(stack, merged, true);
+        if (rc != 0) {
+            col_rel_free_contents(merged);
+            free(merged);
+        }
+    }
+
+cleanup:
+    for (uint32_t d = 0; d < k; d++) {
+        if (results[d]) {
+            col_rel_free_contents(results[d]);
+            free(results[d]);
+        }
+    }
+    free(results);
+    return rc;
 }
 
 /* --- SEMIJOIN ------------------------------------------------------------ */
