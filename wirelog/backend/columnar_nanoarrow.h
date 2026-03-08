@@ -42,6 +42,33 @@
 #define WL_BACKEND_COLUMNAR_NANOARROW_H
 
 #include "../backend.h"
+#include "../exec_plan.h"
+
+/* ======================================================================== */
+/* K-Fusion Metadata                                                        */
+/* ======================================================================== */
+
+/**
+ * wl_plan_op_k_fusion_t:
+ *
+ * Backend-specific metadata for a WL_PLAN_OP_K_FUSION operator.
+ * Stored in wl_plan_op_t.opaque_data and owned by the plan.
+ *
+ * A K_FUSION operator encapsulates K independent operator sequences
+ * (one per semi-naive delta copy) for parallel workqueue execution.
+ * Each sequence in k_ops[d] is annotated with appropriate delta_mode
+ * values: position d uses FORCE_DELTA; all other IDB positions use
+ * FORCE_FULL.
+ *
+ * @k:          Number of delta copies (>= 2).
+ * @k_ops:      Array of K operator sequence pointers (each owned here).
+ * @k_op_counts: Number of operators in each sequence k_ops[d].
+ */
+typedef struct {
+    uint32_t k;
+    wl_plan_op_t **k_ops;
+    uint32_t *k_op_counts;
+} wl_plan_op_k_fusion_t;
 
 /*
  * NOTE: wl_col_session_t and COL_SESSION() are defined in columnar_nanoarrow.c

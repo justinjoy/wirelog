@@ -238,6 +238,13 @@ typedef struct {
 
     wl_delta_mode_t delta_mode; /* semi-naive delta/full selection control */
     bool materialized; /* hint: cache this intermediate result for CSE reuse */
+
+    /* Backend-specific metadata.  NULL for all ops except K_FUSION.
+     * For K_FUSION: points to a wl_plan_op_k_fusion_t (defined in
+     * backend/columnar_nanoarrow.h) containing K operator sequences
+     * for parallel semi-naive evaluation.  Owned by the plan; freed
+     * via wl_plan_free() -> free_op() path. */
+    void *opaque_data;
 } wl_plan_op_t;
 
 /* ======================================================================== */

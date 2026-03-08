@@ -11,6 +11,7 @@
 
 #include "exec_plan_gen.h"
 
+#include "backend/columnar_nanoarrow.h"
 #include "ir/ir.h"
 #include "ir/program.h"
 #include "wirelog-ir.h"
@@ -19,6 +20,25 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* ======================================================================== */
+/* K-Fusion Feature Flag                                                    */
+/* ======================================================================== */
+
+/*
+ * ENABLE_K_FUSION:
+ *
+ * When set to 1, rewrite_multiway_delta() emits a single WL_PLAN_OP_K_FUSION
+ * operator (containing K independent operator sequences) instead of K
+ * sequential copies joined by CONCAT+CONSOLIDATE.  The K_FUSION path enables
+ * parallel workqueue execution in the columnar backend.
+ *
+ * Set to 0 (default) for the proven sequential expansion path.
+ * Set to 1 for parallel K-fusion execution (Phase 2C performance testing).
+ */
+#ifndef ENABLE_K_FUSION
+#define ENABLE_K_FUSION 0
+#endif
 
 /* ======================================================================== */
 /* Internal helpers                                                         */
@@ -797,6 +817,10 @@ translate_ir_node(const wirelog_ir_node_t *node, op_list_t *ops)
 /* Free helpers                                                             */
 /* ======================================================================== */
 
+#if ENABLE_K_FUSION
+static void free_k_fusion_opaque(wl_plan_op_t *op); /* forward declaration */
+#endif
+
 static void
 free_op(wl_plan_op_t *op)
 {
@@ -823,6 +847,11 @@ free_op(wl_plan_op_t *op)
             free(op->map_exprs[i].data);
         free(op->map_exprs);
     }
+
+#if ENABLE_K_FUSION
+    if (op->opaque_data)
+        free_k_fusion_opaque(op);
+#endif
 }
 
 /* ======================================================================== */
@@ -1051,6 +1080,148 @@ expand_multiway_delta(const wl_plan_op_t *ops, uint32_t op_count,
     return new_ops;
 }
 
+#if ENABLE_K_FUSION
+/**
+ * Free K-fusion metadata stored in op->opaque_data.
+ * Releases the K operator sequences and the metadata struct itself.
+ * The caller is responsible for the op itself.
+ */
+static void
+free_k_fusion_opaque(wl_plan_op_t *op)
+{
+    if (!op->opaque_data)
+        return;
+    wl_plan_op_k_fusion_t *meta = (wl_plan_op_k_fusion_t *)op->opaque_data;
+    if (meta->k_ops) {
+        for (uint32_t d = 0; d < meta->k; d++) {
+            if (meta->k_ops[d]) {
+                uint32_t cnt = meta->k_op_counts ? meta->k_op_counts[d] : 0;
+                for (uint32_t i = 0; i < cnt; i++)
+                    free_op(&meta->k_ops[d][i]);
+                free(meta->k_ops[d]);
+            }
+        }
+        free(meta->k_ops);
+    }
+    free(meta->k_op_counts);
+    free(meta);
+    op->opaque_data = NULL;
+}
+
+/**
+ * Rewrite a single relation plan for K-fusion parallel execution.
+ *
+ * Creates a single WL_PLAN_OP_K_FUSION operator whose opaque_data
+ * points to a wl_plan_op_k_fusion_t containing K independent operator
+ * sequences.  In sequence d, delta_pos[d] gets FORCE_DELTA and all
+ * other delta positions get FORCE_FULL.  Non-delta ops stay AUTO.
+ *
+ * Materialization hints are applied identically to expand_multiway_delta():
+ * the first K-2 JOIN delta positions are marked materialized for CSE reuse.
+ *
+ * Returns a 1-element ops array (caller owns) with *out_count = 1.
+ * Returns NULL on allocation failure.
+ */
+static wl_plan_op_t *
+expand_multiway_k_fusion(const wl_plan_op_t *ops, uint32_t op_count,
+                         const uint32_t *delta_pos, uint32_t k,
+                         uint32_t *out_count)
+{
+    wl_plan_op_t *result = (wl_plan_op_t *)calloc(1, sizeof(wl_plan_op_t));
+    if (!result)
+        return NULL;
+
+    wl_plan_op_k_fusion_t *meta
+        = (wl_plan_op_k_fusion_t *)calloc(1, sizeof(wl_plan_op_k_fusion_t));
+    if (!meta) {
+        free(result);
+        return NULL;
+    }
+
+    meta->k = k;
+    meta->k_ops = (wl_plan_op_t **)calloc(k, sizeof(wl_plan_op_t *));
+    meta->k_op_counts = (uint32_t *)calloc(k, sizeof(uint32_t));
+    if (!meta->k_ops || !meta->k_op_counts) {
+        free(meta->k_ops);
+        free(meta->k_op_counts);
+        free(meta);
+        free(result);
+        return NULL;
+    }
+
+    for (uint32_t d = 0; d < k; d++) {
+        wl_plan_op_t *seq
+            = (wl_plan_op_t *)calloc(op_count, sizeof(wl_plan_op_t));
+        if (!seq)
+            goto fail;
+
+        meta->k_ops[d] = seq;
+        meta->k_op_counts[d] = op_count;
+
+        for (uint32_t i = 0; i < op_count; i++) {
+            if (clone_plan_op(&ops[i], &seq[i]) != 0) {
+                /* free successfully cloned ops in this sequence */
+                for (uint32_t j = 0; j < i; j++)
+                    free_op(&seq[j]);
+                free(seq);
+                meta->k_ops[d] = NULL;
+                meta->k_op_counts[d] = 0;
+                goto fail;
+            }
+
+            /* Apply delta_mode: position d gets FORCE_DELTA,
+             * other IDB positions get FORCE_FULL, rest stay AUTO. */
+            bool is_delta_pos = false;
+            for (uint32_t p = 0; p < k; p++) {
+                if (delta_pos[p] == i) {
+                    seq[i].delta_mode
+                        = (p == d) ? WL_DELTA_FORCE_DELTA : WL_DELTA_FORCE_FULL;
+                    is_delta_pos = true;
+                    break;
+                }
+            }
+            if (!is_delta_pos)
+                seq[i].delta_mode = WL_DELTA_AUTO;
+
+            /* Materialization hint: first K-2 JOIN delta positions. */
+            if (is_delta_pos && seq[i].op == WL_PLAN_OP_JOIN) {
+                uint32_t join_idx = 0;
+                for (uint32_t p = 0; p < k; p++) {
+                    if (ops[delta_pos[p]].op == WL_PLAN_OP_JOIN) {
+                        if (delta_pos[p] == i)
+                            break;
+                        join_idx++;
+                    }
+                }
+                if (join_idx < k - 2)
+                    seq[i].materialized = true;
+            }
+        }
+    }
+
+    result->op = WL_PLAN_OP_K_FUSION;
+    result->opaque_data = (void *)meta;
+
+    *out_count = 1;
+    return result;
+
+fail:
+    /* Free any sequences allocated so far */
+    for (uint32_t d = 0; d < k; d++) {
+        if (meta->k_ops[d]) {
+            for (uint32_t i = 0; i < meta->k_op_counts[d]; i++)
+                free_op(&meta->k_ops[d][i]);
+            free(meta->k_ops[d]);
+        }
+    }
+    free(meta->k_ops);
+    free(meta->k_op_counts);
+    free(meta);
+    free(result);
+    return NULL;
+}
+#endif /* ENABLE_K_FUSION */
+
 /**
  * Apply multi-way delta expansion to all recursive strata in the plan.
  * For each relation in a recursive stratum with K >= 2 IDB body atoms,
@@ -1086,8 +1257,14 @@ rewrite_multiway_delta(wl_plan_t *plan)
 
             if (k >= 2) {
                 uint32_t new_count = 0;
-                wl_plan_op_t *new_ops = expand_multiway_delta(
-                    rel->ops, rel->op_count, dpos, k, &new_count);
+                wl_plan_op_t *new_ops;
+#if ENABLE_K_FUSION
+                new_ops = expand_multiway_k_fusion(rel->ops, rel->op_count,
+                                                   dpos, k, &new_count);
+#else
+                new_ops = expand_multiway_delta(rel->ops, rel->op_count, dpos,
+                                                k, &new_count);
+#endif
                 if (new_ops) {
                     for (uint32_t o = 0; o < rel->op_count; o++)
                         free_op((wl_plan_op_t *)&rel->ops[o]);
