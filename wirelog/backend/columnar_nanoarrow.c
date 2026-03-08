@@ -2656,9 +2656,13 @@ col_op_k_fusion(const wl_plan_op_t *op, eval_stack_t *stack,
         /* Shallow copy shares rels[], plan, etc. (read-only during K-fusion).
          * mat_cache is copied by value so workers can look up existing entries
          * and add new ones without affecting the original session's cache.
-         * darr_* is zeroed: each worker builds its own delta arrangement cache
-         * independently (no sharing, no races). */
+         * arr_* and darr_* are zeroed: each worker builds its own arrangement
+         * cache independently (no sharing, no races). Lock-free: no mutex needed
+         * because each worker owns its isolated cache. */
         worker_sess[d] = *sess;
+        worker_sess[d].arr_entries = NULL;
+        worker_sess[d].arr_count = 0;
+        worker_sess[d].arr_cap = 0;
         worker_sess[d].darr_entries = NULL;
         worker_sess[d].darr_count = 0;
         worker_sess[d].darr_cap = 0;
@@ -2745,13 +2749,24 @@ cleanup_wq:
      * Only free mat_cache entries the worker added (index >= base_count).
      * Entries 0..base_count-1 share result pointers with the original
      * session's mat_cache and must not be double-freed here.
-     * Free each worker's private delta arrangement cache (darr_*). */
+     * Free each worker's private arrangement caches (arr_* and darr_*).
+     * Lock-free design: no synchronization needed because each worker owns
+     * its isolated cache — no races at cleanup time. */
     for (uint32_t d = 0; d < k; d++) {
         col_mat_cache_t *wc = &worker_sess[d].mat_cache;
         for (uint32_t i = base_count; i < wc->count; i++) {
             col_rel_free_contents(wc->entries[i].result);
             free(wc->entries[i].result);
         }
+        /* Free worker's private full-arrangement cache (arr_*). */
+        for (uint32_t i = 0; i < worker_sess[d].arr_count; i++) {
+            col_arr_entry_t *e = &worker_sess[d].arr_entries[i];
+            free(e->rel_name);
+            free(e->key_cols);
+            arr_free_contents(&e->arr);
+        }
+        free(worker_sess[d].arr_entries);
+        /* Free worker's private delta-arrangement cache (darr_*). */
         col_session_free_delta_arrangements(&worker_sess[d]);
     }
     free(worker_sess);
