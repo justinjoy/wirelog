@@ -413,6 +413,26 @@ test_arrangement_exe = executable(
 test('arrangement', test_arrangement_exe)
 
 # ============================================================================
+# Delta Arrangement Cache Tests (Phase 3C - 3C-001-Ext)
+# ============================================================================
+
+test_delta_arrangement_exe = executable(
+  'test_delta_arrangement',
+  files('test_delta_arrangement.c'),
+  parser_src,
+  ir_src,
+  optimizer_src,
+  backend_src,
+  io_src,
+  arena_src,
+  workqueue_src,
+  include_directories: [wirelog_inc, wirelog_src_inc],
+  dependencies: [nanoarrow_dep, threads_dep],
+)
+
+test('delta_arrangement', test_delta_arrangement_exe)
+
+# ============================================================================
 # Join Arrangement Integration Tests (Phase 3C - 3C-002)
 # ============================================================================
 

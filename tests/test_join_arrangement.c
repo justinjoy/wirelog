@@ -349,13 +349,77 @@ test_join_arr_populated_after_join(void)
 }
 
 /* ================================================================
+ * Test 8: Delta arrangement freed after K-fusion dispatch (3C-002-Ext)
+ *
+ * After K=2 evaluation completes (wl_session_snapshot returns), the main
+ * session's delta arrangement cache must be empty.  K-fusion workers own
+ * their own delta caches and free them on completion; the main session
+ * should never accumulate orphaned delta arrangements.
+ * ================================================================ */
+static void
+test_join_arr_darr_cleared_after_kfusion(void)
+{
+    TEST("Delta arr cache empty on main session after K=2 snapshot");
+
+    const char *src = ".decl r(x: int32, y: int32)\n"
+                      "r(1, 2). r(2, 3). r(3, 4).\n"
+                      "r(x, z) :- r(x, y), r(y, z).\n";
+
+    wl_session_t *sess = NULL;
+    int64_t count = 0;
+    int rc = run_program(src, "r", &count, NULL, &sess);
+    ASSERT(rc == 0, "K=2 program failed");
+    ASSERT(count == 6, "expected 6 tuples");
+
+    /* Main session must have zero delta arrangement cache entries after
+     * K-fusion dispatch: worker caches are per-worker and freed on join. */
+    uint32_t darr_count = col_session_get_darr_count(sess);
+    ASSERT(darr_count == 0,
+           "main session must have 0 delta arr entries after K-fusion");
+
+    wl_session_destroy(sess);
+
+    PASS();
+}
+
+/* ================================================================
+ * Test 9: Large K=2 correctness with delta arrangement (10-node chain)
+ *
+ * 10-node chain exercises many delta iterations, verifying that the
+ * delta arrangement probe path (3C-002-Ext) produces correct results
+ * across many incremental updates.
+ *
+ * Expected: 45 tuples (all pairs i<j in 1..10).
+ * ================================================================ */
+static void
+test_join_arr_large_chain_delta(void)
+{
+    TEST("Large K=2 10-node chain with delta arrangement: 45 tuples");
+
+    const char *src = ".decl r(x: int32, y: int32)\n"
+                      "r(1,2). r(2,3). r(3,4). r(4,5). r(5,6).\n"
+                      "r(6,7). r(7,8). r(8,9). r(9,10).\n"
+                      "r(x, z) :- r(x, y), r(y, z).\n";
+
+    int64_t count = 0;
+    uint32_t iters = 0;
+    int rc = run_program(src, "r", &count, &iters, NULL);
+    ASSERT(rc == 0, "10-node chain program failed");
+    ASSERT(count == 45, "10-node chain must produce 45 tuples");
+    ASSERT(iters >= 3, "10-node chain needs at least 3 iterations");
+
+    PASS();
+}
+
+/* ================================================================
  * main
  * ================================================================ */
 
 int
 main(void)
 {
-    printf("\n=== Join Arrangement Integration Tests (3C-002) ===\n\n");
+    printf("\n=== Join Arrangement Integration Tests (3C-002 / 3C-002-Ext) "
+           "===\n\n");
 
     test_join_arr_tc_3edge();
     test_join_arr_tc_2cycle();
@@ -364,6 +428,8 @@ main(void)
     test_join_arr_k1_k2_parity();
     test_join_arr_multi_stratum_edb_cached();
     test_join_arr_populated_after_join();
+    test_join_arr_darr_cleared_after_kfusion();
+    test_join_arr_large_chain_delta();
 
     printf("\nResults: %d/%d passed", pass_count, test_count);
     if (fail_count > 0)

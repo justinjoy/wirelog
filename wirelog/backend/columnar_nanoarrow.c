@@ -687,6 +687,15 @@ typedef struct {
     col_arr_entry_t *arr_entries; /* owned flat array of arrangements     */
     uint32_t arr_count;           /* number of active arrangements        */
     uint32_t arr_cap;             /* allocated capacity                   */
+    /* Delta arrangement cache (Phase 3C-001-Ext): per-iteration hash
+     * indices for delta-substituted right relations.  Unlike arr_entries
+     * (cross-iteration, session-global), these are:
+     *   - Per-worker: zeroed in each K-fusion worker's session copy
+     *   - Per-iteration: freed at start of each col_eval_stratum iter
+     * This avoids races: workers write to their own copy, never shared. */
+    col_arr_entry_t *darr_entries; /* owned flat array of delta arrs      */
+    uint32_t darr_count;           /* number of active delta arrangements */
+    uint32_t darr_cap;             /* allocated capacity                  */
 } wl_col_session_t;
 
 /*
@@ -989,6 +998,14 @@ eval_stack_drain(eval_stack_t *s)
 static int
 col_eval_relation_plan(const wl_plan_relation_t *rplan, eval_stack_t *stack,
                        wl_col_session_t *sess);
+
+/* Forward declarations for delta arrangement cache (Phase 3C-001-Ext) */
+static col_arrangement_t *
+col_session_get_delta_arrangement(wl_col_session_t *cs, const char *rel_name,
+                                  const col_rel_t *delta_rel,
+                                  const uint32_t *key_cols, uint32_t key_count);
+static void
+col_session_free_delta_arrangements(wl_col_session_t *cs);
 
 /* Helper: create a new owned relation with given ncols and auto-named cols. */
 static col_rel_t *
@@ -1317,6 +1334,9 @@ col_op_join(const wl_plan_op_t *op, eval_stack_t *stack, wl_col_session_t *sess)
     if (!used_right_delta && op->right_relation && kc > 0)
         arr = col_session_get_arrangement(&sess->base, op->right_relation, rk,
                                           kc);
+    else if (used_right_delta && op->right_relation && kc > 0)
+        arr = col_session_get_delta_arrangement(sess, op->right_relation, right,
+                                                rk, kc);
 
     if (!arr) {
         /* Ephemeral hash table (delta path or arrangement unavailable). */
@@ -2635,8 +2655,13 @@ col_op_k_fusion(const wl_plan_op_t *op, eval_stack_t *stack,
     for (uint32_t d = 0; d < k; d++) {
         /* Shallow copy shares rels[], plan, etc. (read-only during K-fusion).
          * mat_cache is copied by value so workers can look up existing entries
-         * and add new ones without affecting the original session's cache. */
+         * and add new ones without affecting the original session's cache.
+         * darr_* is zeroed: each worker builds its own delta arrangement cache
+         * independently (no sharing, no races). */
         worker_sess[d] = *sess;
+        worker_sess[d].darr_entries = NULL;
+        worker_sess[d].darr_count = 0;
+        worker_sess[d].darr_cap = 0;
 
         workers[d].plan_data.name = "<k_fusion_copy>";
         workers[d].plan_data.ops = meta->k_ops[d];
@@ -2719,13 +2744,15 @@ cleanup_wq:
     /* wq is session-owned and reused across iterations — do not destroy here.
      * Only free mat_cache entries the worker added (index >= base_count).
      * Entries 0..base_count-1 share result pointers with the original
-     * session's mat_cache and must not be double-freed here. */
+     * session's mat_cache and must not be double-freed here.
+     * Free each worker's private delta arrangement cache (darr_*). */
     for (uint32_t d = 0; d < k; d++) {
         col_mat_cache_t *wc = &worker_sess[d].mat_cache;
         for (uint32_t i = base_count; i < wc->count; i++) {
             col_rel_free_contents(wc->entries[i].result);
             free(wc->entries[i].result);
         }
+        col_session_free_delta_arrangements(&worker_sess[d]);
     }
     free(worker_sess);
     free(results);
@@ -3181,6 +3208,10 @@ col_eval_stratum(const wl_plan_stratum_t *sp, wl_col_session_t *sess,
 
     uint32_t iter;
     for (iter = 0; iter < MAX_ITERATIONS; iter++) {
+        /* Clear per-iteration delta arrangement cache (sequential eval path).
+         * K-fusion workers manage their own darr caches independently. */
+        col_session_free_delta_arrangements(sess);
+
         /* Register delta relations from previous iteration into session */
         for (uint32_t ri = 0; ri < nrels; ri++) {
             if (!delta_rels[ri])
@@ -3627,6 +3658,139 @@ col_session_invalidate_arrangements(wl_session_t *sess, const char *rel_name)
 }
 
 /* ======================================================================== */
+/* Delta Arrangement Cache (Phase 3C-001-Ext)                               */
+/* ======================================================================== */
+
+/*
+ * col_session_free_delta_arrangements:
+ *
+ * Free all entries in the delta arrangement cache and reset the cache.
+ * Called at the start of each semi-naive iteration (sequential path) and
+ * by col_op_k_fusion after each dispatch to clean up worker copies.
+ *
+ * Safe to call on a zeroed session (darr_count == 0, darr_entries == NULL).
+ */
+static void
+col_session_free_delta_arrangements(wl_col_session_t *cs)
+{
+    for (uint32_t i = 0; i < cs->darr_count; i++) {
+        col_arr_entry_t *e = &cs->darr_entries[i];
+        free(e->rel_name);
+        free(e->key_cols);
+        arr_free_contents(&e->arr);
+    }
+    free(cs->darr_entries);
+    cs->darr_entries = NULL;
+    cs->darr_count = 0;
+    cs->darr_cap = 0;
+}
+
+/*
+ * col_session_get_delta_arrangement:
+ *
+ * Return (or lazily create) a delta arrangement for `delta_rel` keyed on
+ * `key_cols[0..key_count)`.  Stored in cs->darr_entries (the per-worker
+ * delta cache) and keyed by (rel_name, key_cols[]).
+ *
+ * Unlike full arrangements (which persist across iterations for EDB
+ * relations), delta arrangements are rebuilt from scratch if stale
+ * (indexed_rows != delta_rel->nrows).  This handles the case where the
+ * same delta relation grows between iterations.
+ *
+ * Returns NULL on allocation failure or if key_count == 0.
+ */
+static col_arrangement_t *
+col_session_get_delta_arrangement(wl_col_session_t *cs, const char *rel_name,
+                                  const col_rel_t *delta_rel,
+                                  const uint32_t *key_cols, uint32_t key_count)
+{
+    if (!cs || !rel_name || !delta_rel || !key_cols || key_count == 0)
+        return NULL;
+
+    /* Search existing cache entries. */
+    for (uint32_t i = 0; i < cs->darr_count; i++) {
+        col_arr_entry_t *e = &cs->darr_entries[i];
+        if (e->key_count != key_count)
+            continue;
+        if (strcmp(e->rel_name, rel_name) != 0)
+            continue;
+        bool match = true;
+        for (uint32_t k = 0; k < key_count; k++) {
+            if (e->key_cols[k] != key_cols[k]) {
+                match = false;
+                break;
+            }
+        }
+        if (!match)
+            continue;
+        /* Found: rebuild if stale (delta changed size). */
+        if (e->arr.indexed_rows != delta_rel->nrows) {
+            arr_free_contents(&e->arr);
+            if (delta_rel->nrows > 0 && arr_build_full(&e->arr, delta_rel) != 0)
+                return NULL;
+        }
+        return &e->arr;
+    }
+
+    /* Not found: grow cache and create new entry. */
+    if (cs->darr_count >= cs->darr_cap) {
+        uint32_t new_cap = cs->darr_cap ? cs->darr_cap * 2u : 4u;
+        col_arr_entry_t *ne = (col_arr_entry_t *)realloc(
+            cs->darr_entries, new_cap * sizeof(col_arr_entry_t));
+        if (!ne)
+            return NULL;
+        cs->darr_entries = ne;
+        cs->darr_cap = new_cap;
+    }
+
+    col_arr_entry_t *e = &cs->darr_entries[cs->darr_count];
+    memset(e, 0, sizeof(*e));
+
+    e->rel_name = wl_strdup(rel_name);
+    if (!e->rel_name)
+        return NULL;
+
+    e->key_cols = (uint32_t *)malloc(key_count * sizeof(uint32_t));
+    if (!e->key_cols) {
+        free(e->rel_name);
+        e->rel_name = NULL;
+        return NULL;
+    }
+    memcpy(e->key_cols, key_cols, key_count * sizeof(uint32_t));
+    e->key_count = key_count;
+    e->arr.key_cols = e->key_cols; /* shared view; owned by entry */
+    e->arr.key_count = key_count;
+    cs->darr_count++;
+
+    /* Initial build. */
+    if (delta_rel->nrows > 0 && arr_build_full(&e->arr, delta_rel) != 0) {
+        cs->darr_count--;
+        free(e->rel_name);
+        free(e->key_cols);
+        memset(e, 0, sizeof(*e));
+        return NULL;
+    }
+    return &e->arr;
+}
+
+/*
+ * col_session_get_darr_count:
+ *
+ * Return the number of delta arrangement cache entries in the session.
+ * Expected to be 0 on the main session after K-fusion evaluation
+ * (delta caches are per-worker and freed after each dispatch).
+ *
+ * Used by tests to verify per-worker isolation invariant.
+ */
+uint32_t
+col_session_get_darr_count(wl_session_t *sess)
+{
+    if (!sess)
+        return 0;
+    return COL_SESSION(sess)->darr_count;
+}
+
+/* ======================================================================== */
 /* Vtable Functions                                                          */
 /* ======================================================================== */
 
@@ -3739,6 +3903,7 @@ col_session_destroy(wl_session_t *session)
         arr_free_contents(&sess->arr_entries[i].arr);
     }
     free(sess->arr_entries);
+    col_session_free_delta_arrangements(sess);
     free(sess);
 }
 

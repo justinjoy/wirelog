@@ -215,4 +215,17 @@ void
 col_session_get_perf_stats(wl_session_t *sess, uint64_t *out_consolidation_ns,
                            uint64_t *out_kfusion_ns);
 
+/**
+ * col_session_get_darr_count:
+ *
+ * Return the number of delta arrangement cache entries currently held by
+ * the session.  On the main session this is expected to be 0 after
+ * K-fusion evaluation (delta caches are per-worker and freed on dispatch
+ * completion).  Intended for testing the per-worker isolation invariant.
+ *
+ * @param sess  A wl_session_t* backed by the columnar backend.
+ */
+uint32_t
+col_session_get_darr_count(wl_session_t *sess);
+
 #endif /* WL_BACKEND_COLUMNAR_NANOARROW_H */
