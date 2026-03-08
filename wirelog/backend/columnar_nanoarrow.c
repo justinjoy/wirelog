@@ -2363,8 +2363,7 @@ col_op_k_fusion(const wl_plan_op_t *op, eval_stack_t *stack,
                 goto cleanup;
             }
             size_t row_bytes = (size_t)e.rel->ncols * sizeof(int64_t);
-            memcpy(copy->data, e.rel->data,
-                   (size_t)e.rel->nrows * row_bytes);
+            memcpy(copy->data, e.rel->data, (size_t)e.rel->nrows * row_bytes);
             copy->nrows = e.rel->nrows;
             results[d] = copy;
         } else {
