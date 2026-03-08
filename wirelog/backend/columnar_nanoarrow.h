@@ -86,6 +86,27 @@ typedef struct {
  */
 
 /**
+ * col_delta_timestamp_t - Per-row provenance record for delta tracking.
+ *
+ * Attached to rows in delta relations produced by col_eval_stratum().
+ * Records when and where each row was first derived during semi-naive
+ * fixed-point evaluation.  Used for debugging row lineage and by Phase 3C
+ * frontier tracking.
+ *
+ * Fields:
+ *   iteration  Fixed-point iteration (0-based) that first produced this row.
+ *   stratum    Stratum index within the evaluation plan (0-based).
+ *   worker     K-fusion worker index (0 = sequential / non-parallel path).
+ *   _reserved  Must be zero (reserved for future use).
+ */
+typedef struct {
+    uint32_t iteration;
+    uint32_t stratum;
+    uint32_t worker;
+    uint32_t _reserved;
+} col_delta_timestamp_t;
+
+/**
  * col_session_get_iteration_count:
  *
  * Return the number of fixed-point iterations performed during the last

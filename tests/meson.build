@@ -373,6 +373,26 @@ test_k_fusion_e2e_exe = executable(
 test('k_fusion_e2e', test_k_fusion_e2e_exe)
 
 # ============================================================================
+# Delta Timestamp Tests (Phase 3B - 3B-001)
+# ============================================================================
+
+test_delta_timestamp_exe = executable(
+  'test_delta_timestamp',
+  files('test_delta_timestamp.c'),
+  parser_src,
+  ir_src,
+  optimizer_src,
+  backend_src,
+  io_src,
+  arena_src,
+  workqueue_src,
+  include_directories: [wirelog_inc, wirelog_src_inc],
+  dependencies: [nanoarrow_dep, threads_dep],
+)
+
+test('delta_timestamp', test_delta_timestamp_exe)
+
+# ============================================================================
 # Recursive Aggregation Plan Tests - DISABLED in Phase 2C
 # ============================================================================
 #

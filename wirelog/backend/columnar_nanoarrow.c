@@ -54,6 +54,10 @@ typedef struct {
     char **col_names;          /* owned array of ncols owned strings    */
     struct ArrowSchema schema; /* owned Arrow schema (lazy-inited)      */
     bool schema_ok;            /* true after schema is initialised      */
+    /* Timestamp tracking (optional): NULL when disabled.
+     * When non-NULL, timestamps[i] records the provenance of data row i.
+     * Capacity tracks with the data array (capacity entries allocated). */
+    col_delta_timestamp_t *timestamps;
 } col_rel_t;
 
 /**
@@ -81,6 +85,7 @@ col_rel_free_contents(col_rel_t *r)
         return;
     free(r->name);
     free(r->data);
+    free(r->timestamps);
     if (r->col_names) {
         for (uint32_t i = 0; i < r->ncols; i++)
             free(r->col_names[i]);
@@ -179,6 +184,15 @@ col_rel_append_row(col_rel_t *r, const int64_t *row)
         uint32_t new_cap = r->capacity ? r->capacity * 2 : COL_REL_INIT_CAP;
         if (new_cap <= r->capacity) /* overflow guard */
             return ENOMEM;
+        /* Grow timestamps first (if tracking) so we can roll back cleanly
+         * on a subsequent data realloc failure. */
+        if (r->timestamps) {
+            col_delta_timestamp_t *new_ts = (col_delta_timestamp_t *)realloc(
+                r->timestamps, new_cap * sizeof(col_delta_timestamp_t));
+            if (!new_ts)
+                return ENOMEM;
+            r->timestamps = new_ts;
+        }
         int64_t *nd = (int64_t *)realloc(
             r->data, sizeof(int64_t) * (size_t)new_cap * r->ncols);
         if (!nd)
@@ -186,21 +200,30 @@ col_rel_append_row(col_rel_t *r, const int64_t *row)
         r->data = nd;
         r->capacity = new_cap;
     }
+    if (r->timestamps)
+        memset(&r->timestamps[r->nrows], 0, sizeof(col_delta_timestamp_t));
     memcpy(r->data + (size_t)r->nrows * r->ncols, row,
            sizeof(int64_t) * r->ncols);
     r->nrows++;
     return 0;
 }
 
-/* Copy all rows from src into dst (must have same ncols). */
+/* Copy all rows from src into dst (must have same ncols).
+ * If src has timestamps and dst has timestamp tracking enabled, the source
+ * timestamps are propagated to the newly appended rows. */
 static int
 col_rel_append_all(col_rel_t *dst, const col_rel_t *src)
 {
+    uint32_t dst_base = dst->nrows;
     for (uint32_t i = 0; i < src->nrows; i++) {
         int rc = col_rel_append_row(dst, src->data + (size_t)i * src->ncols);
         if (rc != 0)
             return rc;
     }
+    /* Overwrite the zero-initialized timestamps with src provenance. */
+    if (src->timestamps && dst->timestamps)
+        memcpy(&dst->timestamps[dst_base], src->timestamps,
+               src->nrows * sizeof(col_delta_timestamp_t));
     return 0;
 }
 
@@ -2367,12 +2390,19 @@ col_op_k_fusion(const wl_plan_op_t *op, eval_stack_t *stack,
 
     int rc = 0;
 
+    /* Snapshot the current mat_cache entry count.  Each worker inherits the
+     * existing cache entries for lookup (read-only for shared entries).
+     * At cleanup, only entries added by the worker (index >= base_count)
+     * are freed, avoiding double-free of the shared result pointers. */
+    uint32_t base_count = sess->mat_cache.count;
+
     /* Initialise per-worker session wrappers and submit all K tasks in one
      * batch so workers execute in parallel. */
     for (uint32_t d = 0; d < k; d++) {
-        /* Shallow copy shares rels[], plan, etc. (read-only during K-fusion). */
+        /* Shallow copy shares rels[], plan, etc. (read-only during K-fusion).
+         * mat_cache is copied by value so workers can look up existing entries
+         * and add new ones without affecting the original session's cache. */
         worker_sess[d] = *sess;
-        memset(&worker_sess[d].mat_cache, 0, sizeof(col_mat_cache_t));
 
         workers[d].plan_data.name = "<k_fusion_copy>";
         workers[d].plan_data.ops = meta->k_ops[d];
@@ -2427,17 +2457,9 @@ col_op_k_fusion(const wl_plan_op_t *op, eval_stack_t *stack,
         eval_stack_drain(&workers[d].stack);
     }
 
-    /* Sort each worker result before merge (col_rel_merge_k assumes sorted inputs) */
-    for (uint32_t d = 0; d < k; d++) {
-        if (results[d] && results[d]->nrows > 1) {
-            uint32_t nc = results[d]->ncols;
-            size_t row_bytes = (size_t)nc * sizeof(int64_t);
-            qsort_r(results[d]->data, results[d]->nrows, row_bytes, &nc,
-                    row_cmp_fn);
-        }
-    }
-
-    /* Merge K results with deduplication */
+    /* Merge K results with deduplication.
+     * Workers ran WL_PLAN_OP_CONSOLIDATE as the last plan op, so each
+     * result is already sorted+deduped — no qsort needed here. */
     {
         col_rel_t *merged = col_rel_merge_k(results, k);
         if (!merged) {
@@ -2460,9 +2482,17 @@ cleanup_results:
     }
 
 cleanup_wq:
-    /* wq is session-owned and reused across iterations — do not destroy here. */
-    for (uint32_t d = 0; d < k; d++)
-        col_mat_cache_clear(&worker_sess[d].mat_cache);
+    /* wq is session-owned and reused across iterations — do not destroy here.
+     * Only free mat_cache entries the worker added (index >= base_count).
+     * Entries 0..base_count-1 share result pointers with the original
+     * session's mat_cache and must not be double-freed here. */
+    for (uint32_t d = 0; d < k; d++) {
+        col_mat_cache_t *wc = &worker_sess[d].mat_cache;
+        for (uint32_t i = base_count; i < wc->count; i++) {
+            col_rel_free_contents(wc->entries[i].result);
+            free(wc->entries[i].result);
+        }
+    }
     free(worker_sess);
     free(results);
     free(workers);
@@ -2789,7 +2819,8 @@ has_empty_forced_delta(const wl_plan_relation_t *rp, wl_col_session_t *sess,
  * Returns 0 on success, non-zero on error.
  */
 static int
-col_eval_stratum(const wl_plan_stratum_t *sp, wl_col_session_t *sess)
+col_eval_stratum(const wl_plan_stratum_t *sp, wl_col_session_t *sess,
+                 uint32_t stratum_idx)
 {
     if (!sp->is_recursive) {
         /* Non-recursive: evaluate each relation plan once */
@@ -3085,6 +3116,22 @@ col_eval_stratum(const wl_plan_stratum_t *sp, wl_col_session_t *sess)
             }
 
             if (delta->nrows > 0) {
+                /* Stamp each new row with its provenance (iteration, stratum).
+                 * worker=0 indicates the sequential (non-K-fusion) path. */
+                delta->timestamps = (col_delta_timestamp_t *)calloc(
+                    delta->nrows, sizeof(col_delta_timestamp_t));
+                if (!delta->timestamps) {
+                    col_rel_free_contents(delta);
+                    free(delta);
+                    free(snap);
+                    free(delta_rels);
+                    return ENOMEM;
+                }
+                for (uint32_t ti = 0; ti < delta->nrows; ti++) {
+                    delta->timestamps[ti].iteration = iter;
+                    delta->timestamps[ti].stratum = stratum_idx;
+                    /* worker left zero: sequential evaluation path */
+                }
                 delta_rels[ri] = delta;
                 any_new = true;
             } else {
@@ -3408,7 +3455,8 @@ col_idb_consolidate(col_rel_t *r)
  * TODO(Phase 2B): Replace step 2 with semi-naive ΔR propagation.
  */
 static int
-col_stratum_step_with_delta(const wl_plan_stratum_t *sp, wl_col_session_t *sess)
+col_stratum_step_with_delta(const wl_plan_stratum_t *sp, wl_col_session_t *sess,
+                            uint32_t stratum_idx)
 {
     uint32_t rc_cnt = sp->relation_count;
 
@@ -3444,7 +3492,7 @@ col_stratum_step_with_delta(const wl_plan_stratum_t *sp, wl_col_session_t *sess)
     }
 
     /* Step 2: evaluate stratum (appends new rows to IDB relations) */
-    int rc = col_eval_stratum(sp, sess);
+    int rc = col_eval_stratum(sp, sess, stratum_idx);
     if (rc != 0)
         goto cleanup;
 
@@ -3502,8 +3550,8 @@ col_session_step(wl_session_t *session)
 
     for (uint32_t si = 0; si < plan->stratum_count; si++) {
         const wl_plan_stratum_t *sp = &plan->strata[si];
-        int rc = sess->delta_cb ? col_stratum_step_with_delta(sp, sess)
-                                : col_eval_stratum(sp, sess);
+        int rc = sess->delta_cb ? col_stratum_step_with_delta(sp, sess, si)
+                                : col_eval_stratum(sp, sess, si);
         if (rc != 0)
             return rc;
         /* Reset arena after stratum evaluation to free temporaries */
@@ -3568,7 +3616,7 @@ col_session_snapshot(wl_session_t *session, wl_on_tuple_fn callback,
 
     /* Execute all strata in order */
     for (uint32_t si = 0; si < plan->stratum_count; si++) {
-        int rc = col_eval_stratum(&plan->strata[si], sess);
+        int rc = col_eval_stratum(&plan->strata[si], sess, si);
         if (rc != 0)
             return rc;
     }
