@@ -353,6 +353,26 @@ test_empty_delta_skip_exe = executable(
 test('empty_delta_skip', test_empty_delta_skip_exe)
 
 # ============================================================================
+# K-Fusion End-to-End Integration Tests (Phase 3A)
+# ============================================================================
+
+test_k_fusion_e2e_exe = executable(
+  'test_k_fusion_e2e',
+  files('test_k_fusion_e2e.c'),
+  parser_src,
+  ir_src,
+  optimizer_src,
+  backend_src,
+  io_src,
+  arena_src,
+  workqueue_src,
+  include_directories: [wirelog_inc, wirelog_src_inc],
+  dependencies: [nanoarrow_dep, threads_dep],
+)
+
+test('k_fusion_e2e', test_k_fusion_e2e_exe)
+
+# ============================================================================
 # Recursive Aggregation Plan Tests - DISABLED in Phase 2C
 # ============================================================================
 #
