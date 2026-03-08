@@ -3235,11 +3235,14 @@ col_eval_stratum(const wl_plan_stratum_t *sp, wl_col_session_t *sess,
 
     uint32_t iter;
     for (iter = 0; iter < MAX_ITERATIONS; iter++) {
-        /* Phase 3D-002: Frontier-based filtering — skip iteration if current
-         * iteration exceeds frontier.iteration.  Frontier (0,0) means
-         * uninitialized; guard on > 0 so fresh sessions evaluate normally. */
-        if (sess->frontier.iteration > 0 && iter > sess->frontier.iteration) {
-            break; /* All data up to frontier already processed */
+        /* Phase 3D-Ext-002: Fine-grained frontier skip based on stratum level.
+         * Skip iteration only if: iter > frontier.iteration AND frontier.stratum < current_stratum.
+         * Frontier (0,0) uninitialized; guard on > 0 for fresh sessions.
+         * Both conditions required: iteration must advance beyond frontier AND
+         * current stratum must be beyond frontier's stratum level. */
+        if (sess->frontier.iteration > 0 && iter > sess->frontier.iteration
+            && sess->frontier.stratum < stratum_idx) {
+            continue; /* Skip redundant stratum in advanced iteration */
         }
 
         /* Clear per-iteration delta arrangement cache (sequential eval path).
