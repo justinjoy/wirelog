@@ -186,6 +186,7 @@ typedef enum {
     WL_PLAN_OP_CONCAT = 6,
     WL_PLAN_OP_CONSOLIDATE = 7,
     WL_PLAN_OP_SEMIJOIN = 8,
+    WL_PLAN_OP_K_FUSION = 9,
 } wl_plan_op_type_t;
 
 /* ======================================================================== */
@@ -211,6 +212,7 @@ typedef enum {
  *   CONSOLIDATE: (no fields used)
  *   SEMIJOIN:    right_relation, left_keys, right_keys, key_count,
  *                project_indices, project_count
+ *   K_FUSION:    opaque_data (points to wl_plan_op_k_fusion_t in columnar backend)
  */
 typedef struct {
     wl_plan_op_type_t op;
