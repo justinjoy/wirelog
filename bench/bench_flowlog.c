@@ -35,6 +35,32 @@ extern void
 col_session_get_cache_stats(wl_session_t *sess, uint64_t *out_hits,
                             uint64_t *out_misses);
 
+/* ----------------------------------------------------------------
+ * Global output format and per-run profiling accumulators (3B-003)
+ *
+ * g_last_consolidation_ns / g_last_kfusion_ns are written by
+ * run_pipeline_count after each trial and read by workload reporters.
+ * They reflect the most-recent (last) run — acceptable for MVP.
+ *
+ * WITH_K_FUSION: compile-time constant injected by the meson target.
+ *   bench_flowlog     → WITH_K_FUSION=1 (default, K-fusion enabled)
+ *   bench_flowlog_seq → WITH_K_FUSION=0 (sequential baseline)
+ * ---------------------------------------------------------------- */
+static bool g_format_json = false;
+static uint64_t g_last_consolidation_ns = 0;
+static uint64_t g_last_kfusion_ns = 0;
+
+#ifndef WITH_K_FUSION
+#define WITH_K_FUSION 1
+#endif
+
+/* Forward declaration — defined after print_header() */
+static void
+output_json_row(const char *wl_name, int32_t edges, uint32_t workers,
+                int repeat, double min_ms, double median_ms, double max_ms,
+                int64_t peak_rss_kb, int64_t tuples, uint32_t iters,
+                uint64_t consolidation_ns, uint64_t kfusion_ns);
+
 #include <getopt.h>
 #include <inttypes.h>
 #include <stdint.h>
@@ -275,6 +301,12 @@ run_pipeline_count(const char *source, uint32_t num_workers, int64_t *out_count,
                 cache_hits, cache_misses, hit_rate);
     }
 
+    /* Store profiling counters for the workload reporter (3B-003).
+     * Written to globals so workload functions can include them in output
+     * without changing the run_pipeline_count signature. */
+    col_session_get_perf_stats(sess, &g_last_consolidation_ns,
+                               &g_last_kfusion_ns);
+
     wl_session_destroy(sess);
     wl_plan_free(plan);
     wirelog_program_free(prog);
@@ -362,10 +394,16 @@ run_workload(int wl_id, const char *data_path, uint32_t workers, int repeat)
 
         int32_t nodes = (edge_count > 0) ? edge_count + 1 : 0;
 
-        printf("%s\t%d\t%d\t%u\t%d\t%.1f\t%.1f\t%.1f\t%" PRId64 "\t%" PRId64
-               "\t%u\t%s\n",
-               wl_names[wl_id], nodes, edge_count, workers, repeat, min_ms,
-               median_ms, max_ms, peak_rss, tuples, total_iters, "OK");
+        if (g_format_json)
+            output_json_row(wl_names[wl_id], edge_count, workers, repeat,
+                            min_ms, median_ms, max_ms, peak_rss, tuples,
+                            total_iters, g_last_consolidation_ns,
+                            g_last_kfusion_ns);
+        else
+            printf("%s\t%d\t%d\t%u\t%d\t%.1f\t%.1f\t%.1f\t%" PRId64 "\t%" PRId64
+                   "\t%u\t%s\n",
+                   wl_names[wl_id], nodes, edge_count, workers, repeat, min_ms,
+                   median_ms, max_ms, peak_rss, tuples, total_iters, "OK");
     } else {
         printf("%s\t-\t-\t%u\t%d\t-\t-\t-\t-\t-\t-\tFAIL\n", wl_names[wl_id],
                workers, repeat);
@@ -736,10 +774,15 @@ run_cspa_workload(const char *data_dir, uint32_t workers, int repeat)
         double median_ms = times[repeat / 2];
         double max_ms = times[repeat - 1];
 
-        printf("cspa\t-\t%d\t%u\t%d\t%.1f\t%.1f\t%.1f\t%" PRId64 "\t%" PRId64
-               "\t%u\t%s\n",
-               total_facts, workers, repeat, min_ms, median_ms, max_ms,
-               peak_rss, tuples, total_iters, "OK");
+        if (g_format_json)
+            output_json_row("cspa", total_facts, workers, repeat, min_ms,
+                            median_ms, max_ms, peak_rss, tuples, total_iters,
+                            g_last_consolidation_ns, g_last_kfusion_ns);
+        else
+            printf("cspa\t-\t%d\t%u\t%d\t%.1f\t%.1f\t%.1f\t%" PRId64
+                   "\t%" PRId64 "\t%u\t%s\n",
+                   total_facts, workers, repeat, min_ms, median_ms, max_ms,
+                   peak_rss, tuples, total_iters, "OK");
     } else {
         printf("cspa\t-\t-\t%u\t%d\t-\t-\t-\t-\t-\t-\tFAIL\n", workers, repeat);
     }
@@ -2201,9 +2244,57 @@ run_doop_workload(const char *data_dir, uint32_t workers, int repeat)
  * Main
  * ---------------------------------------------------------------- */
 
+/*
+ * output_json_row: emit one benchmark result as a JSON object (3B-003).
+ *
+ * Percentages are computed relative to median wall time.
+ * consolidation_ns and kfusion_ns come from g_last_* (last run only).
+ * evaluation_pct = 100 - consolidation_pct - kfusion_pct (residual).
+ */
+static void
+output_json_row(const char *wl_name, int32_t edges, uint32_t workers,
+                int repeat, double min_ms, double median_ms, double max_ms,
+                int64_t peak_rss_kb, int64_t tuples, uint32_t iters,
+                uint64_t consolidation_ns, uint64_t kfusion_ns)
+{
+    double wall_ns = median_ms * 1e6;
+    double cons_pct
+        = wall_ns > 0 ? 100.0 * (double)consolidation_ns / wall_ns : 0.0;
+    double kfus_pct = wall_ns > 0 ? 100.0 * (double)kfusion_ns / wall_ns : 0.0;
+    double eval_pct = 100.0 - cons_pct - kfus_pct;
+    if (eval_pct < 0.0)
+        eval_pct = 0.0;
+
+    printf("{\n");
+    printf("  \"workload\": \"%s\",\n", wl_name);
+    if (edges > 0)
+        printf("  \"edges\": %d,\n", edges);
+    printf("  \"k_fusion\": %s,\n", WITH_K_FUSION ? "true" : "false");
+    printf("  \"workers\": %u,\n", workers);
+    printf("  \"repeat\": %d,\n", repeat);
+    printf("  \"tuples\": %" PRId64 ",\n", tuples);
+    printf("  \"iterations\": %u,\n", iters);
+    printf("  \"wall_time_ms\": {\"min\": %.1f, \"median\": %.1f, \"max\": "
+           "%.1f},\n",
+           min_ms, median_ms, max_ms);
+    printf("  \"consolidation_ms\": %.3f,\n", (double)consolidation_ns / 1e6);
+    printf("  \"kfusion_ms\": %.3f,\n", (double)kfusion_ns / 1e6);
+    printf("  \"evaluation_ms\": %.3f,\n", median_ms
+                                               - (double)consolidation_ns / 1e6
+                                               - (double)kfusion_ns / 1e6);
+    printf("  \"consolidation_pct\": %.1f,\n", cons_pct);
+    printf("  \"kfusion_pct\": %.1f,\n", kfus_pct);
+    printf("  \"evaluation_pct\": %.1f,\n", eval_pct);
+    printf("  \"peak_rss_kb\": %" PRId64 ",\n", peak_rss_kb);
+    printf("  \"profiling_from_last_run\": true\n");
+    printf("}\n");
+}
+
 static void
 print_header(void)
 {
+    if (g_format_json)
+        return; /* JSON output is self-describing */
     printf("workload\tnodes\tedges\tworkers\trepeat\tmin_ms\tmedian_ms"
            "\tmax_ms\tpeak_rss_kb\ttuples\titerations\tstatus\n");
 }
@@ -2220,7 +2311,7 @@ usage(const char *prog)
         "          [--data-dyck DIR] [--data-cspa DIR]\n"
         "          [--data-csda DIR] [--data-galen DIR]\n"
         "          [--data-polonius DIR] [--data-ddisasm DIR]\n"
-        "          [--workers N] [--repeat R]\n"
+        "          [--workers N] [--repeat R] [--format {tsv|json}]\n"
         "\n"
         "  --data FILE           Unweighted edge CSV (src,dst)\n"
         "  --data-weighted FILE  Weighted edge CSV (src,dst,weight) for SSSP\n"
@@ -2272,12 +2363,13 @@ main(int argc, char **argv)
         { "data-doop", required_argument, NULL, 'O' },
         { "workers", required_argument, NULL, 'j' },
         { "repeat", required_argument, NULL, 'r' },
+        { "format", required_argument, NULL, 'F' },
         { "help", no_argument, NULL, 'h' },
         { NULL, 0, NULL, 0 },
     };
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "w:d:W:A:D:C:S:G:P:I:R:O:j:r:h",
+    while ((opt = getopt_long(argc, argv, "w:d:W:A:D:C:S:G:P:I:R:O:j:r:F:h",
                               long_opts, NULL))
            != -1) {
         switch (opt) {
@@ -2322,6 +2414,9 @@ main(int argc, char **argv)
             break;
         case 'r':
             repeat = (int)strtol(optarg, NULL, 10);
+            break;
+        case 'F':
+            g_format_json = (strcmp(optarg, "json") == 0);
             break;
         case 'h':
         default:

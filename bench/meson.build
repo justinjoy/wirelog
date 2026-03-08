@@ -56,6 +56,22 @@ bench_flowlog = executable(
   install: false,
 )
 
+bench_flowlog_seq = executable(
+  'bench_flowlog_seq',
+  files('bench_flowlog.c'),
+  bench_parser_src,
+  bench_ir_src,
+  bench_optimizer_src,
+  bench_backend_src,
+  bench_io_src,
+  bench_arena_src,
+  bench_workqueue_src,
+  include_directories: [wirelog_inc, wirelog_src_inc],
+  dependencies: [nanoarrow_dep, threads_dep],
+  c_args: ['-DENABLE_K_FUSION=0', '-DWITH_K_FUSION=0'],
+  install: false,
+)
+
 datagen = executable(
   'datagen',
   files('datagen.c'),
