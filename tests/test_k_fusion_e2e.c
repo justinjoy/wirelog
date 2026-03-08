@@ -301,36 +301,33 @@ test_k2_larger_graph(void)
 }
 
 /* ================================================================
- * Test 6: K=2 produces no duplicate tuples (3-cycle dedup check)
+ * Test 6: K=2 produces no duplicate tuples (complete graph dedup)
  *
  * The K-fusion merge step must deduplicate results from K workers.
- * A directed 3-cycle where both workers produce identical delta results
- * exercises the dedup path cleanly.
+ * A complete bidirectional 3-node graph maximally exercises dedup:
+ * both K=2 workers produce large overlapping result sets.
  *
- * NOTE: A complete bidirectional 3-node graph (all 6 edges) was tested
- * and produced 11 tuples instead of the expected 9. This is a KNOWN
- * K-fusion deduplication issue for Phase 3A to investigate.
- * See PHASE-3A-TEST-PLAN.md: "Known Issues" section.
- *
- * This test uses a 2-node bidirectional graph (equivalent to Test 4)
- * to verify basic deduplication works: each worker produces (1,1) and
- * (2,2) from the cycle, but the merge must emit each only once.
+ * Previously produced 11 tuples (KI-1 bug). Fixed in Phase 3A by
+ * one-time sort of pre-existing IDB data in col_eval_stratum().
+ * Correct answer: 6 base + 3 self-loops = 9 unique tuples.
  * ================================================================ */
 static void
-test_k2_basic_dedup(void)
+test_k2_complete_graph_dedup(void)
 {
-    TEST("K=2 basic dedup: 2-node bidirectional cycle");
+    TEST("K=2 complete graph dedup: 3-node bidirectional graph = 9 tuples");
 
-    /* Both K=2 workers produce (1,1) and (2,2) from this cycle.
-     * Merge must deduplicate: 2 base + 2 derived = 4 unique tuples. */
     const char *src = ".decl r(x: int32, y: int32)\n"
-                      "r(1, 2). r(2, 1).\n"
+                      "r(1, 2). r(2, 1). r(1, 3). r(3, 1). r(2, 3). r(3, 2).\n"
                       "r(x, z) :- r(x, y), r(y, z).\n";
 
+    /* Complete bidirectional graph: adds self-loops (1,1),(2,2),(3,3).
+     * 6 base + 3 self-loops = 9 unique tuples. KI-1 fix required. */
     int64_t count = 0;
     int rc = run_program(src, "r", &count, NULL);
-    ASSERT(rc == 0, "K=2 2-node cycle program failed");
-    ASSERT(count == 4, "2-node cycle K=2 should produce 4 tuples");
+    ASSERT(rc == 0, "K=2 complete-graph program failed");
+    ASSERT(
+        count == 9,
+        "K=2 complete graph should produce 9 tuples (KI-1 fix verification)");
 
     PASS();
 }
@@ -372,7 +369,7 @@ main(void)
     test_k2_iteration_count();
     test_k2_empty_delta_skip();
     test_k2_larger_graph();
-    test_k2_basic_dedup();
+    test_k2_complete_graph_dedup();
     test_k2_single_self_loop();
 
     printf("\nResults: %d/%d passed", pass_count, test_count);
