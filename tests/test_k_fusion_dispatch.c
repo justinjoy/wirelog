@@ -264,8 +264,8 @@ TEST(k_large_value)
     /* Test conceptually with large K (e.g., K=10) */
     /* Each relation gets a subset of values */
 
-    mock_col_rel_t **relations =
-        (mock_col_rel_t **)malloc(10 * sizeof(mock_col_rel_t *));
+    mock_col_rel_t **relations
+        = (mock_col_rel_t **)malloc(10 * sizeof(mock_col_rel_t *));
     ASSERT_PTR(relations, "relations array allocation failed");
 
     for (int k = 0; k < 10; k++) {

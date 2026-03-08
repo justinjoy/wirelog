@@ -47,6 +47,17 @@ struct ArrowSchema {
 };
 
 /*
+ * col_delta_timestamp_t - mirrors the public definition in columnar_nanoarrow.h.
+ * Must match exactly (4 x uint32_t = 16 bytes).
+ */
+typedef struct {
+    uint32_t iteration;
+    uint32_t stratum;
+    uint32_t worker;
+    uint32_t _reserved;
+} col_delta_timestamp_t;
+
+/*
  * col_rel_t - mirrors the private definition in columnar_nanoarrow.c.
  * Field order and layout must match the implementation exactly.
  */
@@ -59,6 +70,8 @@ typedef struct {
     char **col_names;          /* owned array of ncols owned strings   */
     struct ArrowSchema schema; /* owned Arrow schema (lazy-inited)     */
     bool schema_ok;            /* true after schema is initialised     */
+    col_delta_timestamp_t
+        *timestamps; /* NULL when not tracking               */
 } col_rel_t;
 
 /*

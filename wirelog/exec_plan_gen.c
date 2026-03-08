@@ -1151,13 +1151,16 @@ expand_multiway_k_fusion(const wl_plan_op_t *ops, uint32_t op_count,
     }
 
     for (uint32_t d = 0; d < k; d++) {
+        /* Allocate op_count + 1: the extra slot holds a CONSOLIDATE op
+         * so each worker produces sorted+deduped output, enabling the
+         * K-fusion merge to skip an expensive post-completion qsort. */
         wl_plan_op_t *seq
-            = (wl_plan_op_t *)calloc(op_count, sizeof(wl_plan_op_t));
+            = (wl_plan_op_t *)calloc(op_count + 1, sizeof(wl_plan_op_t));
         if (!seq)
             goto fail;
 
         meta->k_ops[d] = seq;
-        meta->k_op_counts[d] = op_count;
+        meta->k_op_counts[d] = op_count + 1;
 
         for (uint32_t i = 0; i < op_count; i++) {
             if (clone_plan_op(&ops[i], &seq[i]) != 0) {
@@ -1185,6 +1188,7 @@ expand_multiway_k_fusion(const wl_plan_op_t *ops, uint32_t op_count,
                 seq[i].delta_mode = WL_DELTA_AUTO;
 
             /* Materialization hint: first K-2 JOIN delta positions. */
+
             if (is_delta_pos && seq[i].op == WL_PLAN_OP_JOIN) {
                 uint32_t join_idx = 0;
                 for (uint32_t p = 0; p < k; p++) {
@@ -1198,6 +1202,9 @@ expand_multiway_k_fusion(const wl_plan_op_t *ops, uint32_t op_count,
                     seq[i].materialized = true;
             }
         }
+        /* Append CONSOLIDATE so each worker produces sorted+deduped output.
+         * This allows col_op_k_fusion to skip the post-completion qsort. */
+        seq[op_count].op = WL_PLAN_OP_CONSOLIDATE;
     }
 
     result->op = WL_PLAN_OP_K_FUSION;

@@ -106,6 +106,89 @@ typedef struct {
     uint32_t _reserved;
 } col_delta_timestamp_t;
 
+/* ======================================================================== */
+/* Arrangement Layer (Phase 3C)                                             */
+/* ======================================================================== */
+
+/**
+ * col_arrangement_t - Persistent hash index over a subset of columns.
+ *
+ * Indexes a col_rel_t on `key_count` columns specified by `key_cols[]`.
+ * Rows are hashed into `nbuckets` buckets using FNV-1a over the key values.
+ *
+ * The hash table uses chaining (separate lists per bucket):
+ *   ht_head[bucket]  UINT32_MAX = empty; else = first row index in chain
+ *   ht_next[row]     UINT32_MAX = end of chain; else = next row in chain
+ *
+ * `indexed_rows` tracks how many rows from the relation are currently
+ * indexed.  When indexed_rows < rel->nrows an incremental update is needed.
+ *
+ * `content_hash` stores a fingerprint of the relation when last rebuilt
+ * (reserved for future staleness detection; currently unused).
+ */
+typedef struct {
+    uint32_t *key_cols;    /* owned, column positions in the relation     */
+    uint32_t key_count;    /* number of key columns                       */
+    uint32_t nbuckets;     /* hash table size (power of 2)                */
+    uint32_t *ht_head;     /* owned, size=nbuckets; UINT32_MAX=empty      */
+    uint32_t *ht_next;     /* owned, size=capacity; UINT32_MAX=end        */
+    uint32_t ht_cap;       /* allocated size of ht_next[]                 */
+    uint32_t indexed_rows; /* rows indexed so far                         */
+    uint64_t content_hash; /* fingerprint at last full rebuild (reserved) */
+} col_arrangement_t;
+
+/**
+ * col_session_get_arrangement:
+ *
+ * Return (or lazily create) an arrangement for `rel_name` keyed on
+ * `key_cols[0..key_count)`.  If the arrangement exists but is stale
+ * (rel->nrows > indexed_rows), it is updated incrementally before return.
+ *
+ * Returns NULL on allocation failure or if the relation is not found.
+ *
+ * @param sess       A wl_session_t* backed by the columnar backend.
+ * @param rel_name   Relation to index.
+ * @param key_cols   Column positions to hash on.
+ * @param key_count  Number of key columns.
+ */
+col_arrangement_t *
+col_session_get_arrangement(wl_session_t *sess, const char *rel_name,
+                            const uint32_t *key_cols, uint32_t key_count);
+
+/**
+ * col_arrangement_find_first:
+ *
+ * Return the first row index in `rel` matching the key columns of `key_row`
+ * under `arr`.  Returns UINT32_MAX if no match.
+ */
+uint32_t
+col_arrangement_find_first(const col_arrangement_t *arr,
+                           const int64_t *rel_data, uint32_t rel_ncols,
+                           const int64_t *key_row);
+
+/**
+ * col_arrangement_find_next:
+ *
+ * Given a row index previously returned by col_arrangement_find_first or
+ * col_arrangement_find_next, return the next matching row index in the
+ * same chain, or UINT32_MAX if there are no more matches.
+ *
+ * Caller must verify the returned row actually matches the key (there may
+ * be false positives from hash collisions).
+ */
+uint32_t
+col_arrangement_find_next(const col_arrangement_t *arr, uint32_t row_idx);
+
+/**
+ * col_session_invalidate_arrangements:
+ *
+ * Mark all arrangements for `rel_name` as stale (indexed_rows = 0).
+ * Called after consolidation modifies relation data.
+ * Next call to col_session_get_arrangement will trigger a full rebuild.
+ */
+void
+col_session_invalidate_arrangements(wl_session_t *sess, const char *rel_name);
+
 /**
  * col_session_get_iteration_count:
  *
@@ -116,5 +199,20 @@ typedef struct {
  */
 uint32_t
 col_session_get_iteration_count(wl_session_t *sess);
+
+/**
+ * col_session_get_perf_stats:
+ *
+ * Return accumulated profiling counters (nanoseconds) from the last
+ * wl_session_snapshot() call.  Counters reset at evaluation start.
+ * Both out-parameters are NULL-safe.
+ *
+ * @param sess                  A wl_session_t* backed by the columnar backend.
+ * @param out_consolidation_ns  Time in col_op_consolidate_incremental_delta.
+ * @param out_kfusion_ns        Time in col_op_k_fusion.
+ */
+void
+col_session_get_perf_stats(wl_session_t *sess, uint64_t *out_consolidation_ns,
+                           uint64_t *out_kfusion_ns);
 
 #endif /* WL_BACKEND_COLUMNAR_NANOARROW_H */

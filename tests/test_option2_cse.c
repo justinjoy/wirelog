@@ -258,7 +258,8 @@ test_3atom_expansion(void)
 
     if (using_k_fusion()) {
         uint32_t k_fusions = count_ops(r, WL_PLAN_OP_K_FUSION);
-        ASSERT(k_fusions >= 1, "expected K_FUSION operator with ENABLE_K_FUSION=1");
+        ASSERT(k_fusions >= 1,
+               "expected K_FUSION operator with ENABLE_K_FUSION=1");
     } else {
         uint32_t force_delta = count_delta_mode(r, WL_DELTA_FORCE_DELTA);
         ASSERT(force_delta == 3, "expected 3 FORCE_DELTA ops for 3-atom rule");
@@ -298,12 +299,14 @@ test_3atom_materialization_hints(void)
     if (using_k_fusion()) {
         /* K_FUSION encapsulates all copies; materialization hints are internal */
         uint32_t k_fusions = count_ops(r, WL_PLAN_OP_K_FUSION);
-        ASSERT(k_fusions >= 1, "expected K_FUSION operator with ENABLE_K_FUSION=1");
+        ASSERT(k_fusions >= 1,
+               "expected K_FUSION operator with ENABLE_K_FUSION=1");
     } else {
         /* K=3: first K-2=1 JOIN position is materialized per copy.
          * 3 copies × 1 materialized JOIN = 3 total. */
         uint32_t mat = count_materialized(r);
-        ASSERT(mat == 3, "expected 3 materialized hints (1 per copy × 3 copies)");
+        ASSERT(mat == 3,
+               "expected 3 materialized hints (1 per copy × 3 copies)");
     }
 
     wl_plan_free(plan);
@@ -334,7 +337,8 @@ test_3atom_force_full(void)
     if (using_k_fusion()) {
         /* K_FUSION encapsulates all copies; FORCE_FULL is internal */
         uint32_t k_fusions = count_ops(r, WL_PLAN_OP_K_FUSION);
-        ASSERT(k_fusions >= 1, "expected K_FUSION operator with ENABLE_K_FUSION=1");
+        ASSERT(k_fusions >= 1,
+               "expected K_FUSION operator with ENABLE_K_FUSION=1");
     } else {
         /* Each copy: 1 FORCE_DELTA + 2 FORCE_FULL = K*(K-1) = 6 FORCE_FULL */
         uint32_t force_full = count_delta_mode(r, WL_DELTA_FORCE_FULL);
@@ -395,7 +399,8 @@ test_delta_and_full_invariant(void)
     if (using_k_fusion()) {
         /* K_FUSION encapsulates all copies; fd/ff counts are internal */
         uint32_t k_fusions = count_ops(r, WL_PLAN_OP_K_FUSION);
-        ASSERT(k_fusions >= 1, "expected K_FUSION operator with ENABLE_K_FUSION=1");
+        ASSERT(k_fusions >= 1,
+               "expected K_FUSION operator with ENABLE_K_FUSION=1");
     } else {
         /* For K copies, each copy has K IDB positions:
          * 1 FORCE_DELTA + (K-1) FORCE_FULL = K per copy.
@@ -463,7 +468,8 @@ test_2atom_k2_expansion(void)
 
     if (using_k_fusion()) {
         uint32_t k_fusions = count_ops(a, WL_PLAN_OP_K_FUSION);
-        ASSERT(k_fusions >= 1, "expected K_FUSION operator with ENABLE_K_FUSION=1");
+        ASSERT(k_fusions >= 1,
+               "expected K_FUSION operator with ENABLE_K_FUSION=1");
     } else {
         uint32_t force_delta = count_delta_mode(a, WL_DELTA_FORCE_DELTA);
         char msg[128];
@@ -491,7 +497,8 @@ test_2atom_k2_force_full(void)
     if (using_k_fusion()) {
         /* K_FUSION encapsulates all copies; FORCE_FULL is internal */
         uint32_t k_fusions = count_ops(a, WL_PLAN_OP_K_FUSION);
-        ASSERT(k_fusions >= 1, "expected K_FUSION operator with ENABLE_K_FUSION=1");
+        ASSERT(k_fusions >= 1,
+               "expected K_FUSION operator with ENABLE_K_FUSION=1");
     } else {
         /* K=2: each copy has 1 FORCE_DELTA + 1 FORCE_FULL.
          * 2 copies => 2 FORCE_FULL total. */
@@ -521,7 +528,8 @@ test_2atom_k2_concat_consolidate(void)
     if (using_k_fusion()) {
         /* K_FUSION replaces CONCAT+CONSOLIDATE structure */
         uint32_t k_fusions = count_ops(a, WL_PLAN_OP_K_FUSION);
-        ASSERT(k_fusions >= 1, "expected K_FUSION operator with ENABLE_K_FUSION=1");
+        ASSERT(k_fusions >= 1,
+               "expected K_FUSION operator with ENABLE_K_FUSION=1");
     } else {
         uint32_t concats = count_ops(a, WL_PLAN_OP_CONCAT);
         char msg_concat[128];
@@ -554,7 +562,8 @@ test_2atom_k2_invariant(void)
     if (using_k_fusion()) {
         /* K_FUSION encapsulates all copies; fd/ff counts are internal */
         uint32_t k_fusions = count_ops(a, WL_PLAN_OP_K_FUSION);
-        ASSERT(k_fusions >= 1, "expected K_FUSION operator with ENABLE_K_FUSION=1");
+        ASSERT(k_fusions >= 1,
+               "expected K_FUSION operator with ENABLE_K_FUSION=1");
     } else {
         uint32_t fd = count_delta_mode(a, WL_DELTA_FORCE_DELTA);
         uint32_t ff = count_delta_mode(a, WL_DELTA_FORCE_FULL);
@@ -582,7 +591,8 @@ test_2atom_k2_no_materialization(void)
     if (using_k_fusion()) {
         /* K_FUSION encapsulates all copies; materialization is internal */
         uint32_t k_fusions = count_ops(a, WL_PLAN_OP_K_FUSION);
-        ASSERT(k_fusions >= 1, "expected K_FUSION operator with ENABLE_K_FUSION=1");
+        ASSERT(k_fusions >= 1,
+               "expected K_FUSION operator with ENABLE_K_FUSION=1");
     } else {
         /* K=2: K-2 = 0 intermediate joins to materialize per copy. */
         uint32_t mat = count_materialized(a);

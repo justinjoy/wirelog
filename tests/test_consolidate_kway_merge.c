@@ -45,6 +45,17 @@ struct ArrowSchema {
 };
 
 /*
+ * col_delta_timestamp_t - mirrors the public definition in columnar_nanoarrow.h.
+ * Must match exactly (4 x uint32_t = 16 bytes).
+ */
+typedef struct {
+    uint32_t iteration;
+    uint32_t stratum;
+    uint32_t worker;
+    uint32_t _reserved;
+} col_delta_timestamp_t;
+
+/*
  * col_rel_t - mirrors the private definition in columnar_nanoarrow.c.
  * Field order and layout must match the implementation exactly.
  */
@@ -57,6 +68,8 @@ typedef struct {
     char **col_names;          /* owned array of ncols owned strings   */
     struct ArrowSchema schema; /* owned Arrow schema (lazy-inited)     */
     bool schema_ok;            /* true after schema is initialised     */
+    col_delta_timestamp_t
+        *timestamps; /* NULL when not tracking               */
 } col_rel_t;
 
 /*
@@ -72,9 +85,9 @@ typedef struct {
  * Returns 0 on success.  On return, rel contains the merged, sorted,
  * deduplicated result.
  */
-int col_op_consolidate_kway_merge(col_rel_t *rel,
-                                  const uint32_t *seg_boundaries,
-                                  uint32_t seg_count);
+int
+col_op_consolidate_kway_merge(col_rel_t *rel, const uint32_t *seg_boundaries,
+                              uint32_t seg_count);
 
 /* ----------------------------------------------------------------
  * Test framework (matches wirelog convention: test_consolidate_incremental_delta.c)
@@ -84,9 +97,9 @@ static int test_count = 0;
 static int pass_count = 0;
 static int fail_count = 0;
 
-#define TEST(name)                                       \
-    do {                                                 \
-        test_count++;                                    \
+#define TEST(name)                                      \
+    do {                                                \
+        test_count++;                                   \
         printf("TEST %d: %s ... ", test_count, (name)); \
     } while (0)
 
@@ -168,8 +181,8 @@ test_rel_append_row(col_rel_t *r, const int64_t *row)
 {
     if (r->nrows >= r->capacity) {
         uint32_t cap = r->capacity == 0 ? 16 : r->capacity * 2;
-        int64_t *nd = (int64_t *)realloc(r->data,
-                                         (size_t)cap * r->ncols * sizeof(int64_t));
+        int64_t *nd = (int64_t *)realloc(r->data, (size_t)cap * r->ncols
+                                                      * sizeof(int64_t));
         if (!nd)
             return -1;
         r->data = nd;
@@ -235,7 +248,8 @@ test_rel_equals(const col_rel_t *a, const col_rel_t *b)
     if (a->nrows != b->nrows || a->ncols != b->ncols)
         return 0;
     return memcmp(a->data, b->data,
-                  (size_t)a->nrows * a->ncols * sizeof(int64_t)) == 0;
+                  (size_t)a->nrows * a->ncols * sizeof(int64_t))
+           == 0;
 }
 
 /* ================================================================
@@ -318,10 +332,12 @@ test_two_copies_direct_merge(void)
 
     ASSERT(rc == 0, "returns 0 on success");
     ASSERT(rel->nrows == 5, "rel->nrows == 5 after 2-way merge");
-    ASSERT(test_rel_is_sorted_unique(rel), "merged output is sorted and unique");
+    ASSERT(test_rel_is_sorted_unique(rel),
+           "merged output is sorted and unique");
 
     /* Verify exact merged order */
-    int64_t expected[5][2] = { { 1, 1 }, { 2, 2 }, { 3, 3 }, { 4, 4 }, { 5, 5 } };
+    int64_t expected[5][2]
+        = { { 1, 1 }, { 2, 2 }, { 3, 3 }, { 4, 4 }, { 5, 5 } };
     for (int i = 0; i < 5; i++) {
         int64_t *row_ptr = rel->data + (size_t)i * rel->ncols;
         ASSERT(test_row_cmp(row_ptr, expected[i], rel->ncols) == 0,
@@ -368,11 +384,11 @@ test_three_copies_heap_merge(void)
 
     ASSERT(rc == 0, "returns 0 on success");
     ASSERT(rel->nrows == 6, "rel->nrows == 6 after 3-way merge");
-    ASSERT(test_rel_is_sorted_unique(rel), "merged output is sorted and unique");
+    ASSERT(test_rel_is_sorted_unique(rel),
+           "merged output is sorted and unique");
 
-    int64_t expected[6][2] = {
-        { 1, 1 }, { 2, 2 }, { 3, 3 }, { 4, 4 }, { 5, 5 }, { 6, 6 }
-    };
+    int64_t expected[6][2]
+        = { { 1, 1 }, { 2, 2 }, { 3, 3 }, { 4, 4 }, { 5, 5 }, { 6, 6 } };
     for (int i = 0; i < 6; i++) {
         int64_t *row_ptr = rel->data + (size_t)i * rel->ncols;
         ASSERT(test_row_cmp(row_ptr, expected[i], rel->ncols) == 0,
@@ -397,7 +413,8 @@ test_three_copies_heap_merge(void)
 static void
 test_per_segment_sort_before_merge(void)
 {
-    TEST("per-segment qsort before merge produces lexicographically sorted output");
+    TEST("per-segment qsort before merge produces lexicographically sorted "
+         "output");
 
     col_rel_t *rel = test_rel_alloc(2);
     ASSERT(rel != NULL, "test_rel_alloc failed");
@@ -463,7 +480,8 @@ test_cross_segment_dedup(void)
 
     ASSERT(rc == 0, "returns 0 on success");
     ASSERT(rel->nrows == 3, "rel->nrows == 3 (one dup removed)");
-    ASSERT(test_rel_is_sorted_unique(rel), "output is sorted and unique (no dups)");
+    ASSERT(test_rel_is_sorted_unique(rel),
+           "output is sorted and unique (no dups)");
 
     int64_t expected[3][2] = { { 1, 1 }, { 3, 3 }, { 5, 5 } };
     for (int i = 0; i < 3; i++) {
@@ -619,8 +637,8 @@ main(void)
     test_large_dataset_performance();
     test_empty_middle_segment();
 
-    printf("\n=== Results: %d passed, %d failed (of %d) ===\n",
-           pass_count, fail_count, test_count);
+    printf("\n=== Results: %d passed, %d failed (of %d) ===\n", pass_count,
+           fail_count, test_count);
 
     return fail_count > 0 ? 1 : 0;
 }

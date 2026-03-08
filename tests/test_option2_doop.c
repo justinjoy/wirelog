@@ -64,10 +64,10 @@ static int pass_count = 0;
 static int fail_count = 0;
 static int skip_count = 0;
 
-#define TEST(name)                                              \
-    do {                                                        \
-        test_count++;                                           \
-        printf("TEST %d: %s ... ", test_count, (name));        \
+#define TEST(name)                                      \
+    do {                                                \
+        test_count++;                                   \
+        printf("TEST %d: %s ... ", test_count, (name)); \
     } while (0)
 
 #define PASS()            \
@@ -82,11 +82,11 @@ static int skip_count = 0;
         printf("FAIL: %s\n", (msg)); \
     } while (0)
 
-#define SKIP(reason)                   \
-    do {                               \
-        skip_count++;                  \
+#define SKIP(reason)                    \
+    do {                                \
+        skip_count++;                   \
         printf("SKIP: %s\n", (reason)); \
-        return;                        \
+        return;                         \
     } while (0)
 
 #define ASSERT(cond, msg) \
@@ -293,7 +293,8 @@ test_doop_data_dir_accessible(void)
 
     const char *dir = resolve_doop_data_dir();
     if (!dir)
-        SKIP("DOOP data dir not found (set DOOP_DATA_DIR or install bench/data/doop)");
+        SKIP("DOOP data dir not found (set DOOP_DATA_DIR or install "
+             "bench/data/doop)");
 
     printf("[dir=%s] ", dir);
     PASS();
@@ -376,8 +377,7 @@ test_doop_dataset_size_in_range(void)
     printf("[%lld MB] ", mb);
 
     char msg[128];
-    snprintf(msg, sizeof(msg),
-             "expected 70–100 MB, got %lld MB", mb);
+    snprintf(msg, sizeof(msg), "expected 70–100 MB, got %lld MB", mb);
     ASSERT(mb >= 70 && mb <= 100, msg);
 
     PASS();
@@ -399,58 +399,58 @@ test_doop_edb_declarations_parse(void)
     TEST("doop_parse: EDB declarations parse without error");
 
     /* Minimal EDB schema — the 10 direct-input relations from doop.dl */
-    const char *src =
-        ".decl DirectSuperclass(class: int32, superclass: int32)\n"
-        ".decl DirectSuperinterface(ref: int32, interface: int32)\n"
-        ".decl MainClass(class: int32)\n"
-        ".decl FormalParam(index: int32, method: int32, var: int32)\n"
-        ".decl ComponentType(arrayType: int32, componentType: int32)\n"
-        ".decl AssignReturnValue(invocation: int32, to: int32)\n"
-        ".decl ActualParam(index: int32, invocation: int32, var: int32)\n"
-        ".decl Method_Modifier(mod: int32, method: int32)\n"
-        ".decl Var_Type(var: int32, type: int32)\n"
-        ".decl HeapAllocation_Type(heap: int32, type: int32)\n"
-        /* staging inputs */
-        ".decl _ClassType(class: int32)\n"
-        ".decl _ArrayType(arrayType: int32)\n"
-        ".decl _InterfaceType(interface: int32)\n"
-        ".decl _Var_DeclaringMethod(var: int32, method: int32)\n"
-        ".decl _ApplicationClass(type: int32)\n"
-        ".decl _ThisVar(method: int32, var: int32)\n"
-        ".decl _NormalHeap(id: int32, type: int32)\n"
-        ".decl _StringConstant(id: int32)\n"
-        ".decl _AssignHeapAllocation(instruction: int32, idx: int32, "
-        "heap: int32, to: int32, inmethod: int32, linenumber: int32)\n"
-        ".decl _AssignLocal(instruction: int32, idx: int32, from: int32, "
-        "to: int32, inmethod: int32)\n"
-        ".decl _AssignCast(instruction: int32, idx: int32, from: int32, "
-        "to: int32, type: int32, inmethod: int32)\n"
-        ".decl _Field(signature: int32, declaringClass: int32, "
-        "simplename: int32, type: int32)\n"
-        ".decl _StaticMethodInvocation(instruction: int32, idx: int32, "
-        "signature: int32, method: int32)\n"
-        ".decl _SpecialMethodInvocation(instruction: int32, idx: int32, "
-        "signature: int32, base: int32, method: int32)\n"
-        ".decl _VirtualMethodInvocation(instruction: int32, idx: int32, "
-        "signature: int32, base: int32, method: int32)\n"
-        ".decl _Method(method: int32, simplename: int32, params: int32, "
-        "declaringType: int32, returnType: int32, jvmDescriptor: int32, "
-        "arity: int32)\n"
-        ".decl Method_Descriptor(method: int32, descriptor: int32)\n"
-        ".decl _StoreInstanceField(instruction: int32, idx: int32, "
-        "from: int32, base: int32, signature: int32, method: int32)\n"
-        ".decl _LoadInstanceField(instruction: int32, idx: int32, "
-        "to: int32, base: int32, signature: int32, method: int32)\n"
-        ".decl _StoreStaticField(instruction: int32, idx: int32, "
-        "from: int32, signature: int32, method: int32)\n"
-        ".decl _LoadStaticField(instruction: int32, idx: int32, "
-        "to: int32, signature: int32, method: int32)\n"
-        ".decl _StoreArrayIndex(instruction: int32, idx: int32, "
-        "from: int32, base: int32, method: int32)\n"
-        ".decl _LoadArrayIndex(instruction: int32, idx: int32, "
-        "to: int32, base: int32, method: int32)\n"
-        ".decl _Return(instruction: int32, idx: int32, "
-        "var: int32, method: int32)\n";
+    const char *src
+        = ".decl DirectSuperclass(class: int32, superclass: int32)\n"
+          ".decl DirectSuperinterface(ref: int32, interface: int32)\n"
+          ".decl MainClass(class: int32)\n"
+          ".decl FormalParam(index: int32, method: int32, var: int32)\n"
+          ".decl ComponentType(arrayType: int32, componentType: int32)\n"
+          ".decl AssignReturnValue(invocation: int32, to: int32)\n"
+          ".decl ActualParam(index: int32, invocation: int32, var: int32)\n"
+          ".decl Method_Modifier(mod: int32, method: int32)\n"
+          ".decl Var_Type(var: int32, type: int32)\n"
+          ".decl HeapAllocation_Type(heap: int32, type: int32)\n"
+          /* staging inputs */
+          ".decl _ClassType(class: int32)\n"
+          ".decl _ArrayType(arrayType: int32)\n"
+          ".decl _InterfaceType(interface: int32)\n"
+          ".decl _Var_DeclaringMethod(var: int32, method: int32)\n"
+          ".decl _ApplicationClass(type: int32)\n"
+          ".decl _ThisVar(method: int32, var: int32)\n"
+          ".decl _NormalHeap(id: int32, type: int32)\n"
+          ".decl _StringConstant(id: int32)\n"
+          ".decl _AssignHeapAllocation(instruction: int32, idx: int32, "
+          "heap: int32, to: int32, inmethod: int32, linenumber: int32)\n"
+          ".decl _AssignLocal(instruction: int32, idx: int32, from: int32, "
+          "to: int32, inmethod: int32)\n"
+          ".decl _AssignCast(instruction: int32, idx: int32, from: int32, "
+          "to: int32, type: int32, inmethod: int32)\n"
+          ".decl _Field(signature: int32, declaringClass: int32, "
+          "simplename: int32, type: int32)\n"
+          ".decl _StaticMethodInvocation(instruction: int32, idx: int32, "
+          "signature: int32, method: int32)\n"
+          ".decl _SpecialMethodInvocation(instruction: int32, idx: int32, "
+          "signature: int32, base: int32, method: int32)\n"
+          ".decl _VirtualMethodInvocation(instruction: int32, idx: int32, "
+          "signature: int32, base: int32, method: int32)\n"
+          ".decl _Method(method: int32, simplename: int32, params: int32, "
+          "declaringType: int32, returnType: int32, jvmDescriptor: int32, "
+          "arity: int32)\n"
+          ".decl Method_Descriptor(method: int32, descriptor: int32)\n"
+          ".decl _StoreInstanceField(instruction: int32, idx: int32, "
+          "from: int32, base: int32, signature: int32, method: int32)\n"
+          ".decl _LoadInstanceField(instruction: int32, idx: int32, "
+          "to: int32, base: int32, signature: int32, method: int32)\n"
+          ".decl _StoreStaticField(instruction: int32, idx: int32, "
+          "from: int32, signature: int32, method: int32)\n"
+          ".decl _LoadStaticField(instruction: int32, idx: int32, "
+          "to: int32, signature: int32, method: int32)\n"
+          ".decl _StoreArrayIndex(instruction: int32, idx: int32, "
+          "from: int32, base: int32, method: int32)\n"
+          ".decl _LoadArrayIndex(instruction: int32, idx: int32, "
+          "to: int32, base: int32, method: int32)\n"
+          ".decl _Return(instruction: int32, idx: int32, "
+          "var: int32, method: int32)\n";
 
     wirelog_error_t err;
     wirelog_program_t *prog = wirelog_parse_string(src, &err);
@@ -468,7 +468,8 @@ test_doop_edb_declarations_parse(void)
 static void
 test_doop_mutual_recursion_parses(void)
 {
-    TEST("doop_parse: mutual recursion (VarPointsTo/CallGraphEdge/Reachable) parses");
+    TEST("doop_parse: mutual recursion (VarPointsTo/CallGraphEdge/Reachable) "
+         "parses");
 
     const char *src =
         /* minimal EDB stubs */
@@ -619,10 +620,12 @@ test_doop_8way_virtual_dispatch_join(void)
         "ThisVar(1, 600).\n"
 
         /* IDB: MethodImplemented (concrete methods only) */
-        ".decl MethodImplemented(sn: int32, d: int32, type: int32, method: int32)\n"
+        ".decl MethodImplemented(sn: int32, d: int32, type: int32, method: "
+        "int32)\n"
         "MethodImplemented(sn, d, type, method) :- "
         "Method_SimpleName(method, sn), Method_Descriptor(method, d), "
-        "Method_DeclaringType(method, type), !Method_Modifier(1928492, method).\n"
+        "Method_DeclaringType(method, type), !Method_Modifier(1928492, "
+        "method).\n"
 
         /* IDB: MethodLookup (base case: implemented methods) */
         ".decl MethodLookup(sn: int32, d: int32, type: int32, method: int32)\n"
@@ -701,20 +704,20 @@ test_doop_reachable_propagates_through_virtual_chain(void)
 
         /* Type info for 2 heap objects */
         ".decl HeapAllocation_Type(heap: int32, type: int32)\n"
-        "HeapAllocation_Type(300, 400).\n"  /* heap h1=300: TypeA=400 */
-        "HeapAllocation_Type(310, 410).\n"  /* heap h2=310: TypeB=410 */
+        "HeapAllocation_Type(300, 400).\n" /* heap h1=300: TypeA=400 */
+        "HeapAllocation_Type(310, 410).\n" /* heap h2=310: TypeB=410 */
 
         /* Instruction_Method */
         ".decl Instruction_Method(insn: int32, inMethod: int32)\n"
-        "Instruction_Method(200, 0).\n"  /* call1 in main */
-        "Instruction_Method(100, 0).\n"  /* alloc1 in main */
-        "Instruction_Method(201, 1).\n"  /* call2 in method1 */
-        "Instruction_Method(101, 1).\n"  /* alloc2 in method1 */
+        "Instruction_Method(200, 0).\n" /* call1 in main */
+        "Instruction_Method(100, 0).\n" /* alloc1 in main */
+        "Instruction_Method(201, 1).\n" /* call2 in method1 */
+        "Instruction_Method(101, 1).\n" /* alloc2 in method1 */
 
         /* Virtual call sites */
         ".decl VirtualMethodInvocation_Base(inv: int32, base: int32)\n"
-        "VirtualMethodInvocation_Base(200, 500).\n"  /* call1 base=v1 */
-        "VirtualMethodInvocation_Base(201, 510).\n"  /* call2 base=v2 */
+        "VirtualMethodInvocation_Base(200, 500).\n" /* call1 base=v1 */
+        "VirtualMethodInvocation_Base(201, 510).\n" /* call2 base=v2 */
         ".decl VirtualMethodInvocation_SimpleName(inv: int32, sn: int32)\n"
         "VirtualMethodInvocation_SimpleName(200, 11).\n"
         "VirtualMethodInvocation_SimpleName(201, 12).\n"
@@ -730,15 +733,15 @@ test_doop_reachable_propagates_through_virtual_chain(void)
         "Method_Descriptor(1, 22).\n"
         "Method_Descriptor(2, 23).\n"
         ".decl Method_DeclaringType(method: int32, type: int32)\n"
-        "Method_DeclaringType(1, 400).\n"  /* method1 in TypeA */
-        "Method_DeclaringType(2, 410).\n"  /* method2 in TypeB */
+        "Method_DeclaringType(1, 400).\n" /* method1 in TypeA */
+        "Method_DeclaringType(2, 410).\n" /* method2 in TypeB */
         ".decl Method_Modifier(mod: int32, method: int32)\n"
         /* no abstract modifiers */
 
         /* Heap allocations */
         ".decl AssignHeapAllocation(heap: int32, to: int32, inmethod: int32)\n"
-        "AssignHeapAllocation(300, 500, 0).\n"  /* main allocs h1 into v1 */
-        "AssignHeapAllocation(310, 510, 1).\n"  /* method1 allocs h2 into v2 */
+        "AssignHeapAllocation(300, 500, 0).\n" /* main allocs h1 into v1 */
+        "AssignHeapAllocation(310, 510, 1).\n" /* method1 allocs h2 into v2 */
 
         /* This-vars */
         ".decl ThisVar(method: int32, var: int32)\n"
@@ -746,10 +749,12 @@ test_doop_reachable_propagates_through_virtual_chain(void)
         "ThisVar(2, 610).\n"
 
         /* IDB */
-        ".decl MethodImplemented(sn: int32, d: int32, type: int32, method: int32)\n"
+        ".decl MethodImplemented(sn: int32, d: int32, type: int32, method: "
+        "int32)\n"
         "MethodImplemented(sn, d, type, method) :- "
         "Method_SimpleName(method, sn), Method_Descriptor(method, d), "
-        "Method_DeclaringType(method, type), !Method_Modifier(1928492, method).\n"
+        "Method_DeclaringType(method, type), !Method_Modifier(1928492, "
+        "method).\n"
 
         ".decl MethodLookup(sn: int32, d: int32, type: int32, method: int32)\n"
         "MethodLookup(sn, d, type, method) :- "
@@ -818,25 +823,28 @@ test_doop_stratified_negation_excludes_abstract(void)
 {
     TEST("doop_negation: abstract method excluded from MethodImplemented");
 
-    const char *src =
-        ".decl Method_SimpleName(method: int32, sn: int32)\n"
-        "Method_SimpleName(1, 10).\n"
-        "Method_SimpleName(2, 20).\n"
-        ".decl Method_Descriptor(method: int32, d: int32)\n"
-        "Method_Descriptor(1, 30).\n"
-        "Method_Descriptor(2, 40).\n"
-        ".decl Method_DeclaringType(method: int32, type: int32)\n"
-        "Method_DeclaringType(1, 100).\n"
-        "Method_DeclaringType(2, 200).\n"
-        ".decl Method_Modifier(mod: int32, method: int32)\n"
-        "Method_Modifier(1928492, 2).\n"  /* method 2 is abstract */
-        ".decl MethodImplemented(sn: int32, d: int32, type: int32, method: int32)\n"
-        "MethodImplemented(sn, d, type, method) :- "
-        "Method_SimpleName(method, sn), Method_Descriptor(method, d), "
-        "Method_DeclaringType(method, type), !Method_Modifier(1928492, method).\n";
+    const char *src
+        = ".decl Method_SimpleName(method: int32, sn: int32)\n"
+          "Method_SimpleName(1, 10).\n"
+          "Method_SimpleName(2, 20).\n"
+          ".decl Method_Descriptor(method: int32, d: int32)\n"
+          "Method_Descriptor(1, 30).\n"
+          "Method_Descriptor(2, 40).\n"
+          ".decl Method_DeclaringType(method: int32, type: int32)\n"
+          "Method_DeclaringType(1, 100).\n"
+          "Method_DeclaringType(2, 200).\n"
+          ".decl Method_Modifier(mod: int32, method: int32)\n"
+          "Method_Modifier(1928492, 2).\n" /* method 2 is abstract */
+          ".decl MethodImplemented(sn: int32, d: int32, type: int32, method: "
+          "int32)\n"
+          "MethodImplemented(sn, d, type, method) :- "
+          "Method_SimpleName(method, sn), Method_Descriptor(method, d), "
+          "Method_DeclaringType(method, type), !Method_Modifier(1928492, "
+          "method).\n";
 
     int64_t impl_count = 0;
-    int64_t total = run_program_count_rel(src, 1, "MethodImplemented", &impl_count);
+    int64_t total
+        = run_program_count_rel(src, 1, "MethodImplemented", &impl_count);
 
     ASSERT(total >= 0, "evaluation failed");
 
@@ -861,8 +869,10 @@ main(void)
 {
     printf("=== DOOP Validation Tests (US-009/010) ===\n");
     printf("NOTE: Infrastructure tests (1-5) PASS immediately.\n");
-    printf("      Synthetic join tests (6-8) FAIL until K-way delta expansion\n");
-    printf("      (Option 2 + CSE) is implemented — this is the TDD RED state.\n");
+    printf(
+        "      Synthetic join tests (6-8) FAIL until K-way delta expansion\n");
+    printf(
+        "      (Option 2 + CSE) is implemented — this is the TDD RED state.\n");
     printf("      Full DOOP benchmark -> scripts/run_doop_validation.sh\n\n");
 
     /* --- Infrastructure: data files --- */

@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #ifdef __AVX2__
 #include <immintrin.h>
@@ -476,6 +477,148 @@ col_mat_cache_insert(col_mat_cache_t *cache, const col_rel_t *left,
 }
 
 /* ======================================================================== */
+/* Arrangement Layer (Phase 3C)                                             */
+/* ======================================================================== */
+
+/*
+ * arr_hash_key: FNV-1a hash over key columns of a single row.
+ * nbuckets MUST be a power of 2.
+ */
+static uint32_t
+arr_hash_key(const int64_t *row, const uint32_t *key_cols, uint32_t key_count,
+             uint32_t nbuckets)
+{
+    uint64_t h = 14695981039346656037ULL; /* FNV-1a basis */
+    for (uint32_t k = 0; k < key_count; k++) {
+        uint64_t v = (uint64_t)row[key_cols[k]];
+        for (int b = 0; b < 8; b++) {
+            h ^= v & 0xFFu;
+            h *= 1099511628211ULL;
+            v >>= 8;
+        }
+    }
+    return (uint32_t)(h & (uint64_t)(nbuckets - 1));
+}
+
+/* Round n up to the next power of 2; minimum 16. */
+static uint32_t
+arr_next_pow2(uint32_t n)
+{
+    if (n < 16u)
+        return 16u;
+    n--;
+    n |= n >> 1;
+    n |= n >> 2;
+    n |= n >> 4;
+    n |= n >> 8;
+    n |= n >> 16;
+    return n + 1u;
+}
+
+/* Free arrangement contents (not the struct itself). */
+static void
+arr_free_contents(col_arrangement_t *arr)
+{
+    if (!arr)
+        return;
+    free(arr->key_cols);
+    free(arr->ht_head);
+    free(arr->ht_next);
+    memset(arr, 0, sizeof(*arr));
+}
+
+/* Full rebuild: index all nrows rows in rel into arr. */
+static int
+arr_build_full(col_arrangement_t *arr, const col_rel_t *rel)
+{
+    uint32_t nrows = rel->nrows;
+    uint32_t nbuckets = arr_next_pow2(nrows > 0 ? nrows * 2u : 16u);
+
+    /* Reallocate bucket heads if size changed. */
+    if (nbuckets != arr->nbuckets) {
+        uint32_t *head = (uint32_t *)malloc(nbuckets * sizeof(uint32_t));
+        if (!head)
+            return ENOMEM;
+        free(arr->ht_head);
+        arr->ht_head = head;
+        arr->nbuckets = nbuckets;
+    }
+    memset(arr->ht_head, 0xFF, nbuckets * sizeof(uint32_t)); /* UINT32_MAX */
+
+    /* Grow chain array if needed. */
+    if (nrows > arr->ht_cap) {
+        uint32_t new_cap = nrows > arr->ht_cap * 2u ? nrows : arr->ht_cap * 2u;
+        if (new_cap < 16u)
+            new_cap = 16u;
+        uint32_t *nxt = (uint32_t *)malloc(new_cap * sizeof(uint32_t));
+        if (!nxt)
+            return ENOMEM;
+        free(arr->ht_next);
+        arr->ht_next = nxt;
+        arr->ht_cap = new_cap;
+    }
+
+    uint32_t nc = rel->ncols;
+    for (uint32_t row = 0; row < nrows; row++) {
+        const int64_t *rp = rel->data + (size_t)row * nc;
+        uint32_t bucket
+            = arr_hash_key(rp, arr->key_cols, arr->key_count, nbuckets);
+        arr->ht_next[row] = arr->ht_head[bucket];
+        arr->ht_head[bucket] = row;
+    }
+    arr->indexed_rows = nrows;
+    return 0;
+}
+
+/* Incremental update: index only rows [old_nrows..rel->nrows). */
+static int
+arr_update_incremental(col_arrangement_t *arr, const col_rel_t *rel,
+                       uint32_t old_nrows)
+{
+    uint32_t nrows = rel->nrows;
+    if (old_nrows >= nrows)
+        return 0;
+
+    /* If load factor would exceed 50%, full rebuild needed. */
+    uint32_t needed = arr_next_pow2(nrows * 2u);
+    if (needed != arr->nbuckets)
+        return arr_build_full(arr, rel);
+
+    /* Grow chain array if needed. */
+    if (nrows > arr->ht_cap) {
+        uint32_t new_cap = nrows * 2u < 16u ? 16u : nrows * 2u;
+        uint32_t *nxt
+            = (uint32_t *)realloc(arr->ht_next, new_cap * sizeof(uint32_t));
+        if (!nxt)
+            return ENOMEM;
+        arr->ht_next = nxt;
+        arr->ht_cap = new_cap;
+    }
+
+    uint32_t nc = rel->ncols;
+    uint32_t nb = arr->nbuckets;
+    for (uint32_t row = old_nrows; row < nrows; row++) {
+        const int64_t *rp = rel->data + (size_t)row * nc;
+        uint32_t bucket = arr_hash_key(rp, arr->key_cols, arr->key_count, nb);
+        arr->ht_next[row] = arr->ht_head[bucket];
+        arr->ht_head[bucket] = row;
+    }
+    arr->indexed_rows = nrows;
+    return 0;
+}
+
+/*
+ * col_arr_entry_t: one (rel_name, key_cols) → arrangement mapping.
+ * Stored in the session's flat arrangement registry.
+ */
+typedef struct {
+    char *rel_name;     /* owned copy of relation name    */
+    uint32_t *key_cols; /* owned copy of key column array */
+    uint32_t key_count;
+    col_arrangement_t arr; /* embedded arrangement           */
+} col_arr_entry_t;
+
+/* ======================================================================== */
 /* Session                                                                   */
 /* ======================================================================== */
 
@@ -529,6 +672,14 @@ typedef struct {
     col_mat_cache_t mat_cache; /* materialization cache (US-006)        */
     uint32_t total_iterations; /* fixed-point iterations in last eval   */
     wl_work_queue_t *wq;       /* reusable thread pool for K-fusion     */
+    /* Profiling counters (3B-003): accumulated across all strata/iters  */
+    uint64_t
+        consolidation_ns; /* time in col_op_consolidate_incremental_delta */
+    uint64_t kfusion_ns;  /* time in col_op_k_fusion                */
+    /* Arrangement registry (Phase 3C): persistent hash indices           */
+    col_arr_entry_t *arr_entries; /* owned flat array of arrangements     */
+    uint32_t arr_count;           /* number of active arrangements        */
+    uint32_t arr_cap;             /* allocated capacity                   */
 } wl_col_session_t;
 
 /*
@@ -2017,6 +2168,21 @@ row_cmp_simd_neon(const int64_t *a, const int64_t *b, uint32_t ncols)
 #define row_cmp_optimized row_cmp_lex
 #endif
 
+/* ---- profiling helper --------------------------------------------------- */
+
+/*
+ * now_ns: return CLOCK_MONOTONIC time in nanoseconds.
+ * Returns 0 on platforms where clock_gettime is unavailable (non-fatal).
+ */
+static uint64_t
+now_ns(void)
+{
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
+        return 0;
+    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+}
+
 /*
  * col_op_consolidate_incremental_delta - Incremental consolidation with delta output
  *
@@ -2755,9 +2921,12 @@ col_eval_relation_plan(const wl_plan_relation_t *rplan, eval_stack_t *stack,
         case WL_PLAN_OP_SEMIJOIN:
             rc = col_op_semijoin(op, stack, sess);
             break;
-        case WL_PLAN_OP_K_FUSION:
+        case WL_PLAN_OP_K_FUSION: {
+            uint64_t t0 = now_ns();
             rc = col_op_k_fusion(op, stack, sess);
+            COL_SESSION(sess)->kfusion_ns += now_ns() - t0;
             break;
+        }
         default:
             break;
         }
@@ -3106,7 +3275,22 @@ col_eval_stratum(const wl_plan_stratum_t *sp, wl_col_session_t *sess,
             }
 
             /* Consolidate WITH delta output (no separate merge walk) */
+            uint32_t cons_old = snap[ri];
+            uint32_t cons_new = r->nrows - cons_old; /* delta count D */
+            uint64_t cons_t0 = now_ns();
             int rc2 = col_op_consolidate_incremental_delta(r, snap[ri], delta);
+            uint64_t cons_elapsed = now_ns() - cons_t0;
+            sess->consolidation_ns += cons_elapsed;
+            /* Per-call trace: WL_CONSOLIDATION_LOG=1 prints N/D/time per call */
+            if (getenv("WL_CONSOLIDATION_LOG")) {
+                fprintf(stderr,
+                        "CONS iter=%u stratum=%u rel=%s N=%u D=%u "
+                        "time_us=%.1f ratio=%.4f\n",
+                        iter, stratum_idx, sp->relations[ri].name, cons_old,
+                        cons_new, (double)cons_elapsed / 1000.0,
+                        cons_old > 0 ? (double)cons_new / (double)cons_old
+                                     : 0.0);
+            }
             if (rc2 != 0) {
                 col_rel_free_contents(delta);
                 free(delta);
@@ -3204,6 +3388,171 @@ col_session_get_cache_stats(wl_session_t *sess, uint64_t *out_hits,
         *out_hits = cs->mat_cache.hits;
     if (out_misses)
         *out_misses = cs->mat_cache.misses;
+}
+
+/*
+ * col_session_get_perf_stats:
+ *
+ * Return accumulated profiling counters (in nanoseconds) from the last
+ * wl_session_snapshot() call.  Counters are reset at the start of each
+ * evaluation pass.  Both out-parameters are optional (NULL-safe).
+ *
+ * @param sess             A wl_session_t* backed by the columnar backend.
+ * @param out_consolidation_ns  Time spent in incremental consolidation.
+ * @param out_kfusion_ns        Time spent in K-fusion dispatch.
+ */
+void
+col_session_get_perf_stats(wl_session_t *sess, uint64_t *out_consolidation_ns,
+                           uint64_t *out_kfusion_ns)
+{
+    wl_col_session_t *cs = COL_SESSION(sess);
+    if (out_consolidation_ns)
+        *out_consolidation_ns = cs->consolidation_ns;
+    if (out_kfusion_ns)
+        *out_kfusion_ns = cs->kfusion_ns;
+}
+
+/* ======================================================================== */
+/* Arrangement Accessors (Phase 3C)                                         */
+/* ======================================================================== */
+
+col_arrangement_t *
+col_session_get_arrangement(wl_session_t *sess, const char *rel_name,
+                            const uint32_t *key_cols, uint32_t key_count)
+{
+    if (!sess || !rel_name || !key_cols || key_count == 0)
+        return NULL;
+
+    wl_col_session_t *cs = COL_SESSION(sess);
+
+    /* Look up the relation. */
+    col_rel_t *rel = NULL;
+    for (uint32_t i = 0; i < cs->nrels; i++) {
+        if (cs->rels[i] && cs->rels[i]->name
+            && strcmp(cs->rels[i]->name, rel_name) == 0) {
+            rel = cs->rels[i];
+            break;
+        }
+    }
+    if (!rel)
+        return NULL;
+
+    /* Search registry for matching (rel_name, key_cols) entry. */
+    for (uint32_t i = 0; i < cs->arr_count; i++) {
+        col_arr_entry_t *e = &cs->arr_entries[i];
+        if (e->key_count != key_count)
+            continue;
+        if (strcmp(e->rel_name, rel_name) != 0)
+            continue;
+        bool match = true;
+        for (uint32_t k = 0; k < key_count; k++) {
+            if (e->key_cols[k] != key_cols[k]) {
+                match = false;
+                break;
+            }
+        }
+        if (!match)
+            continue;
+
+        /* Found: update if stale. */
+        if (e->arr.indexed_rows == 0 && rel->nrows > 0) {
+            if (arr_build_full(&e->arr, rel) != 0)
+                return NULL;
+        } else if (e->arr.indexed_rows < rel->nrows) {
+            uint32_t old = e->arr.indexed_rows;
+            if (arr_update_incremental(&e->arr, rel, old) != 0)
+                return NULL;
+        }
+        return &e->arr;
+    }
+
+    /* Not found: grow registry and create new entry. */
+    if (cs->arr_count >= cs->arr_cap) {
+        uint32_t new_cap = cs->arr_cap ? cs->arr_cap * 2u : 8u;
+        col_arr_entry_t *ne = (col_arr_entry_t *)realloc(
+            cs->arr_entries, new_cap * sizeof(col_arr_entry_t));
+        if (!ne)
+            return NULL;
+        cs->arr_entries = ne;
+        cs->arr_cap = new_cap;
+    }
+
+    col_arr_entry_t *e = &cs->arr_entries[cs->arr_count];
+    memset(e, 0, sizeof(*e));
+
+    e->rel_name = wl_strdup(rel_name);
+    if (!e->rel_name)
+        return NULL;
+
+    e->key_cols = (uint32_t *)malloc(key_count * sizeof(uint32_t));
+    if (!e->key_cols) {
+        free(e->rel_name);
+        e->rel_name = NULL;
+        return NULL;
+    }
+    memcpy(e->key_cols, key_cols, key_count * sizeof(uint32_t));
+    e->key_count = key_count;
+    e->arr.key_cols = e->key_cols; /* shared view; key_cols owned by entry */
+    e->arr.key_count = key_count;
+    cs->arr_count++;
+
+    /* Initial build. */
+    if (rel->nrows > 0 && arr_build_full(&e->arr, rel) != 0) {
+        /* Roll back the entry we just added. */
+        cs->arr_count--;
+        free(e->rel_name);
+        free(e->key_cols);
+        memset(e, 0, sizeof(*e));
+        return NULL;
+    }
+    return &e->arr;
+}
+
+uint32_t
+col_arrangement_find_first(const col_arrangement_t *arr,
+                           const int64_t *rel_data, uint32_t rel_ncols,
+                           const int64_t *key_row)
+{
+    if (!arr || !rel_data || !key_row || arr->nbuckets == 0)
+        return UINT32_MAX;
+
+    uint32_t bucket
+        = arr_hash_key(key_row, arr->key_cols, arr->key_count, arr->nbuckets);
+    uint32_t row = arr->ht_head[bucket];
+    while (row != UINT32_MAX) {
+        const int64_t *rp = rel_data + (size_t)row * rel_ncols;
+        bool match = true;
+        for (uint32_t k = 0; k < arr->key_count; k++) {
+            if (rp[arr->key_cols[k]] != key_row[arr->key_cols[k]]) {
+                match = false;
+                break;
+            }
+        }
+        if (match)
+            return row;
+        row = arr->ht_next[row];
+    }
+    return UINT32_MAX;
+}
+
+uint32_t
+col_arrangement_find_next(const col_arrangement_t *arr, uint32_t row_idx)
+{
+    if (!arr || row_idx >= arr->ht_cap)
+        return UINT32_MAX;
+    return arr->ht_next[row_idx];
+}
+
+void
+col_session_invalidate_arrangements(wl_session_t *sess, const char *rel_name)
+{
+    if (!sess || !rel_name)
+        return;
+    wl_col_session_t *cs = COL_SESSION(sess);
+    for (uint32_t i = 0; i < cs->arr_count; i++) {
+        if (strcmp(cs->arr_entries[i].rel_name, rel_name) == 0)
+            cs->arr_entries[i].arr.indexed_rows = 0; /* force full rebuild */
+    }
 }
 
 /* ======================================================================== */
@@ -3312,6 +3661,13 @@ col_session_destroy(wl_session_t *session)
         wl_arena_free(sess->eval_arena);
     col_mat_cache_clear(&sess->mat_cache);
     wl_workqueue_destroy(sess->wq);
+    /* Free arrangement registry (Phase 3C) */
+    for (uint32_t i = 0; i < sess->arr_count; i++) {
+        free(sess->arr_entries[i].rel_name);
+        free(sess->arr_entries[i].key_cols);
+        arr_free_contents(&sess->arr_entries[i].arr);
+    }
+    free(sess->arr_entries);
     free(sess);
 }
 
@@ -3613,6 +3969,10 @@ col_session_snapshot(wl_session_t *session, wl_on_tuple_fn callback,
 
     wl_col_session_t *sess = COL_SESSION(session);
     const wl_plan_t *plan = sess->plan;
+
+    /* Reset profiling counters for this evaluation pass */
+    sess->consolidation_ns = 0;
+    sess->kfusion_ns = 0;
 
     /* Execute all strata in order */
     for (uint32_t si = 0; si < plan->stratum_count; si++) {
