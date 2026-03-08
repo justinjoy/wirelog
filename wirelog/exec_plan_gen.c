@@ -818,7 +818,8 @@ translate_ir_node(const wirelog_ir_node_t *node, op_list_t *ops)
 /* ======================================================================== */
 
 #if ENABLE_K_FUSION
-static void free_k_fusion_opaque(wl_plan_op_t *op); /* forward declaration */
+static void
+free_k_fusion_opaque(wl_plan_op_t *op); /* forward declaration */
 #endif
 
 static void

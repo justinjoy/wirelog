@@ -86,16 +86,6 @@ typedef struct {
  */
 
 /**
- * wl_backend_columnar:
- *
- * Return the singleton vtable for the nanoarrow columnar backend.
- * The backend is thread-compatible: each session is independent.
- * Sessions are NOT thread-safe; external locking required for sharing.
- */
-const wl_compute_backend_t *
-wl_backend_columnar(void);
-
-/**
  * col_session_get_iteration_count:
  *
  * Return the number of fixed-point iterations performed during the last

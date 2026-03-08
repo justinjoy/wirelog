@@ -1779,7 +1779,7 @@ col_op_consolidate(eval_stack_t *stack)
  *
  * Total: O(D log D + N) vs O(N log N) for full re-sort.
  */
-static int
+static int __attribute__((unused))
 col_op_consolidate_incremental(col_rel_t *rel, uint32_t old_nrows)
 {
     uint32_t nc = rel->ncols;
@@ -1862,7 +1862,7 @@ col_op_consolidate_incremental(col_rel_t *rel, uint32_t old_nrows)
  * Compares rows a and b with ncols columns using int64_t values (not bytes).
  * Required for correct little-endian int64_t comparisons.
  */
-static int
+static int __attribute__((unused))
 row_cmp_lex(const int64_t *a, const int64_t *b, uint32_t ncols)
 {
     for (uint32_t c = 0; c < ncols; c++) {
@@ -2134,7 +2134,7 @@ col_op_consolidate_incremental_delta(col_rel_t *rel, uint32_t old_nrows,
  * The output relation name is "<merged-k>" and contains all rows from
  * the K input relations with duplicates removed.
  */
-static col_rel_t *
+static col_rel_t *__attribute__((unused))
 col_rel_merge_k(col_rel_t **relations, uint32_t k)
 {
     if (k == 0)
@@ -2168,7 +2168,7 @@ col_rel_merge_k(col_rel_t **relations, uint32_t k)
             const int64_t *row = src->data + (size_t)r * nc;
             if (r == 0
                 || kway_row_cmp(out->data + (size_t)(out->nrows - 1) * nc, row,
-                          nc)
+                                nc)
                        != 0) {
                 memcpy(out->data + (size_t)out->nrows * nc, row, row_bytes);
                 out->nrows++;
@@ -2281,7 +2281,7 @@ typedef struct {
  * Worker thread function for K-fusion parallel evaluation.
  * Evaluates a single relation plan and collects result in context.
  */
-static void
+static void __attribute__((unused))
 col_op_k_fusion_worker(void *ctx)
 {
     col_op_k_fusion_worker_t *wc = (col_op_k_fusion_worker_t *)ctx;
