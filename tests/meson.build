@@ -308,6 +308,18 @@ test_consolidate_kway_merge_exe = executable(
 test('consolidate_kway_merge', test_consolidate_kway_merge_exe)
 
 # ============================================================================
+# K-Fusion Merge Function Tests
+# ============================================================================
+
+test_k_fusion_merge_exe = executable(
+  'test_k_fusion_merge',
+  files('test_k_fusion_merge.c'),
+  include_directories: [wirelog_inc, wirelog_src_inc],
+)
+
+test('k_fusion_merge', test_k_fusion_merge_exe)
+
+# ============================================================================
 # Empty-Delta Skip Tests (US-006/US-007)
 # ============================================================================
 
