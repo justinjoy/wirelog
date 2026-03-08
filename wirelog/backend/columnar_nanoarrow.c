@@ -3235,14 +3235,45 @@ col_eval_stratum(const wl_plan_stratum_t *sp, wl_col_session_t *sess,
 
     uint32_t iter;
     for (iter = 0; iter < MAX_ITERATIONS; iter++) {
-        /* Phase 3D-Ext-002: Fine-grained frontier skip based on stratum level.
+        /* Phase 3D-Ext-002 (DORMANT): Fine-grained frontier skip infrastructure.
+         *
+         * STATUS: This optimization is currently unreachable in the single-call evaluation
+         * model (session_step, session_snapshot). Designed for future incremental re-evaluation
+         * where the frontier persists across multiple calls without being reset.
+         *
+         * WHY UNREACHABLE: Non-recursive strata unconditionally reset frontier.iteration to 0
+         * (line 3180) before recursive strata evaluate. Since non-recursive strata precede
+         * recursive strata in topological order, frontier.iteration is always 0 when this
+         * skip condition is evaluated. Guard `sess->frontier.iteration > 0` is never true.
+         *
+         * INTENDED SEMANTICS (when frontier persists across calls):
          * Skip iteration only if: iter > frontier.iteration AND frontier.stratum < current_stratum.
-         * Frontier (0,0) uninitialized; guard on > 0 for fresh sessions.
-         * Both conditions required: iteration must advance beyond frontier AND
-         * current stratum must be beyond frontier's stratum level. */
+         * Both conditions must be true to skip safely. This prevents:
+         * - Skipping iterations before frontier (data loss)
+         * - Skipping stratum 0 (recursion entry point)
+         * - Premature termination of recursive stratum evaluation
+         *
+         * LATENT CORRECTNESS BUG (if activated without semantic fix):
+         * Cross-stratum iteration counter mismatch. Variable 'iter' is this stratum's local
+         * fixed-point counter. Variable 'frontier.iteration' is from previous stratum's
+         * convergence point. These are semantically unrelated values that happen to share
+         * the name "iteration". Comparing them across strata is incorrect and could skip
+         * needed work in multi-recursive-stratum programs, producing incomplete results.
+         *
+         * PHASE 4+ WORK (Incremental Evaluation):
+         * Before activating this skip, implement one of:
+         * 1. Per-stratum frontier tracking (store in array, indexed by stratum_idx)
+         * 2. Same-stratum comparison only (only skip if frontier.stratum == stratum_idx)
+         * 3. Change continue to break if stratum has converged beyond this point
+         * See docs/3d-ext-incremental-eval-roadmap.md for design options.
+         *
+         * ARCHITECT REVIEW: Conditional approval (a2a42d1fa88a8d650).
+         * Dormant status verified. Recommendation: document before activation.
+         * See progress.txt Phase 3D-Ext section for full architect findings.
+         */
         if (sess->frontier.iteration > 0 && iter > sess->frontier.iteration
             && sess->frontier.stratum < stratum_idx) {
-            continue; /* Skip redundant stratum in advanced iteration */
+            continue; /* Skip redundant stratum (dormant: never executes) */
         }
 
         /* Clear per-iteration delta arrangement cache (sequential eval path).
