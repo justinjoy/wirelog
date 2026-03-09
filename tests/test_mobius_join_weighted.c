@@ -20,6 +20,8 @@
  *   3. Output records have multiplicity = mult_left * mult_right
  */
 
+#define _GNU_SOURCE
+
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>

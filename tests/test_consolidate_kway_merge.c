@@ -20,6 +20,8 @@
  *   7. Empty middle segment (edge case)
  */
 
+#define _GNU_SOURCE
+
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>

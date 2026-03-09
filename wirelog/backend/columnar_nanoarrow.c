@@ -1776,7 +1776,31 @@ col_op_concat(eval_stack_t *stack)
 
 /* --- CONSOLIDATE --------------------------------------------------------- */
 
-/* Comparison for qsort_r: lexicographic int64 row order. */
+/* Comparison for qsort_r: lexicographic int64 row order.
+ * Note: BSD qsort_r has signature: qsort_r(base, nmemb, size, ctx, comparator)
+ *       GNU qsort_r has signature: qsort_r(base, nmemb, size, comparator, arg)
+ * We use the BSD signature here and conditionally adapt for GNU systems.
+ */
+#ifdef __GLIBC__
+/* GNU glibc qsort_r: comparator first, context last */
+static int
+row_cmp_fn(const void *a, const void *b, void *ctx)
+{
+    const uint32_t ncols = *(const uint32_t *)ctx;
+    const int64_t *ra = (const int64_t *)a;
+    const int64_t *rb = (const int64_t *)b;
+    for (uint32_t c = 0; c < ncols; c++) {
+        if (ra[c] < rb[c])
+            return -1;
+        if (ra[c] > rb[c])
+            return 1;
+    }
+    return 0;
+}
+#define QSORT_R_CALL(base, nmemb, size, ctx, fn) \
+    qsort_r(base, nmemb, size, fn, ctx)
+#else
+/* BSD qsort_r: context first, comparator last */
 static int
 row_cmp_fn(void *ctx, const void *a, const void *b)
 {
@@ -1791,6 +1815,9 @@ row_cmp_fn(void *ctx, const void *a, const void *b)
     }
     return 0;
 }
+#define QSORT_R_CALL(base, nmemb, size, ctx, fn) \
+    qsort_r(base, nmemb, size, ctx, fn)
+#endif
 
 /* Lexicographic int64_t row comparison for K-way merge.
  * Equivalent to row_cmp_lex / row_cmp_optimized but available before
@@ -1838,8 +1865,8 @@ col_op_consolidate_kway_merge(col_rel_t *rel, const uint32_t *seg_boundaries,
         uint32_t start = seg_boundaries[s];
         uint32_t end = seg_boundaries[s + 1];
         if (end > start + 1) {
-            qsort_r(rel->data + (size_t)start * nc, end - start, row_bytes, &nc,
-                    row_cmp_fn);
+            QSORT_R_CALL(rel->data + (size_t)start * nc, end - start, row_bytes,
+                         &nc, row_cmp_fn);
         }
     }
 
@@ -2068,7 +2095,7 @@ col_op_consolidate(eval_stack_t *stack)
     if (e.seg_boundaries)
         free(e.seg_boundaries);
 
-    qsort_r(work->data, nr, sizeof(int64_t) * nc, &nc, row_cmp_fn);
+    QSORT_R_CALL(work->data, nr, sizeof(int64_t) * nc, &nc, row_cmp_fn);
 
     /* Compact: keep only unique rows */
     uint32_t out_r = 1; /* first row always kept */
@@ -2116,7 +2143,7 @@ col_op_consolidate_incremental(col_rel_t *rel, uint32_t old_nrows)
     size_t row_bytes = (size_t)nc * sizeof(int64_t);
 
     /* Phase 1: sort only the new delta rows */
-    qsort_r(delta_start, delta_count, row_bytes, &nc, row_cmp_fn);
+    QSORT_R_CALL(delta_start, delta_count, row_bytes, &nc, row_cmp_fn);
 
     /* Phase 1b: dedup within delta */
     uint32_t d_unique = 1;
@@ -2380,7 +2407,7 @@ col_op_consolidate_incremental_delta(col_rel_t *rel, uint32_t old_nrows,
     size_t row_bytes = (size_t)nc * sizeof(int64_t);
 
     /* Phase 1: sort only the new delta rows */
-    qsort_r(delta_start, delta_count, row_bytes, &nc, row_cmp_fn);
+    QSORT_R_CALL(delta_start, delta_count, row_bytes, &nc, row_cmp_fn);
 
     /* Phase 1b: dedup within delta */
     uint32_t d_unique = 1;
@@ -3393,7 +3420,7 @@ col_eval_stratum(const wl_plan_stratum_t *sp, wl_col_session_t *sess,
         if (r && r->nrows > 1) {
             uint32_t nc = r->ncols;
             size_t row_bytes = (size_t)nc * sizeof(int64_t);
-            qsort_r(r->data, r->nrows, row_bytes, &nc, row_cmp_fn);
+            QSORT_R_CALL(r->data, r->nrows, row_bytes, &nc, row_cmp_fn);
         }
     }
 

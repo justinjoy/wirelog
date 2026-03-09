@@ -19,6 +19,8 @@
  *   3. Zero multiplicity: if either input is 0, output mult=0
  */
 
+#define _GNU_SOURCE
+
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>

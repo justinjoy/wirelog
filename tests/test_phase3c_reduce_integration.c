@@ -17,6 +17,8 @@
  * Test 3 declares col_op_reduce_weighted_sum for future SUM semantics (TDD RED).
  */
 
+#define _GNU_SOURCE
+
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
