@@ -3571,6 +3571,22 @@ col_eval_stratum(const wl_plan_stratum_t *sp, wl_col_session_t *sess,
             }
         }
 
+        /* Stratum-level early exit: if all rules have empty forced deltas,
+         * the iteration will produce no new facts. Skip it. (Issue #81) */
+        if (iter > 0) {
+            bool all_rules_empty = true;
+            for (uint32_t ri = 0; ri < nrels; ri++) {
+                if (!has_empty_forced_delta(&sp->relations[ri], sess, iter)) {
+                    all_rules_empty = false;
+                    break;
+                }
+            }
+            if (all_rules_empty) {
+                free(snap);
+                continue;
+            }
+        }
+
         /* Single-pass semi-naive evaluation. VARIABLE prefers delta when it
          * is a strict subset of full (genuine new facts). JOIN propagates
          * the is_delta flag through results and applies right-delta when
