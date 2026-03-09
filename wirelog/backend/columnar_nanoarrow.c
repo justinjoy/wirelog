@@ -4880,6 +4880,89 @@ col_compute_affected_strata(wl_session_t *session,
 }
 
 /* ======================================================================== */
+/* Mobius / Z-set Weighted JOIN                                              */
+/* ======================================================================== */
+
+/*
+ * col_op_join_weighted - equi-join with multiplicity multiplication.
+ *
+ * Joins lhs and rhs on column index key_col (present in both).  For each
+ * matching pair the output row is appended to dst and its timestamp
+ * multiplicity is set to lhs_mult * rhs_mult.
+ *
+ * Output layout: all lhs columns followed by all rhs columns (key column
+ * is duplicated; callers may project as needed).  dst->ncols is initialised
+ * by this function; dst must be caller-allocated with ncols==0 on entry.
+ *
+ * Returns 0 on success, non-zero (ENOMEM / EINVAL) on error.
+ */
+int
+col_op_join_weighted(const col_rel_t *lhs, const col_rel_t *rhs,
+                     uint32_t key_col, col_rel_t *dst)
+{
+    if (!lhs || !rhs || !dst)
+        return EINVAL;
+    if (key_col >= lhs->ncols || key_col >= rhs->ncols)
+        return EINVAL;
+
+    uint32_t ocols = lhs->ncols + rhs->ncols;
+    dst->ncols = ocols;
+
+    int64_t *tmp = (int64_t *)malloc(sizeof(int64_t) * (ocols > 0 ? ocols : 1));
+    if (!tmp)
+        return ENOMEM;
+
+    int rc = 0;
+    for (uint32_t li = 0; li < lhs->nrows && rc == 0; li++) {
+        const int64_t *lrow = lhs->data + (size_t)li * lhs->ncols;
+        int64_t lmult = lhs->timestamps ? lhs->timestamps[li].multiplicity : 1;
+
+        for (uint32_t ri = 0; ri < rhs->nrows && rc == 0; ri++) {
+            const int64_t *rrow = rhs->data + (size_t)ri * rhs->ncols;
+
+            if (lrow[key_col] != rrow[key_col])
+                continue;
+
+            int64_t rmult
+                = rhs->timestamps ? rhs->timestamps[ri].multiplicity : 1;
+
+            memcpy(tmp, lrow, sizeof(int64_t) * lhs->ncols);
+            memcpy(tmp + lhs->ncols, rrow, sizeof(int64_t) * rhs->ncols);
+
+            /* Grow dst manually to keep data and timestamps in sync. */
+            if (dst->nrows >= dst->capacity) {
+                uint32_t new_cap = dst->capacity ? dst->capacity * 2 : 16;
+                int64_t *nd = (int64_t *)realloc(
+                    dst->data, sizeof(int64_t) * (size_t)new_cap * ocols);
+                if (!nd) {
+                    rc = ENOMEM;
+                    break;
+                }
+                dst->data = nd;
+                col_delta_timestamp_t *nt = (col_delta_timestamp_t *)realloc(
+                    dst->timestamps,
+                    (size_t)new_cap * sizeof(col_delta_timestamp_t));
+                if (!nt) {
+                    rc = ENOMEM;
+                    break;
+                }
+                dst->timestamps = nt;
+                dst->capacity = new_cap;
+            }
+            memcpy(dst->data + (size_t)dst->nrows * ocols, tmp,
+                   sizeof(int64_t) * ocols);
+            memset(&dst->timestamps[dst->nrows], 0,
+                   sizeof(col_delta_timestamp_t));
+            dst->timestamps[dst->nrows].multiplicity = lmult * rmult;
+            dst->nrows++;
+        }
+    }
+
+    free(tmp);
+    return rc;
+}
+
+/* ======================================================================== */
 /* Vtable Singleton                                                          */
 /* ======================================================================== */
 
