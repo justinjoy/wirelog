@@ -46,13 +46,14 @@ struct ArrowSchema {
 
 /*
  * col_delta_timestamp_t - mirrors the public definition in columnar_nanoarrow.h.
- * Must match exactly (4 x uint32_t = 16 bytes).
+ * Must match exactly (4 x uint32_t + int64_t = 24 bytes).
  */
 typedef struct {
     uint32_t iteration;
     uint32_t stratum;
     uint32_t worker;
     uint32_t _reserved;
+    int64_t multiplicity;
 } col_delta_timestamp_t;
 
 /*

@@ -709,6 +709,16 @@ typedef struct {
      * stratum i. This enables skipping redundant iterations when frontier
      * persists across session_step calls (incremental evaluation). */
     col_frontier_t frontiers[MAX_STRATA]; /* per-stratum frontier tracking */
+    /* Per-phase K-fusion profiling (Phase 3A): breakdown of kfusion_ns into
+     * four sub-phases accumulated across all col_op_k_fusion calls per eval.
+     *   alloc_ns:    calloc of results/workers/worker_sess arrays
+     *   dispatch_ns: submit loop + wl_workqueue_wait_all barrier
+     *   merge_ns:    col_rel_merge_k + eval_stack_push
+     *   cleanup_ns:  result/worker mat_cache/arr/darr free loops + free() */
+    uint64_t kfusion_alloc_ns;
+    uint64_t kfusion_dispatch_ns;
+    uint64_t kfusion_merge_ns;
+    uint64_t kfusion_cleanup_ns;
     /* Phase 4: tracks which relation was just inserted via
      * col_session_insert_incremental, enables affected-stratum skip
      * optimization. Borrowed pointer; lifetime: until next session_step.
@@ -2648,6 +2658,7 @@ col_op_k_fusion(const wl_plan_op_t *op, eval_stack_t *stack,
     if (k == 0)
         return EINVAL;
 
+    uint64_t _phase_t0 = now_ns();
     col_rel_t **results = (col_rel_t **)calloc(k, sizeof(col_rel_t *));
     col_op_k_fusion_worker_t *workers = (col_op_k_fusion_worker_t *)calloc(
         k, sizeof(col_op_k_fusion_worker_t));
@@ -2655,6 +2666,7 @@ col_op_k_fusion(const wl_plan_op_t *op, eval_stack_t *stack,
      * mat_cache so concurrent col_op_join calls do not race on the cache. */
     wl_col_session_t *worker_sess
         = (wl_col_session_t *)calloc(k, sizeof(wl_col_session_t));
+    COL_SESSION(sess)->kfusion_alloc_ns += now_ns() - _phase_t0;
     if (!results || !workers || !worker_sess) {
         free(results);
         free(workers);
@@ -2685,6 +2697,7 @@ col_op_k_fusion(const wl_plan_op_t *op, eval_stack_t *stack,
 
     /* Initialise per-worker session wrappers and submit all K tasks in one
      * batch so workers execute in parallel. */
+    _phase_t0 = now_ns();
     for (uint32_t d = 0; d < k; d++) {
         /* Shallow copy shares rels[], plan, etc. (read-only during K-fusion).
          * mat_cache is copied by value so workers can look up existing entries
@@ -2719,8 +2732,10 @@ col_op_k_fusion(const wl_plan_op_t *op, eval_stack_t *stack,
         rc = -1;
         goto cleanup_wq;
     }
+    COL_SESSION(sess)->kfusion_dispatch_ns += now_ns() - _phase_t0;
 
     /* Collect results from each worker's eval_stack */
+    _phase_t0 = now_ns();
     for (uint32_t d = 0; d < k; d++) {
         if (workers[d].rc != 0) {
             rc = workers[d].rc;
@@ -2768,8 +2783,10 @@ col_op_k_fusion(const wl_plan_op_t *op, eval_stack_t *stack,
             free(merged);
         }
     }
+    COL_SESSION(sess)->kfusion_merge_ns += now_ns() - _phase_t0;
 
 cleanup_results:
+    _phase_t0 = now_ns();
     for (uint32_t d = 0; d < k; d++) {
         if (results[d]) {
             col_rel_free_contents(results[d]);
@@ -2778,6 +2795,9 @@ cleanup_results:
     }
 
 cleanup_wq:
+    /* On early-exit paths (submit failure, wait failure) _phase_t0 may hold
+     * a stale dispatch value; reset it here so cleanup timing is correct. */
+    _phase_t0 = now_ns();
     /* wq is session-owned and reused across iterations — do not destroy here.
      * Only free mat_cache entries the worker added (index >= base_count).
      * Entries 0..base_count-1 share result pointers with the original
@@ -2805,6 +2825,7 @@ cleanup_wq:
     free(worker_sess);
     free(results);
     free(workers);
+    COL_SESSION(sess)->kfusion_cleanup_ns += now_ns() - _phase_t0;
     return rc;
 }
 
@@ -3551,6 +3572,7 @@ col_eval_stratum(const wl_plan_stratum_t *sp, wl_col_session_t *sess,
                     delta->timestamps[ti].iteration = iter;
                     delta->timestamps[ti].stratum = stratum_idx;
                     /* worker left zero: sequential evaluation path */
+                    delta->timestamps[ti].multiplicity = 1;
                 }
 
                 /* Phase 4: Enable timestamp tracking on target relation to preserve
@@ -3684,13 +3706,25 @@ col_session_get_cache_stats(wl_session_t *sess, uint64_t *out_hits,
  */
 void
 col_session_get_perf_stats(wl_session_t *sess, uint64_t *out_consolidation_ns,
-                           uint64_t *out_kfusion_ns)
+                           uint64_t *out_kfusion_ns,
+                           uint64_t *out_kfusion_alloc_ns,
+                           uint64_t *out_kfusion_dispatch_ns,
+                           uint64_t *out_kfusion_merge_ns,
+                           uint64_t *out_kfusion_cleanup_ns)
 {
     wl_col_session_t *cs = COL_SESSION(sess);
     if (out_consolidation_ns)
         *out_consolidation_ns = cs->consolidation_ns;
     if (out_kfusion_ns)
         *out_kfusion_ns = cs->kfusion_ns;
+    if (out_kfusion_alloc_ns)
+        *out_kfusion_alloc_ns = cs->kfusion_alloc_ns;
+    if (out_kfusion_dispatch_ns)
+        *out_kfusion_dispatch_ns = cs->kfusion_dispatch_ns;
+    if (out_kfusion_merge_ns)
+        *out_kfusion_merge_ns = cs->kfusion_merge_ns;
+    if (out_kfusion_cleanup_ns)
+        *out_kfusion_cleanup_ns = cs->kfusion_cleanup_ns;
 }
 
 /*
@@ -4587,6 +4621,10 @@ col_session_snapshot(wl_session_t *session, wl_on_tuple_fn callback,
     /* Reset profiling counters for this evaluation pass */
     sess->consolidation_ns = 0;
     sess->kfusion_ns = 0;
+    sess->kfusion_alloc_ns = 0;
+    sess->kfusion_dispatch_ns = 0;
+    sess->kfusion_merge_ns = 0;
+    sess->kfusion_cleanup_ns = 0;
 
     /* Phase 4 incremental skip: when last_inserted_relation is set, only
      * re-evaluate strata that transitively depend on the inserted relation.

@@ -49,6 +49,10 @@ col_session_get_cache_stats(wl_session_t *sess, uint64_t *out_hits,
 static bool g_format_json = false;
 static uint64_t g_last_consolidation_ns = 0;
 static uint64_t g_last_kfusion_ns = 0;
+static uint64_t g_last_kfusion_alloc_ns = 0;
+static uint64_t g_last_kfusion_dispatch_ns = 0;
+static uint64_t g_last_kfusion_merge_ns = 0;
+static uint64_t g_last_kfusion_cleanup_ns = 0;
 
 #ifndef WITH_K_FUSION
 #define WITH_K_FUSION 1
@@ -59,7 +63,9 @@ static void
 output_json_row(const char *wl_name, int32_t edges, uint32_t workers,
                 int repeat, double min_ms, double median_ms, double max_ms,
                 int64_t peak_rss_kb, int64_t tuples, uint32_t iters,
-                uint64_t consolidation_ns, uint64_t kfusion_ns);
+                uint64_t consolidation_ns, uint64_t kfusion_ns,
+                uint64_t kfusion_alloc_ns, uint64_t kfusion_dispatch_ns,
+                uint64_t kfusion_merge_ns, uint64_t kfusion_cleanup_ns);
 
 #include <getopt.h>
 #include <inttypes.h>
@@ -304,8 +310,10 @@ run_pipeline_count(const char *source, uint32_t num_workers, int64_t *out_count,
     /* Store profiling counters for the workload reporter (3B-003).
      * Written to globals so workload functions can include them in output
      * without changing the run_pipeline_count signature. */
-    col_session_get_perf_stats(sess, &g_last_consolidation_ns,
-                               &g_last_kfusion_ns);
+    col_session_get_perf_stats(
+        sess, &g_last_consolidation_ns, &g_last_kfusion_ns,
+        &g_last_kfusion_alloc_ns, &g_last_kfusion_dispatch_ns,
+        &g_last_kfusion_merge_ns, &g_last_kfusion_cleanup_ns);
 
     wl_session_destroy(sess);
     wl_plan_free(plan);
@@ -398,7 +406,9 @@ run_workload(int wl_id, const char *data_path, uint32_t workers, int repeat)
             output_json_row(wl_names[wl_id], edge_count, workers, repeat,
                             min_ms, median_ms, max_ms, peak_rss, tuples,
                             total_iters, g_last_consolidation_ns,
-                            g_last_kfusion_ns);
+                            g_last_kfusion_ns, g_last_kfusion_alloc_ns,
+                            g_last_kfusion_dispatch_ns, g_last_kfusion_merge_ns,
+                            g_last_kfusion_cleanup_ns);
         else
             printf("%s\t%d\t%d\t%u\t%d\t%.1f\t%.1f\t%.1f\t%" PRId64 "\t%" PRId64
                    "\t%u\t%s\n",
@@ -524,10 +534,17 @@ run_andersen_workload(const char *data_dir, uint32_t workers, int repeat)
         double median_ms = times[repeat / 2];
         double max_ms = times[repeat - 1];
 
-        printf("andersen\t-\t%d\t%u\t%d\t%.1f\t%.1f\t%.1f\t%" PRId64
-               "\t%" PRId64 "\t%u\t%s\n",
-               total_facts, workers, repeat, min_ms, median_ms, max_ms,
-               peak_rss, tuples, total_iters, "OK");
+        if (g_format_json)
+            output_json_row("andersen", total_facts, workers, repeat, min_ms,
+                            median_ms, max_ms, peak_rss, tuples, total_iters,
+                            g_last_consolidation_ns, g_last_kfusion_ns,
+                            g_last_kfusion_alloc_ns, g_last_kfusion_dispatch_ns,
+                            g_last_kfusion_merge_ns, g_last_kfusion_cleanup_ns);
+        else
+            printf("andersen\t-\t%d\t%u\t%d\t%.1f\t%.1f\t%.1f\t%" PRId64
+                   "\t%" PRId64 "\t%u\t%s\n",
+                   total_facts, workers, repeat, min_ms, median_ms, max_ms,
+                   peak_rss, tuples, total_iters, "OK");
     } else {
         printf("andersen\t-\t-\t%u\t%d\t-\t-\t-\t-\t-\t-\tFAIL\n", workers,
                repeat);
@@ -777,7 +794,9 @@ run_cspa_workload(const char *data_dir, uint32_t workers, int repeat)
         if (g_format_json)
             output_json_row("cspa", total_facts, workers, repeat, min_ms,
                             median_ms, max_ms, peak_rss, tuples, total_iters,
-                            g_last_consolidation_ns, g_last_kfusion_ns);
+                            g_last_consolidation_ns, g_last_kfusion_ns,
+                            g_last_kfusion_alloc_ns, g_last_kfusion_dispatch_ns,
+                            g_last_kfusion_merge_ns, g_last_kfusion_cleanup_ns);
         else
             printf("cspa\t-\t%d\t%u\t%d\t%.1f\t%.1f\t%.1f\t%" PRId64
                    "\t%" PRId64 "\t%u\t%s\n",
@@ -865,23 +884,23 @@ run_cspa_incremental_workload(const char *data_dir, uint32_t workers,
      * NOTE: Currently unused (incremental measurement disabled).
      * Kept for reference: Phase 4+ delta-only evaluation. */
     static const char *cspa_incr_source __attribute__((unused))
-        = ".decl assign(x: int32, y: int32)\n"
-          ".decl dereference(x: int32, y: int32)\n"
-          ".decl valueFlow(x: int32, y: int32)\n"
-          ".decl memoryAlias(x: int32, y: int32)\n"
-          ".decl valueAlias(x: int32, y: int32)\n"
-          "valueFlow(y, x) :- assign(y, x).\n"
-          "valueFlow(x, x) :- assign(x, _).\n"
-          "valueFlow(x, x) :- assign(_, x).\n"
-          "memoryAlias(x, x) :- assign(_, x).\n"
-          "memoryAlias(x, x) :- assign(x, _).\n"
-          "valueFlow(x, y) :- valueFlow(x, z), valueFlow(z, y).\n"
-          "valueFlow(x, y) :- assign(x, z), memoryAlias(z, y).\n"
-          "memoryAlias(x, w) :- dereference(y, x), valueAlias(y, z), "
-          "dereference(z, w).\n"
-          "valueAlias(x, y) :- valueFlow(z, x), valueFlow(z, y).\n"
-          "valueAlias(x, y) :- valueFlow(z, x), memoryAlias(z, w), "
-          "valueFlow(w, y).\n";
+    = ".decl assign(x: int32, y: int32)\n"
+      ".decl dereference(x: int32, y: int32)\n"
+      ".decl valueFlow(x: int32, y: int32)\n"
+      ".decl memoryAlias(x: int32, y: int32)\n"
+      ".decl valueAlias(x: int32, y: int32)\n"
+      "valueFlow(y, x) :- assign(y, x).\n"
+      "valueFlow(x, x) :- assign(x, _).\n"
+      "valueFlow(x, x) :- assign(_, x).\n"
+      "memoryAlias(x, x) :- assign(_, x).\n"
+      "memoryAlias(x, x) :- assign(x, _).\n"
+      "valueFlow(x, y) :- valueFlow(x, z), valueFlow(z, y).\n"
+      "valueFlow(x, y) :- assign(x, z), memoryAlias(z, y).\n"
+      "memoryAlias(x, w) :- dereference(y, x), valueAlias(y, z), "
+      "dereference(z, w).\n"
+      "valueAlias(x, y) :- valueFlow(z, x), valueFlow(z, y).\n"
+      "valueAlias(x, y) :- valueFlow(z, x), memoryAlias(z, w), "
+      "valueFlow(w, y).\n";
 
     /* Load assign.csv and dereference.csv */
     char assign_path[1024], deref_path[1024];
@@ -2521,10 +2540,17 @@ run_doop_workload(const char *data_dir, uint32_t workers, int repeat)
         double median_ms = times[repeat / 2];
         double max_ms = times[repeat - 1];
 
-        printf("doop\t-\t%d\t%u\t%d\t%.1f\t%.1f\t%.1f\t%" PRId64 "\t%" PRId64
-               "\t%u\t%s\n",
-               total_facts, workers, repeat, min_ms, median_ms, max_ms,
-               peak_rss, tuples, total_iters, "OK");
+        if (g_format_json)
+            output_json_row("doop", total_facts, workers, repeat, min_ms,
+                            median_ms, max_ms, peak_rss, tuples, total_iters,
+                            g_last_consolidation_ns, g_last_kfusion_ns,
+                            g_last_kfusion_alloc_ns, g_last_kfusion_dispatch_ns,
+                            g_last_kfusion_merge_ns, g_last_kfusion_cleanup_ns);
+        else
+            printf("doop\t-\t%d\t%u\t%d\t%.1f\t%.1f\t%.1f\t%" PRId64
+                   "\t%" PRId64 "\t%u\t%s\n",
+                   total_facts, workers, repeat, min_ms, median_ms, max_ms,
+                   peak_rss, tuples, total_iters, "OK");
     } else {
         printf("doop\t-\t-\t%u\t%d\t-\t-\t-\t-\t-\t-\tFAIL\n", workers, repeat);
     }
@@ -2549,7 +2575,9 @@ static void
 output_json_row(const char *wl_name, int32_t edges, uint32_t workers,
                 int repeat, double min_ms, double median_ms, double max_ms,
                 int64_t peak_rss_kb, int64_t tuples, uint32_t iters,
-                uint64_t consolidation_ns, uint64_t kfusion_ns)
+                uint64_t consolidation_ns, uint64_t kfusion_ns,
+                uint64_t kfusion_alloc_ns, uint64_t kfusion_dispatch_ns,
+                uint64_t kfusion_merge_ns, uint64_t kfusion_cleanup_ns)
 {
     double wall_ns = median_ms * 1e6;
     double cons_pct
@@ -2558,6 +2586,17 @@ output_json_row(const char *wl_name, int32_t edges, uint32_t workers,
     double eval_pct = 100.0 - cons_pct - kfus_pct;
     if (eval_pct < 0.0)
         eval_pct = 0.0;
+
+    /* Per-phase breakdown percentages (relative to total kfusion_ns) */
+    double kf_ns = (double)kfusion_ns;
+    double alloc_pct
+        = kf_ns > 0 ? 100.0 * (double)kfusion_alloc_ns / kf_ns : 0.0;
+    double dispatch_pct
+        = kf_ns > 0 ? 100.0 * (double)kfusion_dispatch_ns / kf_ns : 0.0;
+    double merge_pct
+        = kf_ns > 0 ? 100.0 * (double)kfusion_merge_ns / kf_ns : 0.0;
+    double cleanup_pct
+        = kf_ns > 0 ? 100.0 * (double)kfusion_cleanup_ns / kf_ns : 0.0;
 
     printf("{\n");
     printf("  \"workload\": \"%s\",\n", wl_name);
@@ -2573,6 +2612,13 @@ output_json_row(const char *wl_name, int32_t edges, uint32_t workers,
            min_ms, median_ms, max_ms);
     printf("  \"consolidation_ms\": %.3f,\n", (double)consolidation_ns / 1e6);
     printf("  \"kfusion_ms\": %.3f,\n", (double)kfusion_ns / 1e6);
+    printf("  \"kfusion_phase_ms\": {\"alloc\": %.4f, \"dispatch\": %.4f, "
+           "\"merge\": %.4f, \"cleanup\": %.4f},\n",
+           (double)kfusion_alloc_ns / 1e6, (double)kfusion_dispatch_ns / 1e6,
+           (double)kfusion_merge_ns / 1e6, (double)kfusion_cleanup_ns / 1e6);
+    printf("  \"kfusion_phase_pct\": {\"alloc\": %.1f, \"dispatch\": %.1f, "
+           "\"merge\": %.1f, \"cleanup\": %.1f},\n",
+           alloc_pct, dispatch_pct, merge_pct, cleanup_pct);
     printf("  \"evaluation_ms\": %.3f,\n", median_ms
                                                - (double)consolidation_ns / 1e6
                                                - (double)kfusion_ns / 1e6);
@@ -2769,6 +2815,12 @@ main(int argc, char **argv)
             return 1;
         }
         rc = run_cspa_incremental_workload(data_cspa_path, workers, repeat);
+    } else if (strcmp(workload, "cspa-fast") == 0) {
+        if (!data_cspa_path) {
+            fprintf(stderr, "error: cspa-fast requires --data-cspa DIR\n");
+            return 1;
+        }
+        rc = run_cspa_workload(data_cspa_path, workers, repeat);
     } else if (strcmp(workload, "csda") == 0) {
         if (!data_csda_path) {
             fprintf(stderr, "error: csda requires --data-csda DIR\n");
