@@ -3041,6 +3041,65 @@ col_op_reduce(const wl_plan_op_t *op, eval_stack_t *stack)
     return eval_stack_push(stack, out, true);
 }
 
+/* --- REDUCE WEIGHTED (Z-set / Mobius COUNT) ------------------------------ */
+
+/*
+ * col_op_reduce_weighted:
+ * Global COUNT aggregation using Z-set (signed multiplicity) semantics.
+ * Output: one row whose data value = sum of input multiplicities, and whose
+ * timestamp.multiplicity = the same sum.
+ *
+ * src - input relation; src->timestamps[i].multiplicity carries each row's
+ *       signed weight.
+ * dst - output relation (caller-allocated, empty on entry, ncols >= 1).
+ *
+ * Returns 0 on success, EINVAL / ENOMEM on error.
+ */
+int
+col_op_reduce_weighted(const col_rel_t *src, col_rel_t *dst)
+{
+    if (!src || !dst)
+        return EINVAL;
+
+    /* Sum all input multiplicities. */
+    int64_t total = 0;
+    if (src->timestamps) {
+        for (uint32_t i = 0; i < src->nrows; i++)
+            total += src->timestamps[i].multiplicity;
+    } else {
+        /* No timestamp tracking: treat each row as multiplicity 1. */
+        total = (int64_t)src->nrows;
+    }
+
+    /* Allocate timestamp tracking on dst if not already present. */
+    if (!dst->timestamps) {
+        dst->timestamps
+            = (col_delta_timestamp_t *)calloc(1, sizeof(col_delta_timestamp_t));
+        if (!dst->timestamps)
+            return ENOMEM;
+        dst->capacity = (dst->capacity == 0) ? 1 : dst->capacity;
+    }
+
+    /* Allocate data buffer for one output row if not already present. */
+    if (!dst->data) {
+        uint32_t ncols = dst->ncols ? dst->ncols : 1;
+        dst->data = (int64_t *)calloc(ncols, sizeof(int64_t));
+        if (!dst->data)
+            return ENOMEM;
+        dst->capacity = 1;
+    }
+
+    /* Write the single aggregate row. */
+    dst->data[0] = total;
+    dst->nrows = 1;
+
+    /* Set output row multiplicity. */
+    memset(&dst->timestamps[0], 0, sizeof(col_delta_timestamp_t));
+    dst->timestamps[0].multiplicity = total;
+
+    return 0;
+}
+
 /* ======================================================================== */
 /* Stratum Evaluator                                                         */
 /* ======================================================================== */
