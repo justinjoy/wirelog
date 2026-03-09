@@ -94,16 +94,20 @@ typedef struct {
  * frontier tracking.
  *
  * Fields:
- *   iteration  Fixed-point iteration (0-based) that first produced this row.
- *   stratum    Stratum index within the evaluation plan (0-based).
- *   worker     K-fusion worker index (0 = sequential / non-parallel path).
- *   _reserved  Must be zero (reserved for future use).
+ *   iteration    Fixed-point iteration (0-based) that first produced this row.
+ *   stratum      Stratum index within the evaluation plan (0-based).
+ *   worker       K-fusion worker index (0 = sequential / non-parallel path).
+ *   _reserved    Must be zero (reserved for future use).
+ *   multiplicity Signed weight in Z-set semantics (1 = insert, -1 = retract,
+ *                >1 = bulk insert, <-1 = bulk delete).  All newly derived
+ *                rows are stamped with multiplicity=1.
  */
 typedef struct {
     uint32_t iteration;
     uint32_t stratum;
     uint32_t worker;
     uint32_t _reserved;
+    int64_t multiplicity;
 } col_delta_timestamp_t;
 
 /* ======================================================================== */
@@ -228,15 +232,23 @@ col_session_get_iteration_count(wl_session_t *sess);
  *
  * Return accumulated profiling counters (nanoseconds) from the last
  * wl_session_snapshot() call.  Counters reset at evaluation start.
- * Both out-parameters are NULL-safe.
+ * All out-parameters are NULL-safe.
  *
- * @param sess                  A wl_session_t* backed by the columnar backend.
- * @param out_consolidation_ns  Time in col_op_consolidate_incremental_delta.
- * @param out_kfusion_ns        Time in col_op_k_fusion.
+ * @param sess                    A wl_session_t* backed by the columnar backend.
+ * @param out_consolidation_ns    Time in col_op_consolidate_incremental_delta.
+ * @param out_kfusion_ns          Total time in col_op_k_fusion.
+ * @param out_kfusion_alloc_ns    Phase: calloc of results/workers/worker_sess.
+ * @param out_kfusion_dispatch_ns Phase: submit loop + wl_workqueue_wait_all.
+ * @param out_kfusion_merge_ns    Phase: col_rel_merge_k + eval_stack_push.
+ * @param out_kfusion_cleanup_ns  Phase: result/mat_cache/arr/darr free loops.
  */
 void
 col_session_get_perf_stats(wl_session_t *sess, uint64_t *out_consolidation_ns,
-                           uint64_t *out_kfusion_ns);
+                           uint64_t *out_kfusion_ns,
+                           uint64_t *out_kfusion_alloc_ns,
+                           uint64_t *out_kfusion_dispatch_ns,
+                           uint64_t *out_kfusion_merge_ns,
+                           uint64_t *out_kfusion_cleanup_ns);
 
 /**
  * col_session_get_darr_count:

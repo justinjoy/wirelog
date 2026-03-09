@@ -161,9 +161,10 @@ test_timestamp_struct_layout(void)
     ASSERT(ts.stratum == 2, "stratum assignment");
     ASSERT(ts.worker == 3, "worker assignment");
 
-    /* Size must be exactly 4 x uint32_t = 16 bytes */
-    ASSERT(sizeof(col_delta_timestamp_t) == 4 * sizeof(uint32_t),
-           "struct must be 4 x uint32_t (16 bytes)");
+    /* Size must be exactly 4 x uint32_t + int64_t = 24 bytes */
+    ASSERT(sizeof(col_delta_timestamp_t)
+               == 4 * sizeof(uint32_t) + sizeof(int64_t),
+           "struct must be 4 x uint32_t + int64_t (24 bytes)");
 
     PASS();
 }
