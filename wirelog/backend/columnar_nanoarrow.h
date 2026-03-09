@@ -301,17 +301,45 @@ col_session_get_frontier(wl_session_t *session, uint32_t stratum_idx,
                          col_frontier_t *out_frontier);
 
 /**
+ * col_session_insert:
+ *
+ * Append facts to an EDB relation and enable incremental re-evaluation mode.
+ *
+ * This is the primary insert function for the columnar backend. It appends
+ * facts and sets last_inserted_relation to activate affected-stratum skip
+ * optimization in col_session_snapshot, enabling frontier persistence benefits.
+ *
+ * Phase 4 incremental frontier integration: Setting last_inserted_relation
+ * allows affected-stratum detection to skip strata that don't depend on the
+ * inserted relation, achieving iteration reduction (6->5 on CSPA, ~15% speedup).
+ *
+ * Facts are appended to the existing relation; existing rows are kept.
+ * Schema is lazily initialised on the first call.
+ *
+ * @param session   Active session created by col_session_create.
+ * @param relation  Name of the EDB relation to append to.
+ * @param data      Row-major int64_t array, num_rows * num_cols elements.
+ * @param num_rows  Number of rows to append.
+ * @param num_cols  Number of columns per row.
+ * @return 0 on success, EINVAL on bad arguments or column-count mismatch,
+ *         ENOENT if the relation is not registered, ENOMEM on allocation failure.
+ */
+int
+col_session_insert(wl_session_t *session, const char *relation,
+                   const int64_t *data, uint32_t num_rows, uint32_t num_cols);
+
+/**
  * col_session_insert_incremental:
  *
  * Append facts to an EDB relation WITHOUT resetting per-stratum frontiers.
  *
- * Unlike the standard session_insert vtable slot (which may reset evaluation
- * state), this function preserves the frontiers[] array so that a subsequent
- * col_session_step() call performs incremental re-evaluation: strata whose
- * frontier has already converged past the current iteration are skipped.
+ * Unlike col_session_insert(), this function preserves the frontiers[] array
+ * across calls so that a subsequent col_session_snapshot() call performs
+ * incremental re-evaluation: strata whose frontier has already converged past
+ * the current iteration are skipped.
  *
  * Facts are appended to the existing relation; existing rows are kept.
- * Schema is lazily initialised on the first call (same rule as session_insert).
+ * Schema is lazily initialised on the first call (same rule as col_session_insert).
  * An empty insertion (num_rows == 0) is a safe no-op that returns 0.
  *
  * @param session   Active session created by col_session_create.

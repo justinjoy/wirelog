@@ -1022,11 +1022,9 @@ run_cspa_incremental_workload(const char *data_dir, uint32_t workers,
     }
 
     /* ---- Run 2 (incremental): initial eval + insert + re-eval ----------- */
-    /* NOTE: Incremental re-evaluation is still ~3x slower after frontier fix.
-     * Issue: Semi-naive evaluation with BASE fact insertion requires full re-eval (0-5).
-     * Frontier skip only saves iteration 6+ (~5% speedup, insufficient for <2min target).
-     * Solution: Requires delta-only evaluation architecture (Phase 4+ roadmap).
-     * This measurement is disabled for now. Focus is on baseline optimization. */
+    /* NOTE: Incremental re-evaluation with frontier persistence still 3x slower
+     * (Phase 4+ work needed). This measurement is disabled for now.
+     * Focus: baseline optimization. Frontier persistence infrastructure in place. */
     double *initial_times = (double *)malloc(sizeof(double) * (size_t)repeat);
     double *insert_times = (double *)malloc(sizeof(double) * (size_t)repeat);
     double *reeval_times = (double *)malloc(sizeof(double) * (size_t)repeat);
@@ -1041,15 +1039,12 @@ run_cspa_incremental_workload(const char *data_dir, uint32_t workers,
         return -1;
     }
 
-    /* Skip incremental measurement (expensive and not faster than baseline yet) */
-    /* Instead, just use baseline times for all phases. This focuses benchmarking
-     * on the baseline performance until incremental evaluation is optimized. */
+    /* Skip incremental measurement (still too slow) */
+    /* Use baseline times for all phases */
     int64_t initial_tuples = baseline_tuples;
     int64_t reeval_tuples = baseline_tuples;
     uint32_t initial_iters = baseline_iters;
     uint32_t reeval_iters = baseline_iters;
-    (void)initial_tuples;
-    (void)initial_iters;
 
     for (int r = 0; r < repeat; r++) {
         initial_times[r] = baseline_times[r];
