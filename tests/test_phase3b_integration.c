@@ -15,6 +15,8 @@
  * Delta reveals changes between two collection snapshots.
  */
 
+#define _GNU_SOURCE
+
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>

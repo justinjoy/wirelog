@@ -20,6 +20,8 @@
  *   3. Output row multiplicity = sum of input multiplicities = 1
  */
 
+#define _GNU_SOURCE
+
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>

@@ -21,6 +21,8 @@
  *   5. large dataset correctness oracle (1000 old, 200 dups + 500 new)
  */
 
+#define _GNU_SOURCE
+
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>

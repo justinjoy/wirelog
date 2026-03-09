@@ -26,6 +26,8 @@
  *   4. Key vanishes {k1:2} -> {} -> delta={k1:mult=-2}
  */
 
+#define _GNU_SOURCE
+
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
