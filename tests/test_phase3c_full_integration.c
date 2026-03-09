@@ -17,6 +17,8 @@
  *   4. Complete end-to-end: trace from facts through all three operations
  */
 
+#define _GNU_SOURCE
+
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>

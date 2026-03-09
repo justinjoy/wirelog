@@ -16,6 +16,8 @@
  *   3. Mixed operations (some keys mult=0, some≠0) → partial skip behavior
  */
 
+#define _GNU_SOURCE
+
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
