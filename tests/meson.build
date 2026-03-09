@@ -610,6 +610,20 @@ test_mobius_count_signed_exe = executable(
 test('mobius_count_signed', test_mobius_count_signed_exe)
 
 # ============================================================================
+# Mobius JOIN Weighted Multiplicity Tests (US-3B-004 TDD RED Phase)
+# ============================================================================
+
+test_mobius_join_weighted_exe = executable(
+  'test_mobius_join_weighted',
+  files('test_mobius_join_weighted.c'),
+  backend_src,
+  include_directories: [wirelog_inc, wirelog_src_inc],
+  dependencies: [nanoarrow_dep, threads_dep],
+)
+
+test('mobius_join_weighted', test_mobius_join_weighted_exe)
+
+# ============================================================================
 # Recursive Aggregation Plan Tests - DISABLED in Phase 2C
 # ============================================================================
 #
