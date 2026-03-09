@@ -6,6 +6,8 @@
  * For commercial licenses, contact: inquiry@cleverplant.com
  */
 
+#define _GNU_SOURCE
+
 #include "columnar_nanoarrow.h"
 #include "memory.h"
 #include "../session.h"
@@ -24,6 +26,10 @@
 
 #ifdef __AVX2__
 #include <immintrin.h>
+#endif
+
+#ifdef __SSE2__
+#include <emmintrin.h>
 #endif
 
 #ifdef __ARM_NEON__
