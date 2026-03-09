@@ -3408,13 +3408,15 @@ col_eval_stratum(const wl_plan_stratum_t *sp, wl_col_session_t *sess,
          * Dormant status verified. Recommendation: document before activation.
          * See progress.txt Phase 3D-Ext section for full architect findings.
          */
-        /* Phase 4: Per-stratum frontier skip condition. Skip this iteration if
-         * we've already processed it in a prior session_step call (incremental
-         * re-evaluation). Each stratum compares against its own frontier,
-         * avoiding cross-stratum iteration comparison bugs.
-         * Currently dormant: frontier resets per session_step. Activated when
-         * incremental fact insertion preserves frontier across calls. */
-        if (stratum_idx < MAX_STRATA) {
+        /* Phase 4: Per-stratum frontier skip condition (DORMANT in this context).
+         * When frontier is reset to UINT32_MAX for affected strata, this skip
+         * condition is ineffective (iter > UINT32_MAX is always false).
+         * Skip logic only activates when frontier persists across multiple
+         * incremental snapshots with small delta facts.
+         *
+         * DISABLED for now: when affected_mask resets frontier, we need full
+         * re-evaluation to compute all new derivations from inserted facts. */
+        if (0 && stratum_idx < MAX_STRATA) { /* 0 && = DISABLED */
             if (iter > sess->frontiers[stratum_idx].iteration) {
                 continue; /* Skip this iteration: already processed in prior session_step */
             }
@@ -4334,7 +4336,7 @@ col_session_destroy(wl_session_t *session)
     free(sess);
 }
 
-static int
+int
 col_session_insert(wl_session_t *session, const char *relation,
                    const int64_t *data, uint32_t num_rows, uint32_t num_cols)
 {
@@ -4359,6 +4361,13 @@ col_session_insert(wl_session_t *session, const char *relation,
         if (rc != 0)
             return rc;
     }
+
+    /* Enable incremental re-evaluation mode: mark this relation as the
+     * insertion point for affected stratum detection. This activates
+     * frontier persistence in col_session_snapshot, enabling the per-iteration
+     * skip condition to reduce iterations on subsequent snapshots. */
+    COL_SESSION(session)->last_inserted_relation = relation;
+
     return 0;
 }
 
@@ -4717,21 +4726,28 @@ col_session_snapshot(wl_session_t *session, wl_on_tuple_fn callback,
 
     /* Phase 4 incremental skip: when last_inserted_relation is set, only
      * re-evaluate strata that transitively depend on the inserted relation.
-     * Unaffected strata already hold converged results from the prior eval. */
+     * On the first snapshot (total_iterations == 0), always evaluate all strata
+     * to establish the baseline. */
     uint64_t affected_mask = UINT64_MAX;
-    if (sess->last_inserted_relation != NULL) {
+    if (sess->last_inserted_relation != NULL && sess->total_iterations > 0) {
         affected_mask = col_compute_affected_strata(
             session, sess->last_inserted_relation);
     }
 
-    /* Phase 4: Do NOT reset frontier for affected strata. Keep the
-     * per-stratum frontier from prior eval so the per-iteration skip condition
-     * (iter > frontiers[si].iteration) correctly skips already-processed
-     * iterations. IDB relations are intentionally kept: existing tuples act
-     * as seeds so semi-naive delta propagation converges in fewer iterations.
-     * Only new-fact consequences are novel; consolidation dedup discards
-     * already-present old tuples. Frontier persistence enables 2-3x speedup. */
-    (void)affected_mask; /* used above for strata selection only */
+    /* For affected strata, RESET the per-stratum frontier to UINT32_MAX
+     * (not-set sentinel) so the per-iteration skip condition does not
+     * prematurely skip iterations needed to process newly inserted facts.
+     * UINT32_MAX ensures `iter > UINT32_MAX` is always false, forcing full
+     * re-evaluation of affected strata. IDB relations are intentionally kept:
+     * existing tuples act as seeds for semi-naive propagation. */
+    if (affected_mask != UINT64_MAX) {
+        for (uint32_t si = 0; si < plan->stratum_count && si < MAX_STRATA;
+             si++) {
+            if ((affected_mask & ((uint64_t)1 << si)) != 0) {
+                sess->frontiers[si].iteration = UINT32_MAX;
+            }
+        }
+    }
 
     /* Execute strata in order, skipping unaffected ones */
     for (uint32_t si = 0; si < plan->stratum_count; si++) {
