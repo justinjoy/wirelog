@@ -5,7 +5,7 @@ project(
   license: 'LGPL-3.0',
   meson_version: '>=0.62.0',
   default_options: [
-    'c_std=c11',
+    'c_std=c99',
     'buildtype=release',
     'optimization=s',
     'b_lto=true',
@@ -28,7 +28,7 @@ wirelog_datadir = get_option('datadir') / project_name
 cc = meson.get_compiler('c')
 if cc.get_id() == 'msvc'
   add_project_arguments(
-    ['/W3', '/D_CRT_SILENCE_NONCONFORMING_ATOMICS'],
+    ['/W3'],
     language: 'c'
   )
 else
