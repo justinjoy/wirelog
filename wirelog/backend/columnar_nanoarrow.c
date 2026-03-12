@@ -9,6 +9,7 @@
 #define _GNU_SOURCE
 
 #include "columnar_nanoarrow.h"
+#include "delta_pool.h"
 #include "memory.h"
 #include "../session.h"
 #include "../wirelog-internal.h"
@@ -804,6 +805,7 @@ typedef struct {
      * deletion phase skip optimization. Populated from plan->strata[si].is_monotone
      * during session_create. Conservative default: all false (no optimization). */
     bool stratum_is_monotone[MAX_STRATA];
+    delta_pool_t *delta_pool; /* Pool allocator for operator temporaries */
 } wl_col_session_t;
 
 /*
@@ -3005,6 +3007,8 @@ col_op_k_fusion(const wl_plan_op_t *op, eval_stack_t *stack,
         worker_sess[d].darr_entries = NULL;
         worker_sess[d].darr_count = 0;
         worker_sess[d].darr_cap = 0;
+        worker_sess[d].delta_pool
+            = delta_pool_create(128, sizeof(col_rel_t), 32 * 1024 * 1024);
 
         workers[d].plan_data.name = "<k_fusion_copy>";
         workers[d].plan_data.ops = meta->k_ops[d];
@@ -3167,6 +3171,7 @@ cleanup_wq:
         free(worker_sess[d].arr_entries);
         /* Free worker's private delta-arrangement cache (darr_*). */
         col_session_free_delta_arrangements(&worker_sess[d]);
+        delta_pool_destroy(worker_sess[d].delta_pool);
     }
     free(worker_sess);
     free(results);
@@ -4725,6 +4730,15 @@ col_session_create(const wl_plan_t *plan, uint32_t num_workers,
         }
     }
 
+    /* Create delta pool for per-iteration temporaries.
+     * Slab: 256 relations (cover ~20 rules x 5 ops + headroom)
+     * Arena: 64MB initial (for row data buffers) */
+    sess->delta_pool
+        = delta_pool_create(256, sizeof(col_rel_t), 64 * 1024 * 1024);
+    if (!sess->delta_pool) {
+        /* Non-fatal: pool allocation failed, fall back to malloc */
+    }
+
     /* Pre-register EDB relations (ncols determined at first insert) */
     for (uint32_t i = 0; i < plan->edb_count; i++) {
         col_rel_t *r = NULL;
@@ -4801,6 +4815,7 @@ col_session_destroy(wl_session_t *session)
     }
     free(sess->arr_entries);
     col_session_free_delta_arrangements(sess);
+    delta_pool_destroy(sess->delta_pool);
     free(sess);
 }
 
