@@ -63,12 +63,10 @@ jobs:
             compiler: msvc
             cc: cl
 
-          # ARM64 - GCC (self-hosted runner)
-          # Configure a self-hosted ARM64 runner with -march=armv8-a+simd support
-          # This is optional and only runs if a self-hosted ARM64 runner is available
-          - os: arm64
-            os_display: arm64-self-hosted
-            os_runs_on: [self-hosted, arm64]
+          # ARM64 - GCC (GitHub-hosted runner)
+          # Uses GitHub's ubuntu-24.04-arm runner with native ARM64 support
+          - os: ubuntu-24.04-arm
+            os_display: ubuntu-24.04-arm
             compiler: gcc
             cc: gcc
 
