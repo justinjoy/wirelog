@@ -60,24 +60,24 @@ static int tests_run = 0;
 static int tests_passed = 0;
 static int tests_failed = 0;
 
-#define TEST(name)                                        \
-    do {                                                  \
-        tests_run++;                                      \
-        printf("  [TEST] %-60s", (name));                 \
-        fflush(stdout);                                   \
+#define TEST(name)                        \
+    do {                                  \
+        tests_run++;                      \
+        printf("  [TEST] %-60s", (name)); \
+        fflush(stdout);                   \
     } while (0)
 
-#define PASS()              \
-    do {                    \
-        tests_passed++;     \
-        printf(" PASS\n");  \
+#define PASS()             \
+    do {                   \
+        tests_passed++;    \
+        printf(" PASS\n"); \
     } while (0)
 
-#define FAIL(msg)                    \
-    do {                             \
-        tests_failed++;              \
+#define FAIL(msg)                     \
+    do {                              \
+        tests_failed++;               \
         printf(" FAIL: %s\n", (msg)); \
-        return;                      \
+        return;                       \
     } while (0)
 
 #define ASSERT(cond, msg) \
@@ -91,7 +91,7 @@ static int tests_failed = 0;
 /* ======================================================================== */
 
 #define MAX_TUPLES 512
-#define MAX_COLS   8
+#define MAX_COLS 8
 
 typedef struct {
     int count;
@@ -204,14 +204,14 @@ test_nibble_extraction(void)
 {
     TEST("band(x,15) extracts low nibble, bshr(x,4) extracts high nibble");
 
-    const char *src =
-        ".decl packet(id: int64, byte_val: int64, flags: int64)\n"
-        "packet(1, 165, 128).\n" /* 0xA5, error set */
-        "packet(2, 115, 0).\n"   /* 0x73, no error */
-        ".decl msg_type(id: int64, mtype: int64)\n"
-        "msg_type(Id, band(ByteVal, 15)) :- packet(Id, ByteVal, Flags).\n"
-        ".decl proto_ver(id: int64, version: int64)\n"
-        "proto_ver(Id, bshr(ByteVal, 4)) :- packet(Id, ByteVal, Flags).\n";
+    const char *src
+        = ".decl packet(id: int64, byte_val: int64, flags: int64)\n"
+          "packet(1, 165, 128).\n" /* 0xA5, error set */
+          "packet(2, 115, 0).\n"   /* 0x73, no error */
+          ".decl msg_type(id: int64, mtype: int64)\n"
+          "msg_type(Id, band(ByteVal, 15)) :- packet(Id, ByteVal, Flags).\n"
+          ".decl proto_ver(id: int64, version: int64)\n"
+          "proto_ver(Id, bshr(ByteVal, 4)) :- packet(Id, ByteVal, Flags).\n";
 
     tuple_collector_t tuples;
     ASSERT(run_program(src, &tuples) == 0, "program execution failed");
@@ -248,12 +248,12 @@ test_error_flag_check(void)
 {
     TEST("band(Flags,128) != 0 detects error flag in bit 7");
 
-    const char *src =
-        ".decl packet(id: int64, byte_val: int64, flags: int64)\n"
-        "packet(1, 165, 128).\n" /* flags=0x80: error set */
-        "packet(2, 115, 0).\n"   /* flags=0x00: no error */
-        ".decl has_error(id: int64)\n"
-        "has_error(Id) :- packet(Id, ByteVal, Flags), band(Flags, 128) != 0.\n";
+    const char *src = ".decl packet(id: int64, byte_val: int64, flags: int64)\n"
+                      "packet(1, 165, 128).\n" /* flags=0x80: error set */
+                      "packet(2, 115, 0).\n"   /* flags=0x00: no error */
+                      ".decl has_error(id: int64)\n"
+                      "has_error(Id) :- packet(Id, ByteVal, Flags), "
+                      "band(Flags, 128) != 0.\n";
 
     tuple_collector_t tuples;
     ASSERT(run_program(src, &tuples) == 0, "program execution failed");
@@ -280,13 +280,13 @@ test_word_reconstruction(void)
 {
     TEST("bor(bshl(Hi,8),Lo) reconstructs 16-bit word from two bytes");
 
-    const char *src =
-        ".decl hi_byte(id: int64, val: int64)\n"
-        ".decl lo_byte(id: int64, val: int64)\n"
-        "hi_byte(1, 202).\n" /* 0xCA */
-        "lo_byte(1, 254).\n" /* 0xFE */
-        ".decl word16(id: int64, val: int64)\n"
-        "word16(Id, bor(bshl(Hi, 8), Lo)) :- hi_byte(Id, Hi), lo_byte(Id, Lo).\n";
+    const char *src = ".decl hi_byte(id: int64, val: int64)\n"
+                      ".decl lo_byte(id: int64, val: int64)\n"
+                      "hi_byte(1, 202).\n" /* 0xCA */
+                      "lo_byte(1, 254).\n" /* 0xFE */
+                      ".decl word16(id: int64, val: int64)\n"
+                      "word16(Id, bor(bshl(Hi, 8), Lo)) :- hi_byte(Id, Hi), "
+                      "lo_byte(Id, Lo).\n";
 
     tuple_collector_t tuples;
     ASSERT(run_program(src, &tuples) == 0, "program execution failed");
@@ -309,12 +309,12 @@ test_bxor_flag_toggle(void)
 {
     TEST("bxor(Flags,255) toggles all flag bits");
 
-    const char *src =
-        ".decl packet(id: int64, byte_val: int64, flags: int64)\n"
-        "packet(1, 165, 128).\n" /* flags=0x80 */
-        "packet(2, 115, 0).\n"   /* flags=0x00 */
-        ".decl flags_xor(id: int64, val: int64)\n"
-        "flags_xor(Id, bxor(Flags, 255)) :- packet(Id, ByteVal, Flags).\n";
+    const char *src
+        = ".decl packet(id: int64, byte_val: int64, flags: int64)\n"
+          "packet(1, 165, 128).\n" /* flags=0x80 */
+          "packet(2, 115, 0).\n"   /* flags=0x00 */
+          ".decl flags_xor(id: int64, val: int64)\n"
+          "flags_xor(Id, bxor(Flags, 255)) :- packet(Id, ByteVal, Flags).\n";
 
     tuple_collector_t tuples;
     ASSERT(run_program(src, &tuples) == 0, "program execution failed");
@@ -341,12 +341,11 @@ test_bnot_complement(void)
 {
     TEST("bnot(x) computes bitwise NOT (two's complement int64)");
 
-    const char *src =
-        ".decl byte_val(id: int64, val: int64)\n"
-        "byte_val(1, 165).\n" /* 0xA5 */
-        "byte_val(2, 115).\n" /* 0x73 */
-        ".decl inv_byte(id: int64, val: int64)\n"
-        "inv_byte(Id, bnot(Val)) :- byte_val(Id, Val).\n";
+    const char *src = ".decl byte_val(id: int64, val: int64)\n"
+                      "byte_val(1, 165).\n" /* 0xA5 */
+                      "byte_val(2, 115).\n" /* 0x73 */
+                      ".decl inv_byte(id: int64, val: int64)\n"
+                      "inv_byte(Id, bnot(Val)) :- byte_val(Id, Val).\n";
 
     tuple_collector_t tuples;
     ASSERT(run_program(src, &tuples) == 0, "program execution failed");
@@ -399,7 +398,8 @@ test_protocol_analysis_end_to_end(void)
 
         /* bshl + bor: reconstruct 16-bit word */
         ".decl word16(id: int64, val: int64)\n"
-        "word16(Id, bor(bshl(Hi, 8), Lo)) :- hi_byte(Id, Hi), lo_byte(Id, Lo).\n"
+        "word16(Id, bor(bshl(Hi, 8), Lo)) :- hi_byte(Id, Hi), lo_byte(Id, "
+        "Lo).\n"
 
         /* bxor: toggle all flag bits */
         ".decl flags_xor(id: int64, val: int64)\n"
@@ -415,16 +415,18 @@ test_protocol_analysis_end_to_end(void)
     char msg[128];
 
     /* --- band: low nibble extraction --- */
-    int64_t mt1[] = { 1, 5 };   /* 0xA5 & 0x0F = 5 */
-    int64_t mt2[] = { 2, 3 };   /* 0x73 & 0x0F = 3 */
-    snprintf(msg, sizeof(msg), "msg_type(1,5): band(165,15)=%d", (int)(165 & 15));
+    int64_t mt1[] = { 1, 5 }; /* 0xA5 & 0x0F = 5 */
+    int64_t mt2[] = { 2, 3 }; /* 0x73 & 0x0F = 3 */
+    snprintf(msg, sizeof(msg), "msg_type(1,5): band(165,15)=%d",
+             (int)(165 & 15));
     ASSERT(has_tuple(&tuples, "msg_type", mt1, 2), msg);
-    snprintf(msg, sizeof(msg), "msg_type(2,3): band(115,15)=%d", (int)(115 & 15));
+    snprintf(msg, sizeof(msg), "msg_type(2,3): band(115,15)=%d",
+             (int)(115 & 15));
     ASSERT(has_tuple(&tuples, "msg_type", mt2, 2), msg);
 
     /* --- bshr: high nibble extraction --- */
-    int64_t pv1[] = { 1, 10 };  /* 0xA5 >> 4 = 10 */
-    int64_t pv2[] = { 2, 7 };   /* 0x73 >> 4 = 7 */
+    int64_t pv1[] = { 1, 10 }; /* 0xA5 >> 4 = 10 */
+    int64_t pv2[] = { 2, 7 };  /* 0x73 >> 4 = 7 */
     ASSERT(has_tuple(&tuples, "proto_ver", pv1, 2),
            "proto_ver(1,10): bshr(165,4)=10");
     ASSERT(has_tuple(&tuples, "proto_ver", pv2, 2),
@@ -485,7 +487,7 @@ main(void)
     printf("\n--- End-to-end protocol analysis ---\n");
     test_protocol_analysis_end_to_end();
 
-    printf("\n  %d tests: %d passed, %d failed\n",
-           tests_run, tests_passed, tests_failed);
+    printf("\n  %d tests: %d passed, %d failed\n", tests_run, tests_passed,
+           tests_failed);
     return tests_failed > 0 ? 1 : 0;
 }

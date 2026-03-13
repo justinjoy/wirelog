@@ -52,19 +52,19 @@ static int tests_failed = 0;
     wl_parser_ast_node_t *program \
         = wl_parser_parse_string(src, errbuf, sizeof(errbuf))
 
-#define ASSERT_PARSED()                                               \
-    do {                                                              \
-        if (!program) {                                               \
-            char buf[600];                                            \
-            snprintf(buf, sizeof(buf), "parse failed: %s", errbuf);  \
-            FAIL(buf);                                                \
-            return;                                                   \
-        }                                                             \
-        if (program->type != WL_PARSER_AST_NODE_PROGRAM) {           \
-            wl_parser_ast_node_free(program);                         \
-            FAIL("root is not PROGRAM");                              \
-            return;                                                   \
-        }                                                             \
+#define ASSERT_PARSED()                                             \
+    do {                                                            \
+        if (!program) {                                             \
+            char buf[600];                                          \
+            snprintf(buf, sizeof(buf), "parse failed: %s", errbuf); \
+            FAIL(buf);                                              \
+            return;                                                 \
+        }                                                           \
+        if (program->type != WL_PARSER_AST_NODE_PROGRAM) {          \
+            wl_parser_ast_node_free(program);                       \
+            FAIL("root is not PROGRAM");                            \
+            return;                                                 \
+        }                                                           \
     } while (0)
 
 #define CLEANUP() wl_parser_ast_node_free(program)
@@ -295,12 +295,14 @@ test_parse_bxor_with_constants(void)
     }
     const wl_parser_ast_node_t *lhs = child(expr, 0);
     const wl_parser_ast_node_t *rhs = child(expr, 1);
-    if (!lhs || lhs->type != WL_PARSER_AST_NODE_INTEGER || lhs->int_value != 170) {
+    if (!lhs || lhs->type != WL_PARSER_AST_NODE_INTEGER
+        || lhs->int_value != 170) {
         CLEANUP();
         FAIL("left child should be INTEGER 170");
         return;
     }
-    if (!rhs || rhs->type != WL_PARSER_AST_NODE_INTEGER || rhs->int_value != 85) {
+    if (!rhs || rhs->type != WL_PARSER_AST_NODE_INTEGER
+        || rhs->int_value != 85) {
         CLEANUP();
         FAIL("right child should be INTEGER 85");
         return;
@@ -405,7 +407,8 @@ test_parse_bshl_in_head(void)
         return;
     }
     const wl_parser_ast_node_t *rhs = child(expr, 1);
-    if (!rhs || rhs->type != WL_PARSER_AST_NODE_INTEGER || rhs->int_value != 4) {
+    if (!rhs || rhs->type != WL_PARSER_AST_NODE_INTEGER
+        || rhs->int_value != 4) {
         CLEANUP();
         FAIL("right child should be INTEGER 4 (shift amount)");
         return;
@@ -429,7 +432,8 @@ test_parse_bshr_in_head(void)
         return;
     }
     const wl_parser_ast_node_t *rhs = child(expr, 1);
-    if (!rhs || rhs->type != WL_PARSER_AST_NODE_INTEGER || rhs->int_value != 2) {
+    if (!rhs || rhs->type != WL_PARSER_AST_NODE_INTEGER
+        || rhs->int_value != 2) {
         CLEANUP();
         FAIL("right child should be INTEGER 2 (shift amount)");
         return;

@@ -130,11 +130,11 @@ test_bitwise_ops_distinct_from_each_other(void)
 {
     TEST("all 6 bitwise enum values are distinct");
     int band = (int)WIRELOG_ARITH_BAND;
-    int bor  = (int)WIRELOG_ARITH_BOR;
+    int bor = (int)WIRELOG_ARITH_BOR;
     int bxor = (int)WIRELOG_ARITH_BXOR;
     int bnot = (int)WIRELOG_ARITH_BNOT;
-    int shl  = (int)WIRELOG_ARITH_SHL;
-    int shr  = (int)WIRELOG_ARITH_SHR;
+    int shl = (int)WIRELOG_ARITH_SHL;
+    int shr = (int)WIRELOG_ARITH_SHR;
 
     if (band == bor || band == bxor || band == bnot || band == shl
         || band == shr) {
@@ -165,19 +165,13 @@ test_bitwise_ops_distinct_from_arithmetic_ops(void)
 {
     TEST("bitwise enum values do not collide with ADD/SUB/MUL/DIV/MOD");
     int existing[] = {
-        (int)WIRELOG_ARITH_ADD,
-        (int)WIRELOG_ARITH_SUB,
-        (int)WIRELOG_ARITH_MUL,
-        (int)WIRELOG_ARITH_DIV,
-        (int)WIRELOG_ARITH_MOD,
+        (int)WIRELOG_ARITH_ADD, (int)WIRELOG_ARITH_SUB, (int)WIRELOG_ARITH_MUL,
+        (int)WIRELOG_ARITH_DIV, (int)WIRELOG_ARITH_MOD,
     };
     int bitwise[] = {
-        (int)WIRELOG_ARITH_BAND,
-        (int)WIRELOG_ARITH_BOR,
-        (int)WIRELOG_ARITH_BXOR,
-        (int)WIRELOG_ARITH_BNOT,
-        (int)WIRELOG_ARITH_SHL,
-        (int)WIRELOG_ARITH_SHR,
+        (int)WIRELOG_ARITH_BAND, (int)WIRELOG_ARITH_BOR,
+        (int)WIRELOG_ARITH_BXOR, (int)WIRELOG_ARITH_BNOT,
+        (int)WIRELOG_ARITH_SHL,  (int)WIRELOG_ARITH_SHR,
     };
 
     for (int i = 0; i < 6; i++) {
