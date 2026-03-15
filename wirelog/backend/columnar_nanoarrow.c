@@ -5290,6 +5290,122 @@ col_idb_consolidate(col_rel_t *r, wl_col_session_t *sess)
  *
  * TODO(Phase 2B): Replace step 2 with semi-naive ΔR propagation.
  */
+
+/* Forward declaration for col_stratum_step_with_delta (defined below) */
+static int
+col_stratum_step_with_delta(const wl_plan_stratum_t *sp, wl_col_session_t *sess,
+                            uint32_t stratum_idx);
+
+/*
+ * col_stratum_step_retraction_nonrecursive: Retraction delta propagation
+ *
+ * (Issue #158) Semi-naive delta retraction for non-recursive strata.
+ * Evaluates the stratum in retraction mode, using $r$<name> delta relations
+ * to propagate only retractions (O(|Δ|)) instead of full re-evaluation.
+ *
+ * Algorithm:
+ *   1. Set retraction_seeded = true
+ *   2. Evaluate stratum (produces rows to retract in result buffer)
+ *   3. For each IDB relation:
+ *      - Find retraction candidates (rows produced by eval)
+ *      - Remove those rows in-place (compact)
+ *      - Fire delta_cb with diff=-1 for each removed row
+ *   4. Reset retraction_seeded = false
+ *
+ * Falls back to full re-eval (col_stratum_step_with_delta) for recursive strata.
+ */
+static int
+col_stratum_step_retraction_nonrecursive(const wl_plan_stratum_t *sp,
+                                         wl_col_session_t *sess,
+                                         uint32_t stratum_idx)
+{
+    if (sp->is_recursive) {
+        /* Recursive strata fall back to full re-eval */
+        return col_stratum_step_with_delta(sp, sess, stratum_idx);
+    }
+
+    uint32_t rc_cnt = sp->relation_count;
+
+    /* Step 1: Enable retraction-seeded mode for this evaluation */
+    sess->retraction_seeded = true;
+
+    /* Step 2: Evaluate stratum (produces rows to retract) */
+    int rc = col_eval_stratum(sp, sess, stratum_idx);
+    if (rc != 0) {
+        sess->retraction_seeded = false;
+        return rc;
+    }
+
+    /* Step 3: For each IDB relation, consolidate and remove retracted rows */
+    for (uint32_t ri = 0; ri < rc_cnt; ri++) {
+        col_rel_t *r = session_find_rel(sess, sp->relations[ri].name);
+        if (!r || r->ncols == 0)
+            continue;
+
+        /* Consolidate result: sort + dedup retraction candidates */
+        rc = col_idb_consolidate(r, sess);
+        if (rc != 0) {
+            sess->retraction_seeded = false;
+            return rc;
+        }
+
+        /* Get full relation to remove from */
+        col_rel_t *full = session_find_rel(sess, sp->relations[ri].name);
+        if (!full || full->ncols == 0)
+            continue;
+
+        uint32_t ncols = full->ncols;
+
+        /* For each row in the result buffer (rows to retract) */
+        if (r->nrows > 0) {
+            for (uint32_t del_idx = 0; del_idx < r->nrows; del_idx++) {
+                const int64_t *to_remove = r->data + (size_t)del_idx * ncols;
+
+                /* Find and remove this row from full relation */
+                uint32_t out_r = 0;
+                bool found = false;
+                for (uint32_t ri_src = 0; ri_src < full->nrows; ri_src++) {
+                    const int64_t *src = full->data + (size_t)ri_src * ncols;
+                    if (memcmp(src, to_remove, sizeof(int64_t) * ncols) == 0) {
+                        /* Found matching row; skip it (removal) */
+                        found = true;
+                        /* Copy remaining rows */
+                        for (uint32_t rest = ri_src + 1; rest < full->nrows;
+                             rest++) {
+                            memcpy(full->data + (size_t)out_r * ncols,
+                                   full->data + (size_t)rest * ncols,
+                                   sizeof(int64_t) * ncols);
+                            out_r++;
+                        }
+                        full->nrows = out_r;
+                        break;
+                    } else {
+                        /* Keep this row */
+                        if (out_r != ri_src)
+                            memcpy(full->data + (size_t)out_r * ncols, src,
+                                   sizeof(int64_t) * ncols);
+                        out_r++;
+                    }
+                }
+
+                /* Fire delta callback if row was actually removed */
+                if (found && sess->delta_cb) {
+                    sess->delta_cb(full->name, to_remove, ncols, -1,
+                                   sess->delta_data);
+                }
+            }
+        }
+
+        /* Clear the result buffer for next relation */
+        r->nrows = 0;
+    }
+
+    /* Step 4: Reset retraction-seeded mode */
+    sess->retraction_seeded = false;
+
+    return 0;
+}
+
 static int
 col_stratum_step_with_delta(const wl_plan_stratum_t *sp, wl_col_session_t *sess,
                             uint32_t stratum_idx)
@@ -5397,6 +5513,9 @@ cleanup:
 }
 
 /* Forward declarations for helper functions used in col_session_step */
+static int
+col_stratum_step_with_delta(const wl_plan_stratum_t *sp, wl_col_session_t *sess,
+                            uint32_t stratum_idx);
 static bool
 stratum_has_preseeded_delta(const wl_plan_stratum_t *sp,
                             wl_col_session_t *sess);
