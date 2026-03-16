@@ -709,8 +709,20 @@ col_eval_stratum(const wl_plan_stratum_t *sp, wl_col_session_t *sess,
         free(snap);
 
         delta_pool_reset(sess->delta_pool);
-        /* Clear materialization cache between iterations (relation data changed) */
-        col_mat_cache_clear(&sess->mat_cache);
+        /* Issue #176: Per-iteration cache eviction for recursive strata.
+         * Use configurable eviction threshold (cache_evict_threshold):
+         * - If 0: disabled, cache cleared each iteration (backward compatible)
+         * - If > 0: evict LRU entries when cache size exceeds threshold
+         * This preserves hit rate for frequently accessed cached joins
+         * while bounding memory growth across deep recursion (100+ iterations). */
+        if (sess->cache_evict_threshold == 0) {
+            /* Legacy behavior: clear entire cache */
+            col_mat_cache_clear(&sess->mat_cache);
+        } else {
+            /* Smart eviction: remove only least-used entries */
+            col_mat_cache_evict_until(&sess->mat_cache,
+                                      sess->cache_evict_threshold);
+        }
 
         if (!any_new) {
             sess->total_iterations = iter;

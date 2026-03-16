@@ -148,6 +148,35 @@ col_mat_cache_clear(col_mat_cache_t *cache)
     cache->total_bytes = 0;
 }
 
+/**
+ * col_mat_cache_evict_until - Evict LRU entries until cache size is below
+ * target.
+ *
+ * Removes least recently used (oldest) entries one by one until the cache
+ * total_bytes is strictly below the target_bytes threshold. Preserves
+ * recently accessed cache entries that are still useful.
+ *
+ * @param cache    The materialization cache.
+ * @param target_bytes  Target size threshold; eviction stops when
+ *                      total_bytes < target_bytes.
+ */
+void
+col_mat_cache_evict_until(col_mat_cache_t *cache, size_t target_bytes)
+{
+    while (cache->count > 0 && cache->total_bytes >= target_bytes) {
+        uint32_t lru = 0;
+        for (uint32_t i = 1; i < cache->count; i++) {
+            if (cache->entries[i].lru_clock < cache->entries[lru].lru_clock)
+                lru = i;
+        }
+        cache->total_bytes -= cache->entries[lru].mem_bytes;
+        col_rel_destroy(cache->entries[lru].result);
+        memmove(&cache->entries[lru], &cache->entries[lru + 1],
+                (cache->count - lru - 1) * sizeof(col_mat_entry_t));
+        cache->count--;
+    }
+}
+
 col_rel_t *
 col_mat_cache_lookup(col_mat_cache_t *cache, const col_rel_t *left,
                      const col_rel_t *right)

@@ -246,7 +246,13 @@ typedef struct {
     wl_arena_t *eval_arena;    /* arena for per-iteration temporaries    */
     col_mat_cache_t mat_cache; /* materialization cache (US-006)        */
     uint32_t total_iterations; /* fixed-point iterations in last eval   */
-    wl_work_queue_t *wq;       /* reusable thread pool for K-fusion     */
+    /* Issue #176: Per-iteration cache eviction for recursive strata.
+     * cache_evict_threshold: target cache size (bytes) for LRU eviction
+     * in recursive stratum iteration loop. When cache exceeds this threshold,
+     * LRU entries are evicted until size drops below it.
+     * 0 = disabled (cache cleared each iteration), default = 80% of limit */
+    size_t cache_evict_threshold;
+    wl_work_queue_t *wq; /* reusable thread pool for K-fusion     */
     /* Profiling counters (3B-003): accumulated across all strata/iters  */
     uint64_t
         consolidation_ns; /* time in col_op_consolidate_incremental_delta */
@@ -420,6 +426,8 @@ uint64_t
 col_mat_cache_key_content(const col_rel_t *rel);
 void
 col_mat_cache_clear(col_mat_cache_t *cache);
+void
+col_mat_cache_evict_until(col_mat_cache_t *cache, size_t target_bytes);
 col_rel_t *
 col_mat_cache_lookup(col_mat_cache_t *cache, const col_rel_t *left,
                      const col_rel_t *right);
