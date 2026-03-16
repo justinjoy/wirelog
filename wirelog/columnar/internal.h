@@ -480,6 +480,11 @@ int
 session_add_rel(wl_col_session_t *sess, col_rel_t *r);
 void
 session_remove_rel(wl_col_session_t *sess, const char *name);
+
+/* ======================================================================== */
+/* Arrangement Layer (columnar/arrangement.c)                               */
+/* ======================================================================== */
+
 void
 arr_free_contents(col_arrangement_t *arr);
 col_arrangement_t *
@@ -488,6 +493,26 @@ col_session_get_delta_arrangement(wl_col_session_t *cs, const char *rel_name,
                                   const uint32_t *key_cols, uint32_t key_count);
 void
 col_session_free_delta_arrangements(wl_col_session_t *cs);
+
+/* ======================================================================== */
+/* Frontier & Affected Strata (columnar/frontier.c)                         */
+/* ======================================================================== */
+
+uint64_t
+col_compute_affected_strata(wl_session_t *session,
+                            const char *inserted_relation);
+uint64_t
+col_compute_affected_rules(wl_session_t *session,
+                           const char *inserted_relation);
+
+/* ======================================================================== */
+/* Mobius / Z-set (columnar/mobius.c)                                        */
+/* ======================================================================== */
+
+int
+col_compute_delta_mobius(const col_rel_t *prev_collection,
+                         const col_rel_t *curr_collection,
+                         col_rel_t *out_delta);
 
 /* ======================================================================== */
 /* Eval Stack & Operators (columnar/ops.c)                                  */
