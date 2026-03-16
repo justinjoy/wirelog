@@ -181,6 +181,9 @@ backend_src = files(
   '../wirelog/columnar/cache.c',
   '../wirelog/columnar/ops.c',
   '../wirelog/columnar/eval.c',
+  '../wirelog/columnar/arrangement.c',
+  '../wirelog/columnar/frontier.c',
+  '../wirelog/columnar/mobius.c',
 )
 
 io_src = files(

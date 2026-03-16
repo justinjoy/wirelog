@@ -33,6 +33,9 @@ demo_backend_src = files(
   subdir_wirelog / 'columnar/cache.c',
   subdir_wirelog / 'columnar/ops.c',
   subdir_wirelog / 'columnar/eval.c',
+  subdir_wirelog / 'columnar/arrangement.c',
+  subdir_wirelog / 'columnar/frontier.c',
+  subdir_wirelog / 'columnar/mobius.c',
 )
 
 demo_arena_src = files(
