@@ -679,8 +679,6 @@ col_op_join(const wl_plan_op_t *op, eval_stack_t *stack, wl_col_session_t *sess)
 #ifdef WL_PROFILE
     uint64_t _t0_join = now_ns();
     sess->profile.join_calls++;
-    if (left_e.rel->ncols == 1)
-        sess->profile.join_unary++;
 #endif
 
     /* Right-side delta substitution controlled by delta_mode:
@@ -792,6 +790,10 @@ col_op_join(const wl_plan_op_t *op, eval_stack_t *stack, wl_col_session_t *sess)
      * Profiling shows 37.7% of DOOP-class joins are unary; this path
      * provides ~30-40% speedup for such workloads. */
     bool right_is_unary = (right->ncols == 1);
+#ifdef WL_PROFILE
+    if (right_is_unary && kc == 1)
+        sess->profile.join_unary++;
+#endif
     if (right_is_unary && kc == 1) {
         /* Fast-path: unary join using hash-set membership test. */
         uint32_t nbuckets = next_pow2(right->nrows > 0 ? right->nrows * 2 : 1);
