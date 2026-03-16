@@ -183,6 +183,23 @@ typedef struct {
 } col_mat_cache_t;
 
 /* ======================================================================== */
+/* Operator Profiling (WL_PROFILE)                                         */
+/* ======================================================================== */
+
+#ifdef WL_PROFILE
+typedef struct {
+    uint64_t concat_calls;
+    uint64_t concat_empty_out;
+    uint64_t concat_ns;
+    uint64_t join_calls;
+    uint64_t join_unary; /* joins where left or right ncols == 1    */
+    uint64_t join_empty_out;
+    uint64_t join_cache_hit_ns;
+    uint64_t join_compute_ns;
+} wl_profile_stats_t;
+#endif
+
+/* ======================================================================== */
 /* Arrangement Registry                                                     */
 /* ======================================================================== */
 
@@ -322,6 +339,9 @@ typedef struct {
      * $r$<name> relations. Cleared after eval completes. */
     bool retraction_seeded;
     delta_pool_t *delta_pool; /* Pool allocator for operator temporaries */
+#ifdef WL_PROFILE
+    wl_profile_stats_t profile; /* operator profiling counters */
+#endif
 } wl_col_session_t;
 
 /*

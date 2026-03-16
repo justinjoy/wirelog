@@ -790,16 +790,24 @@ col_op_join(const wl_plan_op_t *op, eval_stack_t *stack, wl_col_session_t *sess)
      * Profiling shows 37.7% of DOOP-class joins are unary; this path
      * provides ~30-40% speedup for such workloads. */
     bool right_is_unary = (right->ncols == 1);
+    bool left_is_unary = (left->ncols == 1);
 #ifdef WL_PROFILE
-    if (right_is_unary && kc == 1)
+    if ((right_is_unary || left_is_unary) && kc == 1)
         sess->profile.join_unary++;
 #endif
-    if (right_is_unary && kc == 1) {
-        /* Fast-path: unary join using hash-set membership test. */
-        uint32_t nbuckets = next_pow2(right->nrows > 0 ? right->nrows * 2 : 1);
+    if ((right_is_unary || left_is_unary) && kc == 1) {
+        /* build: unary side as hash set; probe: non-unary side iterated.
+         * When both are unary, right is preferred as build side. */
+        col_rel_t *build = right_is_unary ? right : left;
+        col_rel_t *probe = right_is_unary ? left : right;
+        uint32_t build_kcol = right_is_unary ? rk[0] : lk[0];
+        uint32_t probe_kcol = right_is_unary ? lk[0] : rk[0];
+
+        /* Build hash set from the unary relation's single column. */
+        uint32_t nbuckets = next_pow2(build->nrows > 0 ? build->nrows * 2 : 1);
         uint32_t *ht_head = (uint32_t *)calloc(nbuckets, sizeof(uint32_t));
         uint32_t *ht_next = (uint32_t *)malloc(
-            (right->nrows > 0 ? right->nrows : 1) * sizeof(uint32_t));
+            (build->nrows > 0 ? build->nrows : 1) * sizeof(uint32_t));
         if (!ht_head || !ht_next) {
             free(ht_head);
             free(ht_next);
@@ -811,10 +819,8 @@ col_op_join(const wl_plan_op_t *op, eval_stack_t *stack, wl_col_session_t *sess)
                 col_rel_destroy(left);
             return ENOMEM;
         }
-
-        /* Build hash set from unary right column (rk[0]). */
-        for (uint32_t rr = 0; rr < right->nrows; rr++) {
-            int64_t key = right->data[rr * right->ncols + rk[0]];
+        for (uint32_t bi = 0; bi < build->nrows; bi++) {
+            int64_t key = build->data[(size_t)bi * build->ncols + build_kcol];
             /* Inline FNV-1a hash for single int64 value */
             uint32_t h = 2166136261u;
             uint64_t v = (uint64_t)key;
@@ -822,41 +828,44 @@ col_op_join(const wl_plan_op_t *op, eval_stack_t *stack, wl_col_session_t *sess)
             h *= 16777619u;
             h ^= (uint32_t)(v >> 32);
             h *= 16777619u;
-            h = h & (nbuckets - 1);
-            ht_next[rr] = ht_head[h];
-            ht_head[h] = rr + 1; /* 1-based; 0 = end of chain */
+            h &= (nbuckets - 1);
+            ht_next[bi] = ht_head[h];
+            ht_head[h] = bi + 1; /* 1-based; 0 = end of chain */
         }
 
-        /* Iterate left rows and test membership in right hash set. */
+        /* Probe: iterate non-unary side, test membership in hash set. */
         int join_rc = 0;
-        for (uint32_t lr = 0; lr < left->nrows && join_rc == 0; lr++) {
-            const int64_t *lrow = left->data + (size_t)lr * left->ncols;
-            int64_t lkey = lrow[lk[0]];
+        for (uint32_t pr = 0; pr < probe->nrows && join_rc == 0; pr++) {
+            const int64_t *prow = probe->data + (size_t)pr * probe->ncols;
+            int64_t pkey = prow[probe_kcol];
             /* Inline FNV-1a hash for single int64 value */
             uint32_t h = 2166136261u;
-            uint64_t v = (uint64_t)lkey;
+            uint64_t v = (uint64_t)pkey;
             h ^= (uint32_t)(v & 0xffffffff);
             h *= 16777619u;
             h ^= (uint32_t)(v >> 32);
             h *= 16777619u;
-            h = h & (nbuckets - 1);
+            h &= (nbuckets - 1);
 
-            /* Probe hash set for matching right row. */
             for (uint32_t e = ht_head[h]; e != 0; e = ht_next[e - 1]) {
-                uint32_t rr = e - 1;
-                int64_t rkey = right->data[rr * right->ncols + rk[0]];
-                if (lkey == rkey) {
-                    /* Match found: combine left and right rows. */
-                    const int64_t *rrow
-                        = right->data + (size_t)rr * right->ncols;
-                    memcpy(tmp, lrow, sizeof(int64_t) * left->ncols);
-                    memcpy(tmp + left->ncols, rrow,
-                           sizeof(int64_t) * right->ncols);
-                    join_rc = col_rel_append_row(out, tmp);
-                    if (join_rc != 0)
-                        break;
-                    /* For unary relations, continue checking additional matches. */
+                uint32_t bi = e - 1;
+                int64_t bkey
+                    = build->data[(size_t)bi * build->ncols + build_kcol];
+                if (pkey != bkey)
+                    continue;
+                /* Match: emit output in [left cols | right cols] order. */
+                if (right_is_unary) {
+                    /* probe=left, build=right: [prow | bkey] */
+                    memcpy(tmp, prow, sizeof(int64_t) * probe->ncols);
+                    tmp[probe->ncols] = bkey;
+                } else {
+                    /* probe=right, build=left: [bkey | prow] */
+                    tmp[0] = bkey;
+                    memcpy(tmp + 1, prow, sizeof(int64_t) * probe->ncols);
                 }
+                join_rc = col_rel_append_row(out, tmp);
+                if (join_rc != 0)
+                    break;
             }
         }
 
