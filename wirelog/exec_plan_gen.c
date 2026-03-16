@@ -171,6 +171,16 @@ arith_to_tag(wirelog_arith_op_t op)
         return WL_PLAN_EXPR_ARITH_CRC32_ETH;
     case WIRELOG_ARITH_CRC32_CAST:
         return WL_PLAN_EXPR_ARITH_CRC32_CAST;
+    case WIRELOG_ARITH_MD5:
+        return WL_PLAN_EXPR_ARITH_MD5;
+    case WIRELOG_ARITH_SHA1:
+        return WL_PLAN_EXPR_ARITH_SHA1;
+    case WIRELOG_ARITH_SHA256:
+        return WL_PLAN_EXPR_ARITH_SHA256;
+    case WIRELOG_ARITH_SHA512:
+        return WL_PLAN_EXPR_ARITH_SHA512;
+    case WIRELOG_ARITH_HMAC_SHA256:
+        return WL_PLAN_EXPR_ARITH_HMAC_SHA256;
     }
     return WL_PLAN_EXPR_ARITH_ADD; /* fallback */
 }

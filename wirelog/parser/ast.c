@@ -224,6 +224,16 @@ wirelog_arith_op_str(wirelog_arith_op_t op)
         return "crc32_ethernet";
     case WIRELOG_ARITH_CRC32_CAST:
         return "crc32_castagnoli";
+    case WIRELOG_ARITH_MD5:
+        return "md5";
+    case WIRELOG_ARITH_SHA1:
+        return "sha1";
+    case WIRELOG_ARITH_SHA256:
+        return "sha256";
+    case WIRELOG_ARITH_SHA512:
+        return "sha512";
+    case WIRELOG_ARITH_HMAC_SHA256:
+        return "hmac_sha256";
     }
     return "?";
 }

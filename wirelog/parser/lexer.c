@@ -239,6 +239,14 @@ identifier_type(const char *start, uint32_t length)
     if (IS_KW("hash"))
         return WL_PARSER_LEXER_TOK_HASH;
 
+    /* Cryptographic hash function keywords */
+    if (IS_KW("md5"))
+        return WL_PARSER_LEXER_TOK_MD5;
+    if (IS_KW("sha1"))
+        return WL_PARSER_LEXER_TOK_SHA1;
+    if (IS_KW("hmac_sha256"))
+        return WL_PARSER_LEXER_TOK_HMAC_SHA256;
+
     return WL_PARSER_LEXER_TOK_IDENT;
 }
 
@@ -521,6 +529,16 @@ wl_parser_lexer_token_type_str(wl_parser_lexer_token_type_t type)
         return "BSHR";
     case WL_PARSER_LEXER_TOK_HASH:
         return "HASH";
+    case WL_PARSER_LEXER_TOK_MD5:
+        return "MD5";
+    case WL_PARSER_LEXER_TOK_SHA1:
+        return "SHA1";
+    case WL_PARSER_LEXER_TOK_SHA256:
+        return "SHA256";
+    case WL_PARSER_LEXER_TOK_SHA512:
+        return "SHA512";
+    case WL_PARSER_LEXER_TOK_HMAC_SHA256:
+        return "HMAC_SHA256";
     case WL_PARSER_LEXER_TOK_DECL:
         return "DECL";
     case WL_PARSER_LEXER_TOK_INPUT:
