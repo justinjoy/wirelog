@@ -19,6 +19,12 @@
 #include "nanoarrow/nanoarrow.h"
 #include <xxhash.h>
 
+#ifdef WL_MBEDTLS_ENABLED
+#include <mbedtls/md5.h>
+#include <mbedtls/sha1.h>
+#include <mbedtls/sha256.h>
+#endif
+
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -1060,6 +1066,61 @@ col_eval_expr_run(const uint8_t *buf, uint32_t size, const int64_t *row,
         case WL_PLAN_EXPR_ARITH_HASH: {
             int64_t a = filt_pop(&s);
             filt_push(&s, (int64_t)XXH3_64bits(&a, sizeof(a)));
+            break;
+        }
+
+        case WL_PLAN_EXPR_ARITH_MD5: {
+#ifdef WL_MBEDTLS_ENABLED
+            int64_t a = filt_pop(&s);
+            unsigned char digest[16];
+            mbedtls_md5_context ctx;
+            mbedtls_md5_init(&ctx);
+            mbedtls_md5_starts_ret(&ctx);
+            mbedtls_md5_update_ret(&ctx, (const unsigned char *)&a, sizeof(a));
+            mbedtls_md5_finish_ret(&ctx, digest);
+            mbedtls_md5_free(&ctx);
+            filt_push(&s, (int64_t)XXH3_64bits(digest, sizeof(digest)));
+#else
+            (void)filt_pop(&s);
+            goto bad; /* md5 requires mbedTLS (-DmbedTLS=enabled or auto) */
+#endif
+            break;
+        }
+
+        case WL_PLAN_EXPR_ARITH_SHA1: {
+#ifdef WL_MBEDTLS_ENABLED
+            int64_t a = filt_pop(&s);
+            unsigned char digest[20];
+            mbedtls_sha1_context sha1_ctx;
+            mbedtls_sha1_init(&sha1_ctx);
+            mbedtls_sha1_starts_ret(&sha1_ctx);
+            mbedtls_sha1_update_ret(&sha1_ctx, (const unsigned char *)&a,
+                                    sizeof(a));
+            mbedtls_sha1_finish_ret(&sha1_ctx, digest);
+            mbedtls_sha1_free(&sha1_ctx);
+            filt_push(&s, (int64_t)XXH3_64bits(digest, sizeof(digest)));
+#else
+            (void)filt_pop(&s);
+            goto bad; /* sha1 requires mbedTLS (-DmbedTLS=enabled or auto) */
+#endif
+            break;
+        }
+
+        case WL_PLAN_EXPR_ARITH_HMAC_SHA256: {
+#ifdef WL_MBEDTLS_ENABLED
+            int64_t key_val = filt_pop(&s);
+            int64_t msg_val = filt_pop(&s);
+            unsigned char digest[32];
+            mbedtls_md_hmac(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256),
+                            (const unsigned char *)&key_val, sizeof(key_val),
+                            (const unsigned char *)&msg_val, sizeof(msg_val),
+                            digest);
+            filt_push(&s, (int64_t)XXH3_64bits(digest, sizeof(digest)));
+#else
+            (void)filt_pop(&s);
+            (void)filt_pop(&s);
+            goto bad; /* hmac_sha256 requires mbedTLS (-DmbedTLS=enabled or auto) */
+#endif
             break;
         }
 

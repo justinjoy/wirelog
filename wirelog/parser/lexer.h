@@ -88,6 +88,13 @@ typedef enum {
     /* Hash function keyword */
     WL_PARSER_LEXER_TOK_HASH, /* hash */
 
+    /* Cryptographic hash function keywords (mbedTLS) */
+    WL_PARSER_LEXER_TOK_MD5,         /* md5 */
+    WL_PARSER_LEXER_TOK_SHA1,        /* sha1 */
+    WL_PARSER_LEXER_TOK_SHA256,      /* sha256 */
+    WL_PARSER_LEXER_TOK_SHA512,      /* sha512 */
+    WL_PARSER_LEXER_TOK_HMAC_SHA256, /* hmac_sha256 */
+
     /* Directives (dot-prefixed keywords) */
     WL_PARSER_LEXER_TOK_DECL,      /* .decl */
     WL_PARSER_LEXER_TOK_INPUT,     /* .input */

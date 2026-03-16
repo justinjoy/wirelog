@@ -113,13 +113,25 @@ typedef enum {
     WL_PLAN_EXPR_ARITH_CRC32_CAST
     = 0x1D, /* CRC-32C Castagnoli (poly 0x1EDC6F41) */
 
+    /* Unary cryptographic hash functions (pop 1 push 1, requires mbedTLS) */
+    WL_PLAN_EXPR_ARITH_MD5 = 0x1E,  /* md5() - MD5 32-char hex digest */
+    WL_PLAN_EXPR_ARITH_SHA1 = 0x1F, /* sha1() - SHA-1 40-char hex digest */
+    WL_PLAN_EXPR_ARITH_SHA256
+    = 0x20, /* sha256() - SHA-256 64-char hex digest */
+    WL_PLAN_EXPR_ARITH_SHA512
+    = 0x21, /* sha512() - SHA-512 128-char hex digest */
+
+    /* Binary cryptographic hash functions (pop 2 push 1, requires mbedTLS) */
+    WL_PLAN_EXPR_ARITH_HMAC_SHA256
+    = 0x28, /* hmac_sha256(msg, key) - HMAC-SHA-256 64-char hex digest */
+
     /* Comparison operators (binary, pop 2 push 1) */
-    WL_PLAN_EXPR_CMP_EQ = 0x20,
-    WL_PLAN_EXPR_CMP_NEQ = 0x21,
-    WL_PLAN_EXPR_CMP_LT = 0x22,
-    WL_PLAN_EXPR_CMP_GT = 0x23,
-    WL_PLAN_EXPR_CMP_LTE = 0x24,
-    WL_PLAN_EXPR_CMP_GTE = 0x25,
+    WL_PLAN_EXPR_CMP_EQ = 0x22,
+    WL_PLAN_EXPR_CMP_NEQ = 0x23,
+    WL_PLAN_EXPR_CMP_LT = 0x24,
+    WL_PLAN_EXPR_CMP_GT = 0x25,
+    WL_PLAN_EXPR_CMP_LTE = 0x26,
+    WL_PLAN_EXPR_CMP_GTE = 0x27,
 
     /* Aggregate operators (unary, pop 1 push 1) */
     WL_PLAN_EXPR_AGG_COUNT = 0x30,
