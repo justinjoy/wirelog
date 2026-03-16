@@ -672,12 +672,13 @@ test_jpp_antijoin_preserved(void)
 static void
 test_jpp_intermediate_projection(void)
 {
-    TEST("jpp: intermediate projection disabled (reorder-only mode)");
+    TEST("jpp: intermediate projection disabled (pending Issue #191 fix)");
 
     /*
-     * Projection insertion is currently disabled pending dd_plan
-     * column-index propagation fix.  This test verifies that JPP
-     * succeeds without inserting any projections.
+     * Projection insertion is disabled pending semantic correctness fix.
+     * Current implementation causes duplicate results in some join patterns
+     * (e.g., 3-way joins producing duplicates).
+     * Issue #191 tracks investigation and fix for projection semantics.
      */
     wirelog_error_t err;
     wirelog_program_t *prog
