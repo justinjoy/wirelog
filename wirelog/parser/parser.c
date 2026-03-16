@@ -295,6 +295,128 @@ parse_factor(wl_parser_t *parser)
         return unary;
     }
 
+    /* MD5 hash function: md5(expr) */
+    if (parser->current.type == WL_PARSER_LEXER_TOK_MD5) {
+        parser_advance(parser); /* consume md5 */
+        if (!parser_consume(parser, WL_PARSER_LEXER_TOK_LPAREN,
+                            "expected '(' after md5")) {
+            return NULL;
+        }
+        wl_parser_ast_node_t *arg = parse_arithmetic_expr(parser);
+        if (!arg)
+            return NULL;
+        if (!parser_consume(parser, WL_PARSER_LEXER_TOK_RPAREN,
+                            "expected ')' after md5 argument")) {
+            wl_parser_ast_node_free(arg);
+            return NULL;
+        }
+        wl_parser_ast_node_t *unary = wl_parser_ast_node_create(
+            WL_PARSER_AST_NODE_BINARY_EXPR, line, col);
+        unary->arith_op = WIRELOG_ARITH_MD5;
+        wl_parser_ast_node_add_child(unary, arg);
+        return unary;
+    }
+
+    /* SHA-1 hash function: sha1(expr) */
+    if (parser->current.type == WL_PARSER_LEXER_TOK_SHA1) {
+        parser_advance(parser); /* consume sha1 */
+        if (!parser_consume(parser, WL_PARSER_LEXER_TOK_LPAREN,
+                            "expected '(' after sha1")) {
+            return NULL;
+        }
+        wl_parser_ast_node_t *arg = parse_arithmetic_expr(parser);
+        if (!arg)
+            return NULL;
+        if (!parser_consume(parser, WL_PARSER_LEXER_TOK_RPAREN,
+                            "expected ')' after sha1 argument")) {
+            wl_parser_ast_node_free(arg);
+            return NULL;
+        }
+        wl_parser_ast_node_t *unary = wl_parser_ast_node_create(
+            WL_PARSER_AST_NODE_BINARY_EXPR, line, col);
+        unary->arith_op = WIRELOG_ARITH_SHA1;
+        wl_parser_ast_node_add_child(unary, arg);
+        return unary;
+    }
+
+    /* SHA-256 hash function: sha256(expr) */
+    if (parser->current.type == WL_PARSER_LEXER_TOK_SHA256) {
+        parser_advance(parser); /* consume sha256 */
+        if (!parser_consume(parser, WL_PARSER_LEXER_TOK_LPAREN,
+                            "expected '(' after sha256")) {
+            return NULL;
+        }
+        wl_parser_ast_node_t *arg = parse_arithmetic_expr(parser);
+        if (!arg)
+            return NULL;
+        if (!parser_consume(parser, WL_PARSER_LEXER_TOK_RPAREN,
+                            "expected ')' after sha256 argument")) {
+            wl_parser_ast_node_free(arg);
+            return NULL;
+        }
+        wl_parser_ast_node_t *unary = wl_parser_ast_node_create(
+            WL_PARSER_AST_NODE_BINARY_EXPR, line, col);
+        unary->arith_op = WIRELOG_ARITH_SHA256;
+        wl_parser_ast_node_add_child(unary, arg);
+        return unary;
+    }
+
+    /* SHA-512 hash function: sha512(expr) */
+    if (parser->current.type == WL_PARSER_LEXER_TOK_SHA512) {
+        parser_advance(parser); /* consume sha512 */
+        if (!parser_consume(parser, WL_PARSER_LEXER_TOK_LPAREN,
+                            "expected '(' after sha512")) {
+            return NULL;
+        }
+        wl_parser_ast_node_t *arg = parse_arithmetic_expr(parser);
+        if (!arg)
+            return NULL;
+        if (!parser_consume(parser, WL_PARSER_LEXER_TOK_RPAREN,
+                            "expected ')' after sha512 argument")) {
+            wl_parser_ast_node_free(arg);
+            return NULL;
+        }
+        wl_parser_ast_node_t *unary = wl_parser_ast_node_create(
+            WL_PARSER_AST_NODE_BINARY_EXPR, line, col);
+        unary->arith_op = WIRELOG_ARITH_SHA512;
+        wl_parser_ast_node_add_child(unary, arg);
+        return unary;
+    }
+
+    /* HMAC-SHA-256 hash function: hmac_sha256(msg, key) */
+    if (parser->current.type == WL_PARSER_LEXER_TOK_HMAC_SHA256) {
+        parser_advance(parser); /* consume hmac_sha256 */
+        if (!parser_consume(parser, WL_PARSER_LEXER_TOK_LPAREN,
+                            "expected '(' after hmac_sha256")) {
+            return NULL;
+        }
+        wl_parser_ast_node_t *msg = parse_arithmetic_expr(parser);
+        if (!msg)
+            return NULL;
+        if (!parser_consume(parser, WL_PARSER_LEXER_TOK_COMMA,
+                            "expected ',' between hmac_sha256 arguments")) {
+            wl_parser_ast_node_free(msg);
+            return NULL;
+        }
+        wl_parser_ast_node_t *key = parse_arithmetic_expr(parser);
+        if (!key) {
+            wl_parser_ast_node_free(msg);
+            return NULL;
+        }
+        if (!parser_consume(parser, WL_PARSER_LEXER_TOK_RPAREN,
+                            "expected ')' after hmac_sha256 arguments")) {
+            wl_parser_ast_node_free(msg);
+            wl_parser_ast_node_free(key);
+            return NULL;
+        }
+        wl_parser_ast_node_t *node = wl_parser_ast_node_create(
+            WL_PARSER_AST_NODE_BINARY_EXPR, line, col);
+        node->arith_op = WIRELOG_ARITH_HMAC_SHA256;
+        wl_parser_ast_node_add_child(node, msg);
+        wl_parser_ast_node_add_child(node, key);
+        return node;
+    }
+
     parser_error(parser, "expected variable, integer, or string");
     return NULL;
 }
@@ -335,7 +457,12 @@ is_bitwise_token(wl_parser_lexer_token_type_t type)
            || type == WL_PARSER_LEXER_TOK_BNOT
            || type == WL_PARSER_LEXER_TOK_BSHL
            || type == WL_PARSER_LEXER_TOK_BSHR
-           || type == WL_PARSER_LEXER_TOK_HASH;
+           || type == WL_PARSER_LEXER_TOK_HASH
+           || type == WL_PARSER_LEXER_TOK_MD5
+           || type == WL_PARSER_LEXER_TOK_SHA1
+           || type == WL_PARSER_LEXER_TOK_SHA256
+           || type == WL_PARSER_LEXER_TOK_SHA512
+           || type == WL_PARSER_LEXER_TOK_HMAC_SHA256;
 }
 
 static wl_parser_ast_node_t *
