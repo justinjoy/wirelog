@@ -407,4 +407,165 @@ void
 col_mat_cache_insert(col_mat_cache_t *cache, const col_rel_t *left,
                      const col_rel_t *right, col_rel_t *result);
 
+/* ======================================================================== */
+/* qsort_r Compatibility                                                    */
+/* ======================================================================== */
+
+/* Comparison for qsort_r: lexicographic int64 row order.
+ * Note: BSD qsort_r has signature: qsort_r(base, nmemb, size, ctx, comparator)
+ *       GNU qsort_r has signature: qsort_r(base, nmemb, size, comparator, arg)
+ */
+#ifdef __GLIBC__
+/* GNU glibc qsort_r: comparator first, context last */
+static inline int
+row_cmp_fn(const void *a, const void *b, void *ctx)
+{
+    const uint32_t ncols = *(const uint32_t *)ctx;
+    const int64_t *ra = (const int64_t *)a;
+    const int64_t *rb = (const int64_t *)b;
+    for (uint32_t c = 0; c < ncols; c++) {
+        if (ra[c] < rb[c])
+            return -1;
+        if (ra[c] > rb[c])
+            return 1;
+    }
+    return 0;
+}
+#define QSORT_R_CALL(base, nmemb, size, ctx, fn) \
+    qsort_r(base, nmemb, size, fn, ctx)
+#elif defined(_MSC_VER)
+/* MSVC qsort_s: context first, comparator last */
+static inline int __cdecl row_cmp_fn(void *ctx, const void *a, const void *b)
+{
+    const uint32_t ncols = *(const uint32_t *)ctx;
+    const int64_t *ra = (const int64_t *)a;
+    const int64_t *rb = (const int64_t *)b;
+    for (uint32_t c = 0; c < ncols; c++) {
+        if (ra[c] < rb[c])
+            return -1;
+        if (ra[c] > rb[c])
+            return 1;
+    }
+    return 0;
+}
+#define QSORT_R_CALL(base, nmemb, size, ctx, fn) \
+    qsort_s(base, nmemb, size, fn, ctx)
+#else
+/* BSD qsort_r: context first, comparator last */
+static inline int
+row_cmp_fn(void *ctx, const void *a, const void *b)
+{
+    const uint32_t ncols = *(const uint32_t *)ctx;
+    const int64_t *ra = (const int64_t *)a;
+    const int64_t *rb = (const int64_t *)b;
+    for (uint32_t c = 0; c < ncols; c++) {
+        if (ra[c] < rb[c])
+            return -1;
+        if (ra[c] > rb[c])
+            return 1;
+    }
+    return 0;
+}
+#define QSORT_R_CALL(base, nmemb, size, ctx, fn) \
+    qsort_r(base, nmemb, size, ctx, fn)
+#endif
+
+/* ======================================================================== */
+/* Session Helpers (backend/columnar_nanoarrow.c)                           */
+/* ======================================================================== */
+
+col_rel_t *
+session_find_rel(wl_col_session_t *sess, const char *name);
+int
+session_add_rel(wl_col_session_t *sess, col_rel_t *r);
+void
+session_remove_rel(wl_col_session_t *sess, const char *name);
+void
+arr_free_contents(col_arrangement_t *arr);
+col_arrangement_t *
+col_session_get_delta_arrangement(wl_col_session_t *cs, const char *rel_name,
+                                  const col_rel_t *delta_rel,
+                                  const uint32_t *key_cols, uint32_t key_count);
+void
+col_session_free_delta_arrangements(wl_col_session_t *cs);
+
+/* ======================================================================== */
+/* Eval Stack & Operators (columnar/ops.c)                                  */
+/* ======================================================================== */
+
+void
+eval_stack_init(eval_stack_t *s);
+int
+eval_stack_push(eval_stack_t *s, col_rel_t *r, bool owned);
+int
+eval_stack_push_delta(eval_stack_t *s, col_rel_t *r, bool owned, bool is_delta);
+eval_entry_t
+eval_stack_pop(eval_stack_t *s);
+void
+eval_stack_drain(eval_stack_t *s);
+int
+col_op_consolidate(eval_stack_t *stack, wl_col_session_t *sess);
+int
+col_op_consolidate_kway_merge(col_rel_t *rel, const uint32_t *seg_boundaries,
+                              uint32_t seg_count);
+int
+col_op_consolidate_incremental_delta(col_rel_t *rel, uint32_t old_nrows,
+                                     col_rel_t *delta_out);
+int
+col_op_reduce_weighted(const col_rel_t *src, col_rel_t *dst);
+int
+col_op_join_weighted(const col_rel_t *lhs, const col_rel_t *rhs,
+                     uint32_t key_col, col_rel_t *dst);
+
+/* Individual operator functions (columnar/ops.c, called by eval.c) */
+int
+col_op_variable(const wl_plan_op_t *op, eval_stack_t *stack,
+                wl_col_session_t *sess);
+int
+col_op_map(const wl_plan_op_t *op, eval_stack_t *stack, wl_col_session_t *sess);
+int
+col_op_filter(const wl_plan_op_t *op, eval_stack_t *stack,
+              wl_col_session_t *sess);
+int
+col_op_join(const wl_plan_op_t *op, eval_stack_t *stack,
+            wl_col_session_t *sess);
+int
+col_op_antijoin(const wl_plan_op_t *op, eval_stack_t *stack,
+                wl_col_session_t *sess);
+int
+col_op_concat(eval_stack_t *stack, wl_col_session_t *sess);
+int
+col_op_semijoin(const wl_plan_op_t *op, eval_stack_t *stack,
+                wl_col_session_t *sess);
+int
+col_op_reduce(const wl_plan_op_t *op, eval_stack_t *stack,
+              wl_col_session_t *sess);
+int
+col_op_k_fusion(const wl_plan_op_t *op, eval_stack_t *stack,
+                wl_col_session_t *sess);
+
+/* ======================================================================== */
+/* Evaluator (columnar/eval.c)                                              */
+/* ======================================================================== */
+
+int
+col_eval_relation_plan(const wl_plan_relation_t *rplan, eval_stack_t *stack,
+                       wl_col_session_t *sess);
+int
+retraction_rel_name(const char *rel, char *buf, size_t sz);
+bool
+has_empty_forced_delta(const wl_plan_relation_t *rp, wl_col_session_t *sess,
+                       uint32_t iteration);
+int
+col_eval_stratum(const wl_plan_stratum_t *sp, wl_col_session_t *sess,
+                 uint32_t stratum_idx);
+int
+col_stratum_step_with_delta(const wl_plan_stratum_t *sp, wl_col_session_t *sess,
+                            uint32_t stratum_idx);
+bool
+stratum_has_preseeded_delta(const wl_plan_stratum_t *sp,
+                            wl_col_session_t *sess);
+uint32_t
+rule_index_to_stratum_index(const wl_plan_t *plan, uint32_t rule_id);
+
 #endif /* WL_COLUMNAR_INTERNAL_H */
