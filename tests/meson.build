@@ -179,6 +179,8 @@ backend_src = files(
   '../wirelog/backend/delta_pool.c',
   '../wirelog/columnar/relation.c',
   '../wirelog/columnar/cache.c',
+  '../wirelog/columnar/ops.c',
+  '../wirelog/columnar/eval.c',
 )
 
 io_src = files(

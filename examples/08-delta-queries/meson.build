@@ -31,6 +31,8 @@ demo_backend_src = files(
   subdir_wirelog / 'backend/delta_pool.c',
   subdir_wirelog / 'columnar/relation.c',
   subdir_wirelog / 'columnar/cache.c',
+  subdir_wirelog / 'columnar/ops.c',
+  subdir_wirelog / 'columnar/eval.c',
 )
 
 demo_arena_src = files(
