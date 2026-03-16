@@ -1,0 +1,2596 @@
+/*
+ * columnar/ops.c - wirelog Columnar Backend Operator Implementations
+ *
+ * Copyright (C) CleverPlant
+ * Licensed under LGPL-3.0
+ * For commercial licenses, contact: inquiry@cleverplant.com
+ *
+ * All col_op_* operator functions and supporting helpers extracted from
+ * backend/columnar_nanoarrow.c for modular compilation.
+ */
+
+#define _GNU_SOURCE
+
+#include "columnar/internal.h"
+
+#include "../wirelog-internal.h"
+
+#include <xxhash.h>
+
+#ifdef WL_MBEDTLS_ENABLED
+#include <mbedtls/md5.h>
+#include <mbedtls/sha1.h>
+#include <mbedtls/sha256.h>
+#include <mbedtls/sha512.h>
+#include <mbedtls/md.h>
+#endif
+
+#include <errno.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#ifdef __AVX2__
+#include <immintrin.h>
+#endif
+
+#ifdef __SSE2__
+#include <emmintrin.h>
+#endif
+
+#ifdef __ARM_NEON__
+#include <arm_neon.h>
+#endif
+
+/* ======================================================================== */
+/* Postfix Filter Expression Evaluator                                       */
+/* ======================================================================== */
+
+typedef struct {
+    int64_t vals[COL_FILTER_STACK];
+    uint32_t top;
+} filt_stack_t;
+
+static inline void
+filt_push(filt_stack_t *s, int64_t v)
+{
+    if (s->top < COL_FILTER_STACK)
+        s->vals[s->top++] = v;
+}
+
+static inline int64_t
+filt_pop(filt_stack_t *s)
+{
+    return s->top != 0 ? s->vals[--s->top] : 0;
+}
+
+/*
+ * col_eval_expr_run:
+ * Core postfix expression evaluator. Runs the bytecode against a row and
+ * stores the top-of-stack value in *out_val.
+ * Returns 0 on success, non-zero on malformed bytecode.
+ */
+static int
+col_eval_expr_run(const uint8_t *buf, uint32_t size, const int64_t *row,
+                  uint32_t ncols, int64_t *out_val)
+{
+    filt_stack_t s;
+    s.top = 0;
+
+    uint32_t i = 0;
+    while (i < size) {
+        uint8_t tag = buf[i++];
+        switch ((wl_plan_expr_tag_t)tag) {
+
+        case WL_PLAN_EXPR_VAR: {
+            if (i + 2 > size)
+                goto bad;
+            uint16_t nlen;
+            memcpy(&nlen, buf + i, 2);
+            i += 2;
+            if (i + nlen > size)
+                goto bad;
+            /* variable name is "colN" */
+            long col = 0;
+            if (nlen > 3 && buf[i] == 'c' && buf[i + 1] == 'o'
+                && buf[i + 2] == 'l') {
+                char tmp[16] = { 0 };
+                uint32_t cplen = (nlen - 3 < 15) ? nlen - 3 : 15;
+                memcpy(tmp, buf + i + 3, cplen);
+                col = strtol(tmp, NULL, 10);
+            }
+            i += nlen;
+            filt_push(&s, (col >= 0 && (uint32_t)col < ncols) ? row[col] : 0);
+            break;
+        }
+
+        case WL_PLAN_EXPR_CONST_INT: {
+            if (i + 8 > size)
+                goto bad;
+            int64_t v;
+            memcpy(&v, buf + i, 8);
+            i += 8;
+            filt_push(&s, v);
+            break;
+        }
+
+        case WL_PLAN_EXPR_BOOL: {
+            if (i + 1 > size)
+                goto bad;
+            filt_push(&s, buf[i++] ? 1 : 0);
+            break;
+        }
+
+        case WL_PLAN_EXPR_CONST_STR: {
+            if (i + 2 > size)
+                goto bad;
+            uint16_t slen;
+            memcpy(&slen, buf + i, 2);
+            i += 2;
+            i += slen; /* skip string data, push 0 placeholder */
+            filt_push(&s, 0);
+            break;
+        }
+
+        /* Arithmetic */
+        case WL_PLAN_EXPR_ARITH_ADD: {
+            int64_t b = filt_pop(&s), a = filt_pop(&s);
+            filt_push(&s, a + b);
+            break;
+        }
+        case WL_PLAN_EXPR_ARITH_SUB: {
+            int64_t b = filt_pop(&s), a = filt_pop(&s);
+            filt_push(&s, a - b);
+            break;
+        }
+        case WL_PLAN_EXPR_ARITH_MUL: {
+            int64_t b = filt_pop(&s), a = filt_pop(&s);
+            filt_push(&s, a * b);
+            break;
+        }
+        case WL_PLAN_EXPR_ARITH_DIV: {
+            int64_t b = filt_pop(&s), a = filt_pop(&s);
+            filt_push(&s, b != 0 ? a / b : 0);
+            break;
+        }
+        case WL_PLAN_EXPR_ARITH_MOD: {
+            int64_t b = filt_pop(&s), a = filt_pop(&s);
+            filt_push(&s, b != 0 ? a % b : 0);
+            break;
+        }
+        case WL_PLAN_EXPR_ARITH_BAND: {
+            int64_t b = filt_pop(&s), a = filt_pop(&s);
+            filt_push(&s, a & b);
+            break;
+        }
+        case WL_PLAN_EXPR_ARITH_BOR: {
+            int64_t b = filt_pop(&s), a = filt_pop(&s);
+            filt_push(&s, a | b);
+            break;
+        }
+        case WL_PLAN_EXPR_ARITH_BXOR: {
+            int64_t b = filt_pop(&s), a = filt_pop(&s);
+            filt_push(&s, a ^ b);
+            break;
+        }
+        case WL_PLAN_EXPR_ARITH_BNOT: {
+            int64_t a = filt_pop(&s);
+            filt_push(&s, ~a);
+            break;
+        }
+        case WL_PLAN_EXPR_ARITH_SHL: {
+            int64_t b = filt_pop(&s), a = filt_pop(&s);
+            filt_push(&s, a << b);
+            break;
+        }
+        case WL_PLAN_EXPR_ARITH_SHR: {
+            int64_t b = filt_pop(&s), a = filt_pop(&s);
+            filt_push(&s, a >> b);
+            break;
+        }
+        case WL_PLAN_EXPR_ARITH_HASH: {
+            int64_t a = filt_pop(&s);
+            filt_push(&s, (int64_t)XXH3_64bits(&a, sizeof(a)));
+            break;
+        }
+
+        case WL_PLAN_EXPR_ARITH_MD5: {
+#ifdef WL_MBEDTLS_ENABLED
+            int64_t a = filt_pop(&s);
+            unsigned char digest[16];
+            mbedtls_md5_context ctx;
+            mbedtls_md5_init(&ctx);
+            mbedtls_md5_starts_ret(&ctx);
+            mbedtls_md5_update_ret(&ctx, (const unsigned char *)&a, sizeof(a));
+            mbedtls_md5_finish_ret(&ctx, digest);
+            mbedtls_md5_free(&ctx);
+            filt_push(&s, (int64_t)XXH3_64bits(digest, sizeof(digest)));
+#else
+            (void)filt_pop(&s);
+            goto bad; /* md5 requires mbedTLS (-DmbedTLS=enabled or auto) */
+#endif
+            break;
+        }
+
+        case WL_PLAN_EXPR_ARITH_SHA1: {
+#ifdef WL_MBEDTLS_ENABLED
+            int64_t a = filt_pop(&s);
+            unsigned char digest[20];
+            mbedtls_sha1_context sha1_ctx;
+            mbedtls_sha1_init(&sha1_ctx);
+            mbedtls_sha1_starts_ret(&sha1_ctx);
+            mbedtls_sha1_update_ret(&sha1_ctx, (const unsigned char *)&a,
+                                    sizeof(a));
+            mbedtls_sha1_finish_ret(&sha1_ctx, digest);
+            mbedtls_sha1_free(&sha1_ctx);
+            filt_push(&s, (int64_t)XXH3_64bits(digest, sizeof(digest)));
+#else
+            (void)filt_pop(&s);
+            goto bad; /* sha1 requires mbedTLS (-DmbedTLS=enabled or auto) */
+#endif
+            break;
+        }
+
+        case WL_PLAN_EXPR_ARITH_SHA256: {
+#ifdef WL_MBEDTLS_ENABLED
+            int64_t a = filt_pop(&s);
+            unsigned char digest[32];
+            mbedtls_sha256_context sha256_ctx;
+            mbedtls_sha256_init(&sha256_ctx);
+            int ret = mbedtls_sha256_starts_ret(&sha256_ctx, 0);
+            if (ret != 0) {
+                mbedtls_sha256_free(&sha256_ctx);
+                goto bad;
+            }
+            ret = mbedtls_sha256_update_ret(
+                &sha256_ctx, (const unsigned char *)&a, sizeof(a));
+            if (ret != 0) {
+                mbedtls_sha256_free(&sha256_ctx);
+                goto bad;
+            }
+            ret = mbedtls_sha256_finish_ret(&sha256_ctx, digest);
+            if (ret != 0) {
+                mbedtls_sha256_free(&sha256_ctx);
+                goto bad;
+            }
+            mbedtls_sha256_free(&sha256_ctx);
+            filt_push(&s, (int64_t)XXH3_64bits(digest, sizeof(digest)));
+#else
+            (void)filt_pop(&s);
+            goto bad; /* sha256 requires mbedTLS (-DmbedTLS=enabled or auto) */
+#endif
+            break;
+        }
+
+        case WL_PLAN_EXPR_ARITH_SHA512: {
+#ifdef WL_MBEDTLS_ENABLED
+            int64_t a = filt_pop(&s);
+            unsigned char digest[64];
+            mbedtls_sha512_context sha512_ctx;
+            mbedtls_sha512_init(&sha512_ctx);
+            int ret = mbedtls_sha512_starts_ret(&sha512_ctx, 0);
+            if (ret != 0) {
+                mbedtls_sha512_free(&sha512_ctx);
+                goto bad;
+            }
+            ret = mbedtls_sha512_update_ret(
+                &sha512_ctx, (const unsigned char *)&a, sizeof(a));
+            if (ret != 0) {
+                mbedtls_sha512_free(&sha512_ctx);
+                goto bad;
+            }
+            ret = mbedtls_sha512_finish_ret(&sha512_ctx, digest);
+            if (ret != 0) {
+                mbedtls_sha512_free(&sha512_ctx);
+                goto bad;
+            }
+            mbedtls_sha512_free(&sha512_ctx);
+            filt_push(&s, (int64_t)XXH3_64bits(digest, sizeof(digest)));
+#else
+            (void)filt_pop(&s);
+            goto bad; /* sha512 requires mbedTLS (-DmbedTLS=enabled or auto) */
+#endif
+            break;
+        }
+
+        case WL_PLAN_EXPR_ARITH_HMAC_SHA256: {
+#ifdef WL_MBEDTLS_ENABLED
+            int64_t key_val = filt_pop(&s);
+            int64_t msg_val = filt_pop(&s);
+            unsigned char digest[32];
+            mbedtls_md_hmac(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256),
+                            (const unsigned char *)&key_val, sizeof(key_val),
+                            (const unsigned char *)&msg_val, sizeof(msg_val),
+                            digest);
+            filt_push(&s, (int64_t)XXH3_64bits(digest, sizeof(digest)));
+#else
+            (void)filt_pop(&s);
+            (void)filt_pop(&s);
+            goto bad; /* hmac_sha256 requires mbedTLS (-DmbedTLS=enabled or auto) */
+#endif
+            break;
+        }
+
+        /* Comparisons */
+        case WL_PLAN_EXPR_CMP_EQ: {
+            int64_t b = filt_pop(&s), a = filt_pop(&s);
+            filt_push(&s, a == b ? 1 : 0);
+            break;
+        }
+        case WL_PLAN_EXPR_CMP_NEQ: {
+            int64_t b = filt_pop(&s), a = filt_pop(&s);
+            filt_push(&s, a != b ? 1 : 0);
+            break;
+        }
+        case WL_PLAN_EXPR_CMP_LT: {
+            int64_t b = filt_pop(&s), a = filt_pop(&s);
+            filt_push(&s, a < b ? 1 : 0);
+            break;
+        }
+        case WL_PLAN_EXPR_CMP_GT: {
+            int64_t b = filt_pop(&s), a = filt_pop(&s);
+            filt_push(&s, a > b ? 1 : 0);
+            break;
+        }
+        case WL_PLAN_EXPR_CMP_LTE: {
+            int64_t b = filt_pop(&s), a = filt_pop(&s);
+            filt_push(&s, a <= b ? 1 : 0);
+            break;
+        }
+        case WL_PLAN_EXPR_CMP_GTE: {
+            int64_t b = filt_pop(&s), a = filt_pop(&s);
+            filt_push(&s, a >= b ? 1 : 0);
+            break;
+        }
+
+        /* Aggregates: not valid in row-level evaluation, skip */
+        case WL_PLAN_EXPR_AGG_COUNT:
+        case WL_PLAN_EXPR_AGG_SUM:
+        case WL_PLAN_EXPR_AGG_MIN:
+        case WL_PLAN_EXPR_AGG_MAX:
+            break;
+
+        default:
+            goto bad;
+        }
+    }
+    *out_val = s.top > 0 ? s.vals[s.top - 1] : 0;
+    return 0;
+
+bad:
+    *out_val = 0;
+    return 1;
+}
+
+/*
+ * col_eval_filter_row:
+ * Evaluate the postfix expression buffer against a single row.
+ * Variable names are assumed to be "col<N>" (rewritten by plan compiler).
+ * Returns non-zero if the row passes the predicate, 0 if filtered out.
+ */
+static int
+col_eval_filter_row(const uint8_t *buf, uint32_t size, const int64_t *row,
+                    uint32_t ncols)
+{
+    int64_t val;
+    int err = col_eval_expr_run(buf, size, row, ncols, &val);
+    return err ? 1 : (val != 0 ? 1 : 0); /* on error: pass row through */
+}
+
+/*
+ * col_eval_expr_i64:
+ * Evaluate the postfix expression buffer and return the computed int64 value.
+ * Used by MAP operations to compute head argument expressions.
+ * Returns 0 on empty expression or evaluation error.
+ */
+static int64_t
+col_eval_expr_i64(const uint8_t *buf, uint32_t size, const int64_t *row,
+                  uint32_t ncols)
+{
+    int64_t val;
+    col_eval_expr_run(buf, size, row, ncols, &val);
+    return val;
+}
+
+/* ======================================================================== */
+/* Eval Stack                                                                */
+/* ======================================================================== */
+
+void
+eval_stack_init(eval_stack_t *s)
+{
+    memset(s, 0, sizeof(*s));
+}
+
+int
+eval_stack_push(eval_stack_t *s, col_rel_t *r, bool owned)
+{
+    if (s->top >= COL_STACK_MAX)
+        return ENOBUFS;
+    s->items[s->top].rel = r;
+    s->items[s->top].owned = owned;
+    s->items[s->top].is_delta = false;
+    s->items[s->top].seg_boundaries = NULL;
+    s->items[s->top].seg_count = 0;
+    s->top++;
+    return 0;
+}
+
+/* Push with explicit delta flag (used by VARIABLE and JOIN to tag delta results). */
+int
+eval_stack_push_delta(eval_stack_t *s, col_rel_t *r, bool owned, bool is_delta)
+{
+    int rc = eval_stack_push(s, r, owned);
+    if (rc == 0)
+        s->items[s->top - 1].is_delta = is_delta;
+    return rc;
+}
+
+eval_entry_t
+eval_stack_pop(eval_stack_t *s)
+{
+    eval_entry_t e = { NULL, false, false, NULL, 0 };
+    if (s->top > 0)
+        e = s->items[--s->top];
+    return e;
+}
+
+void
+eval_stack_drain(eval_stack_t *s)
+{
+    while (s->top > 0) {
+        eval_entry_t e = eval_stack_pop(s);
+        if (e.seg_boundaries)
+            free(e.seg_boundaries);
+        if (e.owned)
+            col_rel_destroy(e.rel);
+    }
+}
+
+/* ======================================================================== */
+/* Operator Implementations                                                  */
+/* ======================================================================== */
+
+/* Cross-module function declarations are in columnar/internal.h */
+
+/* --- VARIABLE ------------------------------------------------------------ */
+
+int
+col_op_variable(const wl_plan_op_t *op, eval_stack_t *stack,
+                wl_col_session_t *sess)
+{
+    if (!op->relation_name)
+        return ENOENT;
+    col_rel_t *full_rel = session_find_rel(sess, op->relation_name);
+    if (!full_rel)
+        return ENOENT;
+
+    /* Delta mode controls whether we use delta or full relation.
+     * FORCE_FULL:  always use the full relation (no delta substitution).
+     * FORCE_DELTA: always use the delta relation; if no delta exists or
+     *              it is empty, push an empty relation so that the rule
+     *              copy produces no output (correct semi-naive behavior).
+     * AUTO:        heuristic -- prefer delta only when it is a genuine
+     *              strict subset of the full relation (nrows < full).
+     *
+     * Issue #158 extension: When retraction_seeded and iteration == 0,
+     * look for $r$<name> (retraction delta) instead of $d$<name> */
+    char dname[256];
+    col_rel_t *delta = NULL;
+
+    if (sess->retraction_seeded && sess->current_iteration == 0) {
+        /* Retraction mode: look for $r$<name> retraction delta */
+        if (retraction_rel_name(op->relation_name, dname, sizeof(dname)) == 0)
+            delta = session_find_rel(sess, dname);
+    } else {
+        /* Normal mode: look for $d$<name> insertion delta */
+        snprintf(dname, sizeof(dname), "$d$%s", op->relation_name);
+        delta = session_find_rel(sess, dname);
+    }
+
+    if (op->delta_mode == WL_DELTA_FORCE_FULL) {
+        return eval_stack_push_delta(stack, full_rel, false, false);
+    }
+    if (op->delta_mode == WL_DELTA_FORCE_DELTA) {
+        if (delta && delta->nrows > 0) {
+            return eval_stack_push_delta(stack, delta, false, true);
+        }
+        if (sess->current_iteration == 0) {
+            if (sess->delta_seeded || sess->retraction_seeded) {
+                /* Issue #83 (delta-seeded) or #158 (retraction-seeded):
+                 * No pre-seeded delta means this relation has no new/removed facts.
+                 * Push empty so only rules with actual deltas produce output. */
+                col_rel_t *empty = col_rel_pool_new_like(
+                    sess->delta_pool, "$empty_delta", full_rel);
+                if (!empty)
+                    return ENOMEM;
+                int push_rc = eval_stack_push_delta(stack, empty, true, true);
+                if (push_rc != 0)
+                    col_rel_destroy(empty);
+                return push_rc;
+            }
+            /* Base-case iteration: no deltas exist yet, fall back to full
+             * relation so EDB-grounded rules can still fire on iter 0. */
+            return eval_stack_push_delta(stack, full_rel, false, false);
+        }
+        /* Iteration > 0: delta absent or empty means the relation has
+         * converged.  Push an empty relation so this rule copy produces
+         * no output (correct semi-naive semantics, issue #85). */
+        col_rel_t *empty
+            = col_rel_pool_new_like(sess->delta_pool, "$empty_delta", full_rel);
+        if (!empty)
+            return ENOMEM;
+        int push_rc = eval_stack_push_delta(stack, empty, true, true);
+        if (push_rc != 0)
+            col_rel_destroy(empty);
+        return push_rc;
+    }
+
+    /* WL_DELTA_AUTO: original heuristic */
+    bool use_delta
+        = (delta && delta->nrows > 0 && delta->nrows < full_rel->nrows);
+    col_rel_t *rel = use_delta ? delta : full_rel;
+    /* push borrowed reference - session owns the relation */
+    return eval_stack_push_delta(stack, rel, false, use_delta);
+}
+
+/* --- MAP ----------------------------------------------------------------- */
+
+int
+col_op_map(const wl_plan_op_t *op, eval_stack_t *stack, wl_col_session_t *sess)
+{
+    eval_entry_t e = eval_stack_pop(stack);
+    if (!e.rel)
+        return EINVAL;
+
+    uint32_t pc = op->project_count;
+    col_rel_t *out = col_rel_pool_new_auto(sess->delta_pool, "$map", pc);
+    if (!out) {
+        if (e.owned)
+            col_rel_destroy(e.rel);
+        return ENOMEM;
+    }
+
+    int64_t *tmp = (int64_t *)malloc(sizeof(int64_t) * pc);
+    if (!tmp) {
+        col_rel_destroy(out);
+        if (e.owned)
+            col_rel_destroy(e.rel);
+        return ENOMEM;
+    }
+
+    for (uint32_t r = 0; r < e.rel->nrows; r++) {
+        const int64_t *row = e.rel->data + (size_t)r * e.rel->ncols;
+        for (uint32_t c = 0; c < pc; c++) {
+            if (op->map_exprs && c < op->map_expr_count && op->map_exprs[c].data
+                && op->map_exprs[c].size > 0) {
+                tmp[c] = col_eval_expr_i64(op->map_exprs[c].data,
+                                           op->map_exprs[c].size, row,
+                                           e.rel->ncols);
+            } else {
+                uint32_t src = op->project_indices ? op->project_indices[c] : c;
+                tmp[c] = (src < e.rel->ncols) ? row[src] : 0;
+            }
+        }
+        int rc = col_rel_append_row(out, tmp);
+        if (rc != 0) {
+            free(tmp);
+            col_rel_destroy(out);
+            if (e.owned)
+                col_rel_destroy(e.rel);
+            return rc;
+        }
+    }
+    free(tmp);
+
+    if (e.owned)
+        col_rel_destroy(e.rel);
+    return eval_stack_push(stack, out, true);
+}
+
+/* --- FILTER -------------------------------------------------------------- */
+
+int
+col_op_filter(const wl_plan_op_t *op, eval_stack_t *stack,
+              wl_col_session_t *sess)
+{
+    eval_entry_t e = eval_stack_pop(stack);
+    if (!e.rel)
+        return EINVAL;
+
+    col_rel_t *out = col_rel_pool_new_like(sess->delta_pool, "$filter", e.rel);
+    if (!out) {
+        if (e.owned)
+            col_rel_destroy(e.rel);
+        return ENOMEM;
+    }
+
+    const uint8_t *buf = op->filter_expr.data;
+    uint32_t bsz = op->filter_expr.size;
+
+    for (uint32_t r = 0; r < e.rel->nrows; r++) {
+        const int64_t *row = e.rel->data + (size_t)r * e.rel->ncols;
+        int pass = (!buf || bsz == 0)
+                       ? 1
+                       : col_eval_filter_row(buf, bsz, row, e.rel->ncols);
+        if (pass) {
+            int rc = col_rel_append_row(out, row);
+            if (rc != 0) {
+                col_rel_destroy(out);
+                if (e.owned)
+                    col_rel_destroy(e.rel);
+                return rc;
+            }
+        }
+    }
+
+    if (e.owned)
+        col_rel_destroy(e.rel);
+    return eval_stack_push(stack, out, true);
+}
+
+/* --- Hash join helpers --------------------------------------------------- */
+
+static uint32_t
+next_pow2(uint32_t n)
+{
+    if (n < 16)
+        return 16;
+    n--;
+    n |= n >> 1;
+    n |= n >> 2;
+    n |= n >> 4;
+    n |= n >> 8;
+    n |= n >> 16;
+    return n + 1;
+}
+
+static uint32_t
+hash_int64_keys(const int64_t *row, const uint32_t *key_cols, uint32_t kc)
+{
+    uint32_t h = 2166136261u; /* FNV-1a offset basis */
+    for (uint32_t i = 0; i < kc; i++) {
+        uint64_t v = (uint64_t)row[key_cols[i]];
+        h ^= (uint32_t)(v & 0xffffffff);
+        h *= 16777619u;
+        h ^= (uint32_t)(v >> 32);
+        h *= 16777619u;
+    }
+    return h;
+}
+
+/* --- JOIN ---------------------------------------------------------------- */
+
+int
+col_op_join(const wl_plan_op_t *op, eval_stack_t *stack, wl_col_session_t *sess)
+{
+    eval_entry_t left_e = eval_stack_pop(stack);
+    if (!left_e.rel)
+        return EINVAL;
+
+    col_rel_t *right = session_find_rel(sess, op->right_relation);
+    if (!right) {
+        if (left_e.owned)
+            col_rel_destroy(left_e.rel);
+        return ENOENT;
+    }
+
+    /* Right-side delta substitution controlled by delta_mode:
+     * FORCE_DELTA: always substitute delta of right if available; if no
+     *              delta exists, short-circuit with an empty result (this
+     *              rule copy produces no tuples from this permutation).
+     * FORCE_FULL:  never substitute delta; always use full right.
+     * AUTO:        heuristic -- substitute delta when left is not already
+     *              a delta and right-delta is strictly smaller than full. */
+    bool used_right_delta = false;
+    if (op->delta_mode == WL_DELTA_FORCE_DELTA && op->right_relation) {
+        char rdname[256];
+        snprintf(rdname, sizeof(rdname), "$d$%s", op->right_relation);
+        col_rel_t *rdelta = session_find_rel(sess, rdname);
+        if (rdelta && rdelta->nrows > 0) {
+            right = rdelta;
+            used_right_delta = true;
+        } else if (sess->current_iteration > 0 || sess->delta_seeded) {
+            /* Iteration > 0 or delta-seeded iter 0 (issue #83):
+             * FORCE_DELTA required but delta absent/empty. Short-circuit to
+             * empty result — this rule copy produces no tuples from this
+             * permutation (correct semi-naive, issue #85). */
+            uint32_t ocols = left_e.rel->ncols + right->ncols;
+            if (left_e.owned)
+                col_rel_destroy(left_e.rel);
+            col_rel_t *empty = col_rel_new_auto("$join_empty", ocols);
+            if (!empty)
+                return ENOMEM;
+            int push_rc = eval_stack_push(stack, empty, true);
+            if (push_rc != 0)
+                col_rel_destroy(empty);
+            return push_rc;
+        }
+        /* else: iteration 0 — no deltas yet, fall through to full right */
+    } else if (op->delta_mode != WL_DELTA_FORCE_FULL && !left_e.is_delta
+               && op->right_relation) {
+        /* AUTO: original heuristic */
+        char rdname[256];
+        snprintf(rdname, sizeof(rdname), "$d$%s", op->right_relation);
+        col_rel_t *rdelta = session_find_rel(sess, rdname);
+        if (rdelta && rdelta->nrows > 0 && rdelta->nrows < right->nrows) {
+            right = rdelta;
+            used_right_delta = true;
+        }
+    }
+
+    /* Materialization cache: reuse previous join result when available.
+     * Works with both stable (borrowed) and worker-owned relations since
+     * the cache key is based on content hash, not ownership. This enables
+     * cache reuse in K-fusion worker sessions, eliminating redundant joins. */
+    if (op->materialized) {
+        col_rel_t *cached
+            = col_mat_cache_lookup(&sess->mat_cache, left_e.rel, right);
+        if (cached) {
+            return eval_stack_push_delta(stack, cached, false,
+                                         left_e.is_delta || used_right_delta);
+        }
+    }
+
+    uint32_t kc = op->key_count;
+    col_rel_t *left = left_e.rel;
+
+    /* Resolve key column positions */
+    uint32_t *lk = (uint32_t *)malloc(sizeof(uint32_t) * (kc ? kc : 1));
+    uint32_t *rk = (uint32_t *)malloc(sizeof(uint32_t) * (kc ? kc : 1));
+    if (!lk || !rk) {
+        free(lk);
+        free(rk);
+        if (left_e.owned)
+            col_rel_destroy(left);
+        return ENOMEM;
+    }
+    for (uint32_t k = 0; k < kc; k++) {
+        int li = col_rel_col_idx(left, op->left_keys ? op->left_keys[k] : NULL);
+        int ri
+            = col_rel_col_idx(right, op->right_keys ? op->right_keys[k] : NULL);
+        lk[k] = (li >= 0) ? (uint32_t)li : 0;
+        rk[k] = (ri >= 0) ? (uint32_t)ri : 0;
+    }
+
+    /* Output: all left cols + all right cols (including key duplication).
+     * Downstream MAP will project the desired output columns. */
+    uint32_t ocols = left->ncols + right->ncols;
+    col_rel_t *out = col_rel_pool_new_auto(sess->delta_pool, "$join", ocols);
+    if (!out) {
+        free(lk);
+        free(rk);
+        if (left_e.owned)
+            col_rel_destroy(left);
+        return ENOMEM;
+    }
+
+    int64_t *tmp = (int64_t *)malloc(sizeof(int64_t) * (ocols ? ocols : 1));
+    if (!tmp) {
+        col_rel_destroy(out);
+        free(lk);
+        free(rk);
+        if (left_e.owned)
+            col_rel_destroy(left);
+        return ENOMEM;
+    }
+
+    /* Hash join: use persistent arrangement for the full right relation;
+     * fall back to an ephemeral hash table for delta substitution or when
+     * the arrangement cannot be allocated. */
+    col_arrangement_t *arr = NULL;
+    uint32_t nbuckets_ep = 0;
+    uint32_t *ht_head_ep = NULL;
+    uint32_t *ht_next_ep = NULL;
+
+    if (!used_right_delta && op->right_relation && kc > 0)
+        arr = col_session_get_arrangement(&sess->base, op->right_relation, rk,
+                                          kc);
+    else if (used_right_delta && op->right_relation && kc > 0)
+        arr = col_session_get_delta_arrangement(sess, op->right_relation, right,
+                                                rk, kc);
+
+    if (!arr) {
+        /* Ephemeral hash table (delta path or arrangement unavailable). */
+        nbuckets_ep = next_pow2(right->nrows > 0 ? right->nrows * 2 : 1);
+        ht_head_ep = (uint32_t *)calloc(nbuckets_ep, sizeof(uint32_t));
+        ht_next_ep = (uint32_t *)malloc((right->nrows > 0 ? right->nrows : 1)
+                                        * sizeof(uint32_t));
+        if (!ht_head_ep || !ht_next_ep) {
+            free(ht_head_ep);
+            free(ht_next_ep);
+            free(tmp);
+            col_rel_destroy(out);
+            free(lk);
+            free(rk);
+            if (left_e.owned)
+                col_rel_destroy(left);
+            return ENOMEM;
+        }
+        for (uint32_t rr = 0; rr < right->nrows; rr++) {
+            const int64_t *rrow = right->data + (size_t)rr * right->ncols;
+            uint32_t h = hash_int64_keys(rrow, rk, kc) & (nbuckets_ep - 1);
+            ht_next_ep[rr] = ht_head_ep[h];
+            ht_head_ep[h] = rr + 1; /* 1-based; 0 = end of chain */
+        }
+    }
+
+    /* key_row scratch buffer for arrangement probe: values placed at rk[]
+     * positions so col_arrangement_find_first() matches correctly. */
+    int64_t *key_row = NULL;
+    if (arr) {
+        key_row = (int64_t *)malloc(sizeof(int64_t)
+                                    * (right->ncols > 0 ? right->ncols : 1));
+        if (!key_row) {
+            free(ht_head_ep);
+            free(ht_next_ep);
+            free(tmp);
+            col_rel_destroy(out);
+            free(lk);
+            free(rk);
+            if (left_e.owned)
+                col_rel_destroy(left);
+            return ENOMEM;
+        }
+    }
+
+    int join_rc = 0;
+    for (uint32_t lr = 0; lr < left->nrows && join_rc == 0; lr++) {
+        const int64_t *lrow = left->data + (size_t)lr * left->ncols;
+
+        if (arr) {
+            /* Arrangement probe: fill key_row at right-side positions. */
+            for (uint32_t k = 0; k < kc; k++)
+                key_row[rk[k]] = lrow[lk[k]];
+            uint32_t rr = col_arrangement_find_first(arr, right->data,
+                                                     right->ncols, key_row);
+            while (rr != UINT32_MAX && join_rc == 0) {
+                const int64_t *rrow = right->data + (size_t)rr * right->ncols;
+                /* Verify key match: find_next may return collision rows. */
+                bool match = true;
+                for (uint32_t k = 0; k < kc && match; k++)
+                    match = (lrow[lk[k]] == rrow[rk[k]]);
+                if (match) {
+                    memcpy(tmp, lrow, sizeof(int64_t) * left->ncols);
+                    memcpy(tmp + left->ncols, rrow,
+                           sizeof(int64_t) * right->ncols);
+                    join_rc = col_rel_append_row(out, tmp);
+                }
+                rr = col_arrangement_find_next(arr, rr);
+            }
+        } else {
+            /* Ephemeral hash probe. */
+            uint32_t h = hash_int64_keys(lrow, lk, kc) & (nbuckets_ep - 1);
+            for (uint32_t e = ht_head_ep[h]; e != 0; e = ht_next_ep[e - 1]) {
+                uint32_t rr = e - 1;
+                const int64_t *rrow = right->data + (size_t)rr * right->ncols;
+                bool match = true;
+                for (uint32_t k = 0; k < kc && match; k++)
+                    match = (lrow[lk[k]] == rrow[rk[k]]);
+                if (!match)
+                    continue;
+                memcpy(tmp, lrow, sizeof(int64_t) * left->ncols);
+                memcpy(tmp + left->ncols, rrow, sizeof(int64_t) * right->ncols);
+                join_rc = col_rel_append_row(out, tmp);
+                if (join_rc != 0)
+                    break;
+            }
+        }
+    }
+    free(key_row);
+    free(ht_head_ep);
+    free(ht_next_ep);
+    if (join_rc != 0) {
+        free(tmp);
+        col_rel_destroy(out);
+        free(lk);
+        free(rk);
+        if (left_e.owned)
+            col_rel_destroy(left);
+        return join_rc;
+    }
+
+    free(tmp);
+    free(lk);
+    free(rk);
+    if (left_e.owned)
+        col_rel_destroy(left);
+    /* Propagate delta flag: result is a delta if left was delta OR we used
+     * right-delta. This ensures subsequent JOINs in the same rule plan know
+     * whether to apply right-delta (they should NOT if we already used one). */
+    bool result_is_delta = left_e.is_delta || used_right_delta;
+
+    /* Populate materialization cache when hint is set.
+     * Works with both stable and worker-owned relations.
+     * Cache takes ownership of out; we push a borrowed reference.
+     * This enables K-fusion workers to cache and reuse intermediate joins,
+     * reducing redundant computation across the K worker copies. */
+    if (op->materialized) {
+        col_mat_cache_insert(&sess->mat_cache, left, right, out);
+        return eval_stack_push_delta(stack, out, false, result_is_delta);
+    }
+    return eval_stack_push_delta(stack, out, true, result_is_delta);
+}
+
+/* --- ANTIJOIN ------------------------------------------------------------ */
+
+int
+col_op_antijoin(const wl_plan_op_t *op, eval_stack_t *stack,
+                wl_col_session_t *sess)
+{
+    eval_entry_t left_e = eval_stack_pop(stack);
+    if (!left_e.rel)
+        return EINVAL;
+
+    col_rel_t *right = session_find_rel(sess, op->right_relation);
+    if (!right) {
+        /* If right relation doesn't exist, antijoin keeps all left rows */
+        return eval_stack_push(stack, left_e.rel, left_e.owned);
+    }
+
+    col_rel_t *left = left_e.rel;
+    uint32_t kc = op->key_count;
+
+    uint32_t *lk = (uint32_t *)malloc(sizeof(uint32_t) * (kc ? kc : 1));
+    uint32_t *rk = (uint32_t *)malloc(sizeof(uint32_t) * (kc ? kc : 1));
+    if (!lk || !rk) {
+        free(lk);
+        free(rk);
+        if (left_e.owned)
+            col_rel_destroy(left);
+        return ENOMEM;
+    }
+    for (uint32_t k = 0; k < kc; k++) {
+        int li = col_rel_col_idx(left, op->left_keys ? op->left_keys[k] : NULL);
+        int ri
+            = col_rel_col_idx(right, op->right_keys ? op->right_keys[k] : NULL);
+        lk[k] = (li >= 0) ? (uint32_t)li : 0;
+        rk[k] = (ri >= 0) ? (uint32_t)ri : 0;
+    }
+
+    col_rel_t *out = col_rel_pool_new_like(sess->delta_pool, "$antijoin", left);
+    if (!out) {
+        free(lk);
+        free(rk);
+        if (left_e.owned)
+            col_rel_destroy(left);
+        return ENOMEM;
+    }
+
+    /* Hash antijoin: build hash set from right, iterate left. */
+    uint32_t aj_nbuckets = next_pow2(right->nrows > 0 ? right->nrows * 2 : 1);
+    uint32_t *aj_head = (uint32_t *)calloc(aj_nbuckets, sizeof(uint32_t));
+    uint32_t *aj_next
+        = (uint32_t *)malloc((right->nrows + 1) * sizeof(uint32_t));
+    if (!aj_head || !aj_next) {
+        free(aj_head);
+        free(aj_next);
+        col_rel_destroy(out);
+        free(lk);
+        free(rk);
+        if (left_e.owned)
+            col_rel_destroy(left);
+        return ENOMEM;
+    }
+    for (uint32_t rr = 0; rr < right->nrows; rr++) {
+        const int64_t *rrow = right->data + (size_t)rr * right->ncols;
+        uint32_t h = hash_int64_keys(rrow, rk, kc) & (aj_nbuckets - 1);
+        aj_next[rr] = aj_head[h];
+        aj_head[h] = rr + 1;
+    }
+    int aj_rc = 0;
+    for (uint32_t lr = 0; lr < left->nrows && aj_rc == 0; lr++) {
+        const int64_t *lrow = left->data + (size_t)lr * left->ncols;
+        uint32_t h = hash_int64_keys(lrow, lk, kc) & (aj_nbuckets - 1);
+        bool found = false;
+        for (uint32_t e = aj_head[h]; e != 0 && !found; e = aj_next[e - 1]) {
+            uint32_t rr = e - 1;
+            const int64_t *rrow = right->data + (size_t)rr * right->ncols;
+            bool match = true;
+            for (uint32_t k = 0; k < kc && match; k++)
+                match = (lrow[lk[k]] == rrow[rk[k]]);
+            if (match)
+                found = true;
+        }
+        if (!found)
+            aj_rc = col_rel_append_row(out, lrow);
+    }
+    free(aj_head);
+    free(aj_next);
+    if (aj_rc != 0) {
+        col_rel_destroy(out);
+        free(lk);
+        free(rk);
+        if (left_e.owned)
+            col_rel_destroy(left);
+        return aj_rc;
+    }
+
+    free(lk);
+    free(rk);
+    if (left_e.owned)
+        col_rel_destroy(left);
+    return eval_stack_push(stack, out, true);
+}
+
+/* --- CONCAT -------------------------------------------------------------- */
+
+int
+col_op_concat(eval_stack_t *stack, wl_col_session_t *sess)
+{
+    if (stack->top < 2)
+        return 0; /* single-item passthrough for K-copy boundary marker */
+
+    eval_entry_t b_e = eval_stack_pop(stack);
+    eval_entry_t a_e = eval_stack_pop(stack);
+    col_rel_t *a = a_e.rel;
+    col_rel_t *b = b_e.rel;
+
+    if (!a || !b || a->ncols != b->ncols) {
+        if (a_e.owned)
+            col_rel_destroy(a);
+        if (b_e.owned)
+            col_rel_destroy(b);
+        return EINVAL;
+    }
+
+    col_rel_t *out = col_rel_pool_new_like(sess->delta_pool, "$concat", a);
+    if (!out) {
+        if (a_e.owned)
+            col_rel_destroy(a);
+        if (b_e.owned)
+            col_rel_destroy(b);
+        return ENOMEM;
+    }
+
+    int rc = col_rel_append_all(out, a);
+    if (rc == 0)
+        rc = col_rel_append_all(out, b);
+
+    if (rc != 0) {
+        if (a_e.seg_boundaries)
+            free(a_e.seg_boundaries);
+        if (b_e.seg_boundaries)
+            free(b_e.seg_boundaries);
+        if (a_e.owned)
+            col_rel_destroy(a);
+        if (b_e.owned)
+            col_rel_destroy(b);
+        col_rel_destroy(out);
+        return rc;
+    }
+
+    /* Track segment boundaries for K-way merge optimization. */
+    uint32_t left_segs = a_e.seg_count > 0 ? a_e.seg_count : 1;
+    uint32_t right_segs = b_e.seg_count > 0 ? b_e.seg_count : 1;
+    uint32_t total_segs = left_segs + right_segs;
+
+    uint32_t *out_boundaries
+        = (uint32_t *)malloc((total_segs + 1) * sizeof(uint32_t));
+    if (!out_boundaries) {
+        if (a_e.seg_boundaries)
+            free(a_e.seg_boundaries);
+        if (b_e.seg_boundaries)
+            free(b_e.seg_boundaries);
+        if (a_e.owned)
+            col_rel_destroy(a);
+        if (b_e.owned)
+            col_rel_destroy(b);
+        col_rel_destroy(out);
+        return ENOMEM;
+    }
+
+    /* Copy left boundaries */
+    if (a_e.seg_boundaries != NULL) {
+        memcpy(out_boundaries, a_e.seg_boundaries,
+               (left_segs + 1) * sizeof(uint32_t));
+    } else {
+        out_boundaries[0] = 0;
+        out_boundaries[1] = a->nrows;
+    }
+
+    /* Adjust and append right boundaries */
+    uint32_t right_offset = a->nrows;
+    if (b_e.seg_boundaries != NULL) {
+        for (uint32_t i = 0; i <= right_segs; i++)
+            out_boundaries[left_segs + i]
+                = b_e.seg_boundaries[i] + right_offset;
+    } else {
+        out_boundaries[left_segs] = right_offset;
+        out_boundaries[left_segs + 1] = out->nrows;
+    }
+
+    /* Clean up input boundaries */
+    if (a_e.seg_boundaries)
+        free(a_e.seg_boundaries);
+    if (b_e.seg_boundaries)
+        free(b_e.seg_boundaries);
+
+    if (a_e.owned)
+        col_rel_destroy(a);
+    if (b_e.owned)
+        col_rel_destroy(b);
+
+    rc = eval_stack_push(stack, out, true);
+    if (rc != 0) {
+        free(out_boundaries);
+        col_rel_destroy(out);
+        return rc;
+    }
+
+    /* Attach boundary metadata to the pushed entry */
+    stack->items[stack->top - 1].seg_boundaries = out_boundaries;
+    stack->items[stack->top - 1].seg_count = total_segs;
+    return 0;
+}
+
+/* --- CONSOLIDATE --------------------------------------------------------- */
+
+/* row_cmp_fn and QSORT_R_CALL are defined in columnar/internal.h */
+
+/* Lexicographic int64_t row comparison for K-way merge.
+ * Equivalent to row_cmp_lex / row_cmp_optimized but available before
+ * the SIMD dispatcher is defined. */
+static inline int
+kway_row_cmp(const int64_t *a, const int64_t *b, uint32_t ncols)
+{
+    for (uint32_t c = 0; c < ncols; c++) {
+        if (a[c] < b[c])
+            return -1;
+        if (a[c] > b[c])
+            return 1;
+    }
+    return 0;
+}
+
+/*
+ * col_op_consolidate_kway_merge - K-way merge with per-segment sort and dedup.
+ *
+ * Sorts each segment in-place, then merges K sorted segments using a min-heap.
+ * Deduplicates on-the-fly during merge. Writes merged result back into rel.
+ *
+ * For K=1: just sort + dedup in-place.
+ * For K=2: optimized 2-way merge (no heap overhead).
+ * For K>=3: min-heap merge with O(M log K) comparisons.
+ *
+ * @rel            Relation containing K concatenated segments.
+ * @seg_boundaries Array of (seg_count+1) offsets [s0, s1, ..., sK].
+ * @seg_count      Number of segments K.
+ * @return         0 on success, ENOMEM on allocation failure.
+ */
+int
+col_op_consolidate_kway_merge(col_rel_t *rel, const uint32_t *seg_boundaries,
+                              uint32_t seg_count)
+{
+    uint32_t nc = rel->ncols;
+    uint32_t nr = rel->nrows;
+    size_t row_bytes = (size_t)nc * sizeof(int64_t);
+
+    if (nr <= 1)
+        return 0;
+
+    /* Sort each segment in-place */
+    for (uint32_t s = 0; s < seg_count; s++) {
+        uint32_t start = seg_boundaries[s];
+        uint32_t end = seg_boundaries[s + 1];
+        if (end > start + 1) {
+            QSORT_R_CALL(rel->data + (size_t)start * nc, end - start, row_bytes,
+                         &nc, row_cmp_fn);
+        }
+    }
+
+    /* K=1: segments already sorted, just dedup in-place */
+    if (seg_count == 1) {
+        uint32_t out_r = 1;
+        for (uint32_t r = 1; r < nr; r++) {
+            const int64_t *prev = rel->data + (size_t)(r - 1) * nc;
+            const int64_t *cur = rel->data + (size_t)r * nc;
+            if (memcmp(prev, cur, row_bytes) != 0) {
+                if (out_r != r)
+                    memcpy(rel->data + (size_t)out_r * nc, cur, row_bytes);
+                out_r++;
+            }
+        }
+        rel->nrows = out_r;
+        return 0;
+    }
+
+    /* Allocate merge output buffer */
+    int64_t *merged = (int64_t *)malloc((size_t)nr * nc * sizeof(int64_t));
+    if (!merged)
+        return ENOMEM;
+
+    if (seg_count == 2) {
+        /* Optimized 2-way merge (no heap) */
+        uint32_t mid = seg_boundaries[1];
+        uint32_t i = seg_boundaries[0], j = mid;
+        uint32_t i_end = mid, j_end = seg_boundaries[2];
+        uint32_t out = 0;
+        int64_t *last_row = NULL;
+
+        while (i < i_end && j < j_end) {
+            int64_t *row_i = rel->data + (size_t)i * nc;
+            int64_t *row_j = rel->data + (size_t)j * nc;
+            int cmp = kway_row_cmp(row_i, row_j, nc);
+            int64_t *row_to_add;
+
+            if (cmp <= 0) {
+                row_to_add = row_i;
+                i++;
+                if (cmp == 0)
+                    j++; /* skip duplicate */
+            } else {
+                row_to_add = row_j;
+                j++;
+            }
+
+            if (last_row == NULL
+                || memcmp(last_row, row_to_add, row_bytes) != 0) {
+                memcpy(merged + (size_t)out * nc, row_to_add, row_bytes);
+                last_row = merged + (size_t)out * nc;
+                out++;
+            }
+        }
+
+        while (i < i_end) {
+            int64_t *row = rel->data + (size_t)i * nc;
+            if (last_row == NULL || memcmp(last_row, row, row_bytes) != 0) {
+                memcpy(merged + (size_t)out * nc, row, row_bytes);
+                last_row = merged + (size_t)out * nc;
+                out++;
+            }
+            i++;
+        }
+
+        while (j < j_end) {
+            int64_t *row = rel->data + (size_t)j * nc;
+            if (last_row == NULL || memcmp(last_row, row, row_bytes) != 0) {
+                memcpy(merged + (size_t)out * nc, row, row_bytes);
+                last_row = merged + (size_t)out * nc;
+                out++;
+            }
+            j++;
+        }
+
+        memcpy(rel->data, merged, (size_t)out * nc * sizeof(int64_t));
+        rel->nrows = out;
+        free(merged);
+        return 0;
+    }
+
+    /* General K-way merge (K >= 3) using min-heap.
+     *
+     * Heap entries: (segment_index, current_row_pointer).
+     * Heap property: parent row <= child rows (lexicographic).
+     */
+    typedef struct {
+        uint32_t seg;    /* segment index */
+        uint32_t cursor; /* current row index within rel->data */
+        uint32_t end;    /* one-past-end row index for this segment */
+    } heap_entry_t;
+
+    /* Build initial heap from non-empty segments */
+    heap_entry_t *heap
+        = (heap_entry_t *)malloc(seg_count * sizeof(heap_entry_t));
+    if (!heap) {
+        free(merged);
+        return ENOMEM;
+    }
+
+    uint32_t heap_size = 0;
+    for (uint32_t s = 0; s < seg_count; s++) {
+        if (seg_boundaries[s] < seg_boundaries[s + 1]) {
+            heap[heap_size].seg = s;
+            heap[heap_size].cursor = seg_boundaries[s];
+            heap[heap_size].end = seg_boundaries[s + 1];
+            heap_size++;
+        }
+    }
+
+    /* Sift-down helper (inline macro for performance) */
+#define HEAP_ROW(idx) (rel->data + (size_t)heap[(idx)].cursor * nc)
+#define HEAP_SIFT_DOWN(start, size)                                      \
+    do {                                                                 \
+        uint32_t _p = (start);                                           \
+        while (2 * _p + 1 < (size)) {                                    \
+            uint32_t _c = 2 * _p + 1;                                    \
+            if (_c + 1 < (size)                                          \
+                && kway_row_cmp(HEAP_ROW(_c + 1), HEAP_ROW(_c), nc) < 0) \
+                _c++;                                                    \
+            if (kway_row_cmp(HEAP_ROW(_p), HEAP_ROW(_c), nc) <= 0)       \
+                break;                                                   \
+            heap_entry_t _tmp = heap[_p];                                \
+            heap[_p] = heap[_c];                                         \
+            heap[_c] = _tmp;                                             \
+            _p = _c;                                                     \
+        }                                                                \
+    } while (0)
+
+    /* Build min-heap (heapify) */
+    if (heap_size > 1) {
+        for (int32_t i = (int32_t)(heap_size / 2) - 1; i >= 0; i--)
+            HEAP_SIFT_DOWN((uint32_t)i, heap_size);
+    }
+
+    /* Extract-min loop with dedup */
+    uint32_t out = 0;
+    int64_t *last_row = NULL;
+
+    while (heap_size > 0) {
+        int64_t *min_row = HEAP_ROW(0);
+
+        /* Dedup: skip if same as last emitted row */
+        if (last_row == NULL || memcmp(last_row, min_row, row_bytes) != 0) {
+            memcpy(merged + (size_t)out * nc, min_row, row_bytes);
+            last_row = merged + (size_t)out * nc;
+            out++;
+        }
+
+        /* Advance cursor of min segment */
+        heap[0].cursor++;
+        if (heap[0].cursor >= heap[0].end) {
+            /* Segment exhausted: replace root with last element */
+            heap[0] = heap[heap_size - 1];
+            heap_size--;
+        }
+        if (heap_size > 0)
+            HEAP_SIFT_DOWN(0, heap_size);
+    }
+
+#undef HEAP_ROW
+#undef HEAP_SIFT_DOWN
+
+    memcpy(rel->data, merged, (size_t)out * nc * sizeof(int64_t));
+    rel->nrows = out;
+    free(merged);
+    free(heap);
+    return 0;
+}
+
+int
+col_op_consolidate(eval_stack_t *stack, wl_col_session_t *sess)
+{
+    eval_entry_t e = eval_stack_pop(stack);
+    if (!e.rel)
+        return EINVAL;
+
+    col_rel_t *in = e.rel;
+    uint32_t nc = in->ncols;
+    uint32_t nr = in->nrows;
+
+    if (nr <= 1) {
+        /* Nothing to deduplicate */
+        if (e.seg_boundaries)
+            free(e.seg_boundaries);
+        in->sorted_nrows = nr;
+        return eval_stack_push(stack, in, e.owned);
+    }
+
+    /* Sort in-place if we own the relation, otherwise copy first */
+    col_rel_t *work = in;
+    bool work_owned = e.owned;
+    if (!work_owned) {
+        work = col_rel_pool_new_like(sess->delta_pool, "$consol", in);
+        if (!work) {
+            if (e.seg_boundaries)
+                free(e.seg_boundaries);
+            return ENOMEM;
+        }
+        if (col_rel_append_all(work, in) != 0) {
+            col_rel_destroy(work);
+            if (e.seg_boundaries)
+                free(e.seg_boundaries);
+            return ENOMEM;
+        }
+        work_owned = true;
+    }
+
+    /* Dispatch: K-way merge when segment boundaries are available */
+    uint32_t k = e.seg_count > 0 ? e.seg_count : 1;
+    if (k >= 2 && e.seg_boundaries != NULL) {
+        int rc = col_op_consolidate_kway_merge(work, e.seg_boundaries, k);
+        free(e.seg_boundaries);
+        if (rc != 0) {
+            if (work_owned)
+                col_rel_destroy(work);
+            return rc;
+        }
+        work->sorted_nrows = work->nrows;
+        return eval_stack_push(stack, work, work_owned);
+    }
+
+    if (e.seg_boundaries)
+        free(e.seg_boundaries);
+
+    size_t row_bytes = (size_t)nc * sizeof(int64_t);
+
+    /* Issue #94: Incremental merge when a sorted prefix exists.
+     * data[0..sorted_nrows) is already sorted+unique from a prior
+     * consolidation.  Sort only the unsorted suffix and merge. */
+    uint32_t sn = work->sorted_nrows;
+    if (sn > 0 && sn < nr) {
+        uint32_t delta_count = nr - sn;
+        int64_t *delta_start = work->data + (size_t)sn * nc;
+
+        /* Phase 1: sort only the unsorted suffix */
+        QSORT_R_CALL(delta_start, delta_count, row_bytes, &nc, row_cmp_fn);
+
+        /* Phase 1b: dedup within suffix */
+        uint32_t d_unique = 1;
+        for (uint32_t i = 1; i < delta_count; i++) {
+            if (memcmp(delta_start + (size_t)(i - 1) * nc,
+                       delta_start + (size_t)i * nc, row_bytes)
+                != 0) {
+                if (d_unique != i)
+                    memcpy(delta_start + (size_t)d_unique * nc,
+                           delta_start + (size_t)i * nc, row_bytes);
+                d_unique++;
+            }
+        }
+
+        /* Phase 2: merge sorted prefix with sorted suffix */
+        uint32_t max_rows = sn + d_unique;
+
+        /* Reuse persistent merge buffer when possible */
+        int64_t *merged;
+        bool used_merge_buf = false;
+        if (work->merge_buf && work->merge_buf_cap >= max_rows) {
+            merged = work->merge_buf;
+            used_merge_buf = true;
+        } else {
+            /* Grow persistent buffer */
+            uint32_t new_cap = max_rows > work->merge_buf_cap * 2
+                                   ? max_rows
+                                   : work->merge_buf_cap * 2;
+            if (new_cap < max_rows)
+                new_cap = max_rows;
+            int64_t *nb = (int64_t *)realloc(
+                work->merge_buf, (size_t)new_cap * nc * sizeof(int64_t));
+            if (!nb) {
+                if (work_owned && work != in)
+                    col_rel_destroy(work);
+                return ENOMEM;
+            }
+            work->merge_buf = nb;
+            work->merge_buf_cap = new_cap;
+            merged = nb;
+            used_merge_buf = true;
+        }
+
+        uint32_t oi = 0, di = 0, out = 0;
+        while (oi < sn && di < d_unique) {
+            const int64_t *orow = work->data + (size_t)oi * nc;
+            const int64_t *drow = delta_start + (size_t)di * nc;
+            int cmp = memcmp(orow, drow, row_bytes);
+            if (cmp < 0) {
+                memcpy(merged + (size_t)out * nc, orow, row_bytes);
+                oi++;
+            } else if (cmp == 0) {
+                memcpy(merged + (size_t)out * nc, orow, row_bytes);
+                oi++;
+                di++;
+            } else {
+                memcpy(merged + (size_t)out * nc, drow, row_bytes);
+                di++;
+            }
+            out++;
+        }
+        while (oi < sn) {
+            memcpy(merged + (size_t)out * nc, work->data + (size_t)oi * nc,
+                   row_bytes);
+            oi++;
+            out++;
+        }
+        while (di < d_unique) {
+            memcpy(merged + (size_t)out * nc, delta_start + (size_t)di * nc,
+                   row_bytes);
+            di++;
+            out++;
+        }
+
+        /* Swap: merged data becomes work->data */
+        if (used_merge_buf) {
+            /* merge_buf holds the result; allocate new data, copy back */
+            if (work->capacity < out) {
+                int64_t *nd = (int64_t *)realloc(
+                    work->data, (size_t)out * nc * sizeof(int64_t));
+                if (!nd) {
+                    if (work_owned && work != in)
+                        col_rel_destroy(work);
+                    return ENOMEM;
+                }
+                work->data = nd;
+                work->capacity = out;
+            }
+            memcpy(work->data, merged, (size_t)out * nc * sizeof(int64_t));
+        }
+        work->nrows = out;
+        work->sorted_nrows = out;
+        return eval_stack_push(stack, work, work_owned);
+    }
+
+    /* Fallback: standard qsort + dedup (sorted_nrows == 0 or full re-sort) */
+    QSORT_R_CALL(work->data, nr, row_bytes, &nc, row_cmp_fn);
+
+    /* Compact: keep only unique rows */
+    uint32_t out_r = 1; /* first row always kept */
+    for (uint32_t r = 1; r < nr; r++) {
+        const int64_t *prev = work->data + (size_t)(r - 1) * nc;
+        const int64_t *cur = work->data + (size_t)r * nc;
+        if (memcmp(prev, cur, row_bytes) != 0) {
+            if (out_r != r)
+                memcpy(work->data + (size_t)out_r * nc, cur, row_bytes);
+            out_r++;
+        }
+    }
+    work->nrows = out_r;
+    work->sorted_nrows = out_r;
+
+    return eval_stack_push(stack, work, work_owned);
+}
+
+/*
+ * col_op_consolidate_incremental:
+ * Incremental sort+dedup for semi-naive evaluation.
+ *
+ * Precondition: rel->data[0..old_nrows) is already sorted+unique from
+ * the previous iteration's consolidation. New rows appended during this
+ * iteration live in [old_nrows..rel->nrows).
+ *
+ * Algorithm:
+ *   1. Sort only the delta rows: O(D log D)
+ *   2. Dedup within delta: O(D)
+ *   3. Merge sorted old with sorted delta, skipping duplicates: O(N + D)
+ *
+ * Total: O(D log D + N) vs O(N log N) for full re-sort.
+ */
+static int UNUSED
+col_op_consolidate_incremental(col_rel_t *rel, uint32_t old_nrows)
+{
+    uint32_t nc = rel->ncols;
+    uint32_t nr = rel->nrows;
+
+    if (nr <= 1 || old_nrows >= nr)
+        return 0; /* nothing new or trivially sorted */
+
+    uint32_t delta_count = nr - old_nrows;
+    int64_t *delta_start = rel->data + (size_t)old_nrows * nc;
+    size_t row_bytes = (size_t)nc * sizeof(int64_t);
+
+    /* Phase 1: sort only the new delta rows */
+    QSORT_R_CALL(delta_start, delta_count, row_bytes, &nc, row_cmp_fn);
+
+    /* Phase 1b: dedup within delta */
+    uint32_t d_unique = 1;
+    for (uint32_t i = 1; i < delta_count; i++) {
+        if (memcmp(delta_start + (size_t)(i - 1) * nc,
+                   delta_start + (size_t)i * nc, row_bytes)
+            != 0) {
+            if (d_unique != i)
+                memcpy(delta_start + (size_t)d_unique * nc,
+                       delta_start + (size_t)i * nc, row_bytes);
+            d_unique++;
+        }
+    }
+
+    /* Phase 2: merge sorted old [0..old_nrows) with sorted+unique delta.
+     * Allocate temporary buffer for merge output. */
+    size_t max_rows = (size_t)old_nrows + d_unique;
+    int64_t *merged = (int64_t *)malloc(max_rows * nc * sizeof(int64_t));
+    if (!merged)
+        return ENOMEM;
+
+    uint32_t oi = 0, di = 0, out = 0;
+    while (oi < old_nrows && di < d_unique) {
+        const int64_t *orow = rel->data + (size_t)oi * nc;
+        const int64_t *drow = delta_start + (size_t)di * nc;
+        int cmp = memcmp(orow, drow, row_bytes);
+        if (cmp < 0) {
+            memcpy(merged + (size_t)out * nc, orow, row_bytes);
+            oi++;
+            out++;
+        } else if (cmp == 0) {
+            memcpy(merged + (size_t)out * nc, orow, row_bytes);
+            oi++;
+            di++;
+            out++; /* skip duplicate from delta */
+        } else {
+            memcpy(merged + (size_t)out * nc, drow, row_bytes);
+            di++;
+            out++;
+        }
+    }
+    /* Copy remaining from old */
+    if (oi < old_nrows) {
+        uint32_t remaining = old_nrows - oi;
+        memcpy(merged + (size_t)out * nc, rel->data + (size_t)oi * nc,
+               (size_t)remaining * row_bytes);
+        out += remaining;
+    }
+    /* Copy remaining from delta */
+    if (di < d_unique) {
+        uint32_t remaining = d_unique - di;
+        memcpy(merged + (size_t)out * nc, delta_start + (size_t)di * nc,
+               (size_t)remaining * row_bytes);
+        out += remaining;
+    }
+
+    /* Swap buffer */
+    free(rel->data);
+    rel->data = merged;
+    rel->nrows = out;
+    rel->capacity = (uint32_t)max_rows;
+    return 0;
+}
+
+/* Helper: lexicographic int64_t row comparison (-1/0/+1).
+ * Compares rows a and b with ncols columns using int64_t values (not bytes).
+ * Required for correct little-endian int64_t comparisons.
+ */
+static int UNUSED
+row_cmp_lex(const int64_t *a, const int64_t *b, uint32_t ncols)
+{
+    for (uint32_t c = 0; c < ncols; c++) {
+        if (a[c] < b[c])
+            return -1;
+        if (a[c] > b[c])
+            return 1;
+    }
+    return 0;
+}
+
+#ifdef __AVX2__
+/* row_cmp_simd_avx2 - AVX2-accelerated lexicographic int64_t row comparison.
+ *
+ * Compares rows a and b (each ncols int64_t values) and returns -1, 0, or +1,
+ * identical in semantics to row_cmp_lex().  Processes 4 elements per SIMD
+ * iteration then falls back to scalar for the remainder.
+ *
+ * No alignment assumptions: unaligned loads (_mm256_loadu_si256) are used.
+ */
+static inline int
+row_cmp_simd_avx2(const int64_t *a, const int64_t *b, uint32_t ncols)
+{
+    uint32_t i = 0;
+
+    /* Process 4 int64_t elements per iteration (256-bit vectors). */
+    for (; i + 4 <= ncols; i += 4) {
+        __m256i va = _mm256_loadu_si256((const __m256i *)(a + i));
+        __m256i vb = _mm256_loadu_si256((const __m256i *)(b + i));
+
+        /* eq_mask: 0xFFFFFFFFFFFFFFFF for equal lanes, 0 otherwise. */
+        __m256i eq_mask = _mm256_cmpeq_epi64(va, vb);
+
+        /* Collapse equality mask to 4-bit scalar (one bit per byte-group of 8).
+         * movemask gives one bit per byte; equal lane -> 8 bits set -> 0xFF.
+         * We check for a fully-equal lane by looking at 8-bit groups. */
+        int eq_bits = _mm256_movemask_epi8(eq_mask); /* 32 bits, 8 per lane */
+
+        if (eq_bits == (int)0xFFFFFFFF) {
+            /* All 4 lanes are equal; continue to next chunk. */
+            continue;
+        }
+
+        /* At least one lane differs.  Find the lowest-index differing lane.
+         * eq_bits has 8 consecutive bits set for an equal lane.
+         * Lane k occupies bits [8k .. 8k+7].  A differing lane has at least
+         * one of those bits clear, so (~eq_bits) has a set bit in that range.
+         */
+        int neq = ~eq_bits;
+        /* ctz gives the position of the first differing byte; divide by 8
+         * gives the lane index within this 4-element chunk. */
+        int lane = __builtin_ctz((unsigned int)neq) / 8;
+        int64_t av = a[i + (uint32_t)lane];
+        int64_t bv = b[i + (uint32_t)lane];
+        return (av < bv) ? -1 : 1;
+    }
+
+    /* Scalar fallback for the remaining ncols % 4 elements. */
+    for (; i < ncols; i++) {
+        if (a[i] < b[i])
+            return -1;
+        if (a[i] > b[i])
+            return 1;
+    }
+    return 0;
+}
+#endif /* __AVX2__ */
+
+#ifdef __ARM_NEON__
+/* row_cmp_simd_neon - NEON-accelerated lexicographic int64_t row comparison.
+ *
+ * Compares rows a and b (each ncols int64_t values) and returns -1, 0, or +1,
+ * identical in semantics to row_cmp_lex().  Processes 2 elements per SIMD
+ * iteration then falls back to scalar for the remainder.
+ *
+ * No alignment assumptions: unaligned loads (vld1q_s64) are used.
+ */
+static inline int
+row_cmp_simd_neon(const int64_t *a, const int64_t *b, uint32_t ncols)
+{
+    uint32_t i = 0;
+
+    /* Process 2 int64_t elements per iteration (128-bit vectors). */
+    for (; i + 2 <= ncols; i += 2) {
+        int64x2_t va = vld1q_s64(a + i);
+        int64x2_t vb = vld1q_s64(b + i);
+
+        /* eq_mask: all-ones (0xFFFFFFFFFFFFFFFF) for equal lanes, 0 otherwise. */
+        uint64x2_t eq_mask = vceqq_s64(va, vb);
+
+        /* Optimized lane extraction: check lane 0 first, avoid ternary operator.
+         * This improves instruction scheduling and reduces branch prediction stalls. */
+        uint64_t eq0 = vgetq_lane_u64(eq_mask, 0);
+        if (!eq0) {
+            /* Lane 0 differs; extract and compare. */
+            int64_t av = vgetq_lane_s64(va, 0);
+            int64_t bv = vgetq_lane_s64(vb, 0);
+            return (av < bv) ? -1 : 1;
+        }
+
+        /* Lane 0 is equal; check lane 1. */
+        uint64_t eq1 = vgetq_lane_u64(eq_mask, 1);
+        if (eq1) {
+            /* Both lanes equal; continue to next pair. */
+            continue;
+        }
+
+        /* Lane 1 differs; extract and compare. */
+        int64_t av = vgetq_lane_s64(va, 1);
+        int64_t bv = vgetq_lane_s64(vb, 1);
+        return (av < bv) ? -1 : 1;
+    }
+
+    /* Scalar fallback for the remaining ncols % 2 element. */
+    if (i < ncols) {
+        if (a[i] < b[i])
+            return -1;
+        if (a[i] > b[i])
+            return 1;
+    }
+    return 0;
+}
+#endif /* __ARM_NEON__ */
+
+/* Dispatcher: Select best row comparison at compile time.
+ * Automatically chooses AVX2, NEON, or scalar fallback.
+ */
+#ifdef __AVX2__
+#define row_cmp_optimized row_cmp_simd_avx2
+#elif defined(__ARM_NEON__)
+#define row_cmp_optimized row_cmp_simd_neon
+#else
+#define row_cmp_optimized row_cmp_lex
+#endif
+
+/*
+ * col_op_consolidate_incremental_delta - Incremental consolidation with delta output
+ *
+ * PURPOSE:
+ *   Merge pre-sorted old data with newly appended delta rows, while simultaneously
+ *   emitting the set of truly-new rows (R_new - R_old) as a byproduct.
+ *   This eliminates separate post-iteration merge walk needed for delta computation.
+ *
+ * PRECONDITIONS:
+ *   - rel->data[0..old_nrows) is already sorted and unique (invariant)
+ *   - rel->data[old_nrows..rel->nrows) contains newly appended delta rows (unsorted)
+ *   - old_nrows <= rel->nrows
+ *
+ * POSTCONDITIONS:
+ *   - rel->data[0..rel->nrows) is sorted and unique (new invariant)
+ *   - delta_out->data contains exactly R_new - R_old (truly new rows)
+ *   - delta_out->data is sorted in same order as rel->data
+ *   - rel->nrows reflects final merged count
+ *
+ * MEMORY OWNERSHIP:
+ *   - Caller allocates col_rel_t *delta_out (structure only)
+ *   - Function allocates and owns delta_out->data (int64_t array)
+ *   - Caller responsible for freeing delta_out->data via col_rel_free_contents()
+ *   - If delta_out == NULL, new rows not collected (merge only)
+ *
+ * ERROR HANDLING:
+ *   - Returns 0 on success
+ *   - Returns ENOMEM if malloc fails
+ *   - On error, rel and delta_out states are undefined; caller should not use
+ *
+ * ALGORITHM COMPLEXITY:
+ *   - Time: O(D log D + N + D) where D = new delta rows, N = old rows
+ *   - Space: O(N + D) for merge buffer + delta_out buffer
+ *   - Dominant term: O(N) when D << N (typical in late iterations)
+ */
+int
+col_op_consolidate_incremental_delta(col_rel_t *rel, uint32_t old_nrows,
+                                     col_rel_t *delta_out)
+{
+    uint32_t nc = rel->ncols;
+    uint32_t nr = rel->nrows;
+
+    if (nr <= 1 || old_nrows >= nr)
+        return 0; /* nothing new */
+
+    uint32_t delta_count = nr - old_nrows;
+    int64_t *delta_start = rel->data + (size_t)old_nrows * nc;
+    size_t row_bytes = (size_t)nc * sizeof(int64_t);
+
+    /* Phase 1: sort only the new delta rows */
+    QSORT_R_CALL(delta_start, delta_count, row_bytes, &nc, row_cmp_fn);
+
+    /* Phase 1b: dedup within delta */
+    uint32_t d_unique = 1;
+    for (uint32_t i = 1; i < delta_count; i++) {
+        if (row_cmp_optimized(delta_start + (size_t)(i - 1) * nc,
+                              delta_start + (size_t)i * nc, nc)
+            != 0) {
+            if (d_unique != i)
+                memcpy(delta_start + (size_t)d_unique * nc,
+                       delta_start + (size_t)i * nc, row_bytes);
+            d_unique++;
+        }
+    }
+
+    /* Phase 2: merge sorted old [0..old_nrows) with sorted+unique delta.
+     * Rows present in delta but not in old are emitted into delta_out.
+     *
+     * Issue #94: Reuse persistent merge buffer to avoid per-call malloc/free.
+     * The merge buffer lives in rel->merge_buf and grows via realloc. */
+    uint32_t max_rows = old_nrows + d_unique;
+
+    if (rel->merge_buf_cap < max_rows) {
+        uint32_t new_cap = max_rows > rel->merge_buf_cap * 2
+                               ? max_rows
+                               : rel->merge_buf_cap * 2;
+        if (new_cap < max_rows)
+            new_cap = max_rows;
+        int64_t *nb = (int64_t *)realloc(rel->merge_buf, (size_t)new_cap * nc
+                                                             * sizeof(int64_t));
+        if (!nb)
+            return ENOMEM;
+        rel->merge_buf = nb;
+        rel->merge_buf_cap = new_cap;
+    }
+    int64_t *merged = rel->merge_buf;
+
+    uint32_t oi = 0, di = 0, out = 0;
+    const int64_t *o_ptr = rel->data;
+    const int64_t *d_ptr = delta_start;
+    int64_t *merged_ptr = merged;
+    while (oi < old_nrows && di < d_unique) {
+        int cmp = row_cmp_optimized(o_ptr, d_ptr, nc);
+        const int64_t *row_to_copy = (cmp < 0) ? o_ptr : d_ptr;
+        memcpy(merged_ptr, row_to_copy, row_bytes);
+
+        if (cmp == 0) {
+            /* duplicate: skip delta row */
+            d_ptr += nc;
+            di++;
+        }
+        if (cmp <= 0) {
+            o_ptr += nc;
+            oi++;
+        } else {
+            /* delta row not in old: new fact */
+            if (delta_out)
+                col_rel_append_row(delta_out, d_ptr);
+            d_ptr += nc;
+            di++;
+        }
+        merged_ptr += nc;
+        out++;
+    }
+    /* Remaining old rows */
+    if (oi < old_nrows) {
+        uint32_t remaining = old_nrows - oi;
+        memcpy(merged + (size_t)out * nc, rel->data + (size_t)oi * nc,
+               (size_t)remaining * row_bytes);
+        out += remaining;
+    }
+    /* Remaining delta rows: all new */
+    if (di < d_unique) {
+        if (delta_out) {
+            for (uint32_t k = di; k < d_unique; k++)
+                col_rel_append_row(delta_out, delta_start + (size_t)k * nc);
+        }
+        uint32_t remaining = d_unique - di;
+        memcpy(merged + (size_t)out * nc, delta_start + (size_t)di * nc,
+               (size_t)remaining * row_bytes);
+        out += remaining;
+    }
+
+    /* Copy merged result back into rel->data (merge_buf is persistent,
+     * cannot be swapped into data without losing merge_buf for next call). */
+    if (rel->capacity < out) {
+        int64_t *nd
+            = (int64_t *)realloc(rel->data, (size_t)out * nc * sizeof(int64_t));
+        if (!nd)
+            return ENOMEM;
+        rel->data = nd;
+        rel->capacity = out;
+    }
+    memcpy(rel->data, merged, (size_t)out * nc * sizeof(int64_t));
+    rel->nrows = out;
+    rel->sorted_nrows = out;
+
+    /* Phase 4: Update timestamp array to match consolidated data.
+     * After merge, timestamps for old rows are still valid, but new rows
+     * from delta have no timestamp information. Mark timestamps as invalid
+     * by deallocating (frontier computation will see NULL and return (0,0)). */
+    if (rel->timestamps) {
+        free(rel->timestamps);
+        rel->timestamps = NULL;
+    }
+    return 0;
+}
+
+/* --- K-FUSION ------------------------------------------------------------ */
+
+/**
+ * col_rel_merge_k:
+ * Merge K sorted relations into a single deduplicated relation.
+ * Uses the same min-heap merging strategy as col_op_consolidate_kway_merge.
+ *
+ * @relations: Array of K col_rel_t pointers (caller-owned, each sorted)
+ * @k:         Number of relations to merge
+ *
+ * Returns: Newly allocated merged relation (caller must free).
+ *          Returns NULL on allocation failure.
+ *
+ * The output relation name is "<merged-k>" and contains all rows from
+ * the K input relations with duplicates removed.
+ */
+static col_rel_t *UNUSED
+col_rel_merge_k(col_rel_t **relations, uint32_t k)
+{
+    if (k == 0)
+        return NULL;
+
+    /* All K relations must have the same schema */
+    uint32_t nc = relations[0]->ncols;
+    uint32_t total_rows = 0;
+    for (uint32_t i = 0; i < k; i++) {
+        if (relations[i]->ncols != nc)
+            return NULL; /* Schema mismatch */
+        total_rows += relations[i]->nrows;
+    }
+
+    if (total_rows == 0) {
+        /* Create empty result with correct schema */
+        return col_rel_new_like("<merged-k>", relations[0]);
+    }
+
+    /* Create output relation with capacity for all rows */
+    col_rel_t *out = col_rel_new_like("<merged-k>", relations[0]);
+    if (!out)
+        return NULL;
+
+    /* K=1: Copy with dedup using append (handles dynamic growth) */
+    if (k == 1) {
+        col_rel_t *src = relations[0];
+        const int64_t *last_row = NULL;
+        for (uint32_t r = 0; r < src->nrows; r++) {
+            const int64_t *row = src->data + (size_t)r * nc;
+            if (last_row == NULL || kway_row_cmp(last_row, row, nc) != 0) {
+                if (col_rel_append_row(out, row) != 0) {
+                    col_rel_destroy(out);
+                    return NULL;
+                }
+                last_row = out->data + (size_t)(out->nrows - 1) * nc;
+            }
+        }
+        return out;
+    }
+
+    /* K=2: Optimized 2-pointer merge using append */
+    if (k == 2) {
+        col_rel_t *left = relations[0];
+        col_rel_t *right = relations[1];
+        uint32_t li = 0, ri = 0;
+        const int64_t *last_row = NULL;
+
+        while (li < left->nrows && ri < right->nrows) {
+            const int64_t *lrow = left->data + (size_t)li * nc;
+            const int64_t *rrow = right->data + (size_t)ri * nc;
+            int cmp = kway_row_cmp(lrow, rrow, nc);
+
+            const int64_t *row_to_add = NULL;
+            if (cmp < 0) {
+                row_to_add = lrow;
+                li++;
+            } else if (cmp > 0) {
+                row_to_add = rrow;
+                ri++;
+            } else {
+                /* Equal rows: add once, skip both */
+                row_to_add = lrow;
+                li++;
+                ri++;
+            }
+
+            if (last_row == NULL
+                || kway_row_cmp(last_row, row_to_add, nc) != 0) {
+                if (col_rel_append_row(out, row_to_add) != 0) {
+                    col_rel_destroy(out);
+                    return NULL;
+                }
+                last_row = out->data + (size_t)(out->nrows - 1) * nc;
+            }
+        }
+
+        /* Drain remaining rows from left */
+        while (li < left->nrows) {
+            const int64_t *row = left->data + (size_t)li * nc;
+            if (last_row == NULL || kway_row_cmp(last_row, row, nc) != 0) {
+                if (col_rel_append_row(out, row) != 0) {
+                    col_rel_destroy(out);
+                    return NULL;
+                }
+                last_row = out->data + (size_t)(out->nrows - 1) * nc;
+            }
+            li++;
+        }
+
+        /* Drain remaining rows from right */
+        while (ri < right->nrows) {
+            const int64_t *row = right->data + (size_t)ri * nc;
+            if (last_row == NULL || kway_row_cmp(last_row, row, nc) != 0) {
+                if (col_rel_append_row(out, row) != 0) {
+                    col_rel_destroy(out);
+                    return NULL;
+                }
+                last_row = out->data + (size_t)(out->nrows - 1) * nc;
+            }
+            ri++;
+        }
+
+        return out;
+    }
+
+    /* K >= 3: Pairwise merge fallback */
+    col_rel_t *temp = relations[0];
+    for (uint32_t i = 1; i < k; i++) {
+        col_rel_t *pair[2] = { temp, relations[i] };
+        col_rel_t *merged = col_rel_merge_k(pair, 2);
+        if (!merged) {
+            col_rel_destroy(out);
+            if (i > 1)
+                col_rel_destroy(temp);
+            return NULL;
+        }
+        if (i > 1)
+            col_rel_destroy(temp);
+        temp = merged;
+    }
+
+    /* Move final result into output using append */
+    {
+        const int64_t *last_row = NULL;
+        for (uint32_t r = 0; r < temp->nrows; r++) {
+            const int64_t *row = temp->data + (size_t)r * nc;
+            if (last_row == NULL || kway_row_cmp(last_row, row, nc) != 0) {
+                if (col_rel_append_row(out, row) != 0) {
+                    col_rel_destroy(out);
+                    col_rel_destroy(temp);
+                    return NULL;
+                }
+                last_row = out->data + (size_t)(out->nrows - 1) * nc;
+            }
+        }
+        col_rel_destroy(temp);
+    }
+
+    return out;
+}
+
+/**
+ * Worker task context for K-fusion evaluation.
+ * plan_data is embedded (not a pointer) so its lifetime matches the worker array.
+ * sess points to an isolated session wrapper with a per-worker mat_cache so
+ * concurrent col_op_join calls do not share the non-thread-safe cache.
+ */
+typedef struct {
+    wl_plan_relation_t plan_data; /* Embedded plan (stable lifetime) */
+    eval_stack_t stack;           /* Output stack (initialized by worker) */
+    wl_col_session_t
+        *sess;    /* Per-worker session wrapper (isolated mat_cache) */
+    int rc;       /* Return code from evaluation */
+    bool skipped; /* true if skipped due to empty forced delta (#85) */
+} col_op_k_fusion_worker_t;
+
+/**
+ * Worker thread function for K-fusion parallel evaluation.
+ * Evaluates a single relation plan and collects result in context.
+ */
+static void
+col_op_k_fusion_worker(void *ctx)
+{
+    col_op_k_fusion_worker_t *wc = (col_op_k_fusion_worker_t *)ctx;
+    eval_stack_init(&wc->stack);
+    wc->rc = col_eval_relation_plan(&wc->plan_data, &wc->stack, wc->sess);
+}
+
+/**
+ * K-Fusion operator: evaluate K copies of a relation plan via workqueue,
+ * merge results with deduplication, and push result onto stack.
+ *
+ * Each of the K operator sequences in opaque_data is submitted as a
+ * separate worker task to the workqueue. The K workers evaluate in
+ * parallel (or sequentially on single-threaded systems).
+ * Results are merged via col_rel_merge_k() after all workers complete.
+ */
+int
+col_op_k_fusion(const wl_plan_op_t *op, eval_stack_t *stack,
+                wl_col_session_t *sess)
+{
+    if (!op->opaque_data)
+        return EINVAL;
+
+    wl_plan_op_k_fusion_t *meta = (wl_plan_op_k_fusion_t *)op->opaque_data;
+    uint32_t k = meta->k;
+    if (k == 0)
+        return EINVAL;
+
+    uint64_t _phase_t0 = now_ns();
+    col_rel_t **results = (col_rel_t **)calloc(k, sizeof(col_rel_t *));
+    col_op_k_fusion_worker_t *workers = (col_op_k_fusion_worker_t *)calloc(
+        k, sizeof(col_op_k_fusion_worker_t));
+    /* Per-worker session wrappers: shallow copy of sess with an isolated
+     * mat_cache so concurrent col_op_join calls do not race on the cache. */
+    wl_col_session_t *worker_sess
+        = (wl_col_session_t *)calloc(k, sizeof(wl_col_session_t));
+    COL_SESSION(sess)->kfusion_alloc_ns += now_ns() - _phase_t0;
+    if (!results || !workers || !worker_sess) {
+        free(results);
+        free(workers);
+        free(worker_sess);
+        return ENOMEM;
+    }
+
+    /* Use session-level workqueue created at col_session_create (issue #99).
+     * When num_workers=1 (wq==NULL), K copies are evaluated sequentially
+     * below with no thread overhead. */
+    wl_work_queue_t *wq = sess->wq; /* NULL when num_workers=1 */
+
+    int rc = 0;
+
+    /* Snapshot the current mat_cache entry count.  Each worker inherits the
+     * existing cache entries for lookup (read-only for shared entries).
+     * At cleanup, only entries added by the worker (index >= base_count)
+     * are freed, avoiding double-free of the shared result pointers. */
+    uint32_t base_count = sess->mat_cache.count;
+
+    /* Initialise per-worker session wrappers and submit all K tasks in one
+     * batch so workers execute in parallel. */
+    _phase_t0 = now_ns();
+    for (uint32_t d = 0; d < k; d++) {
+        /* Shallow copy shares rels[], plan, etc. (read-only during K-fusion).
+         * mat_cache is copied by value so workers can look up existing entries
+         * and add new ones without affecting the original session's cache.
+         * arr_* and darr_* are zeroed: each worker builds its own arrangement
+         * cache independently (no sharing, no races). Lock-free: no mutex needed
+         * because each worker owns its isolated cache. */
+        worker_sess[d] = *sess;
+        worker_sess[d].wq = NULL; /* prevent nested K-fusion from workers */
+        worker_sess[d].arr_entries = NULL;
+        worker_sess[d].arr_count = 0;
+        worker_sess[d].arr_cap = 0;
+        worker_sess[d].darr_entries = NULL;
+        worker_sess[d].darr_count = 0;
+        worker_sess[d].darr_cap = 0;
+        worker_sess[d].delta_pool
+            = delta_pool_create(128, sizeof(col_rel_t), 32 * 1024 * 1024);
+
+        workers[d].plan_data.name = "<k_fusion_copy>";
+        workers[d].plan_data.ops = meta->k_ops[d];
+        workers[d].plan_data.op_count = meta->k_op_counts[d];
+        workers[d].sess = &worker_sess[d];
+        workers[d].rc = 0;
+
+        /* Per-copy empty-delta skip (issue #85): if this copy's sub-plan
+         * has a FORCE_DELTA op referencing an empty/absent delta on
+         * iteration > 0, skip dispatching — the copy would produce 0 rows. */
+        if (has_empty_forced_delta(&workers[d].plan_data, sess,
+                                   sess->current_iteration)) {
+            workers[d].rc = 0; /* mark as succeeded with no output */
+            workers[d].skipped = true;
+            continue;
+        }
+
+        if (wq) {
+            /* Parallel path: submit to session workqueue (issue #99) */
+            if (wl_workqueue_submit(wq, col_op_k_fusion_worker, &workers[d])
+                != 0) {
+                rc = ENOMEM;
+                wl_workqueue_drain(wq);
+                goto cleanup_wq;
+            }
+        } else {
+            /* Sequential fallback: execute directly (num_workers=1) */
+            col_op_k_fusion_worker(&workers[d]);
+        }
+    }
+
+    /* Barrier: wait for all parallel workers to complete.
+     * Skipped when wq is NULL (sequential path already finished). */
+    if (wq && wl_workqueue_wait_all(wq) != 0) {
+        rc = -1;
+        goto cleanup_wq;
+    }
+    COL_SESSION(sess)->kfusion_dispatch_ns += now_ns() - _phase_t0;
+
+    /* Collect results from each worker's eval_stack */
+    _phase_t0 = now_ns();
+    for (uint32_t d = 0; d < k; d++) {
+        /* Skipped workers (empty forced delta) contribute an empty result */
+        if (workers[d].skipped) {
+            results[d] = NULL; /* NULL = no rows from this copy */
+            continue;
+        }
+
+        if (workers[d].rc != 0) {
+            rc = workers[d].rc;
+            eval_stack_drain(&workers[d].stack);
+            goto cleanup_results;
+        }
+
+        eval_entry_t e = eval_stack_pop(&workers[d].stack);
+        if (!e.rel) {
+            rc = EINVAL;
+            eval_stack_drain(&workers[d].stack);
+            goto cleanup_results;
+        }
+
+        /* If not owned, make a copy we can hand to merge */
+        if (!e.owned) {
+            col_rel_t *copy = col_rel_pool_new_like(worker_sess[d].delta_pool,
+                                                    "<k_fusion_copy>", e.rel);
+            if (!copy) {
+                rc = ENOMEM;
+                eval_stack_drain(&workers[d].stack);
+                goto cleanup_results;
+            }
+            size_t row_bytes = (size_t)e.rel->ncols * sizeof(int64_t);
+            memcpy(copy->data, e.rel->data, (size_t)e.rel->nrows * row_bytes);
+            copy->nrows = e.rel->nrows;
+            results[d] = copy;
+        } else {
+            results[d] = e.rel;
+        }
+        eval_stack_drain(&workers[d].stack);
+    }
+
+    /* Merge K results with deduplication.
+     * Workers ran WL_PLAN_OP_CONSOLIDATE as the last plan op, so each
+     * result is already sorted+deduped — no qsort needed here.
+     * Skipped copies (empty forced delta) have NULL results — compact
+     * them out before merging. */
+    {
+        /* Compact non-NULL results (skipped copies have NULL). Use the
+         * existing results array as backing — we build compact in-place. */
+        col_rel_t **compact = (col_rel_t **)malloc(k * sizeof(col_rel_t *));
+        if (!compact) {
+            rc = ENOMEM;
+            goto cleanup_results;
+        }
+        uint32_t n_results = 0;
+        for (uint32_t d = 0; d < k; d++) {
+            if (results[d])
+                compact[n_results++] = results[d];
+        }
+
+        col_rel_t *merged;
+        if (n_results == 0) {
+            /* All copies skipped: produce empty output.  Derive column
+             * count from the K-fusion target relation (op->relation_name)
+             * so the empty result has a matching schema. */
+            uint32_t ncols = 0;
+            if (op->relation_name) {
+                col_rel_t *target = session_find_rel(sess, op->relation_name);
+                if (target)
+                    ncols = target->ncols;
+            }
+            merged = col_rel_new_auto("$kfusion_empty", ncols);
+        } else {
+            merged = col_rel_merge_k(compact, n_results);
+        }
+        free(compact);
+        if (!merged) {
+            rc = ENOMEM;
+            goto cleanup_results;
+        }
+        rc = eval_stack_push(stack, merged, true);
+        if (rc != 0)
+            col_rel_destroy(merged);
+    }
+    COL_SESSION(sess)->kfusion_merge_ns += now_ns() - _phase_t0;
+
+cleanup_results:
+    _phase_t0 = now_ns();
+    for (uint32_t d = 0; d < k; d++) {
+        if (results[d])
+            col_rel_destroy(results[d]);
+    }
+
+cleanup_wq:
+    /* On early-exit paths (submit failure, wait failure) _phase_t0 may hold
+     * a stale dispatch value; reset it here so cleanup timing is correct. */
+    _phase_t0 = now_ns();
+    /* wq is session-owned and reused across iterations — do not destroy here.
+     * Only free mat_cache entries the worker added (index >= base_count).
+     * Entries 0..base_count-1 share result pointers with the original
+     * session's mat_cache and must not be double-freed here.
+     * Free each worker's private arrangement caches (arr_* and darr_*).
+     * Lock-free design: no synchronization needed because each worker owns
+     * its isolated cache — no races at cleanup time. */
+    for (uint32_t d = 0; d < k; d++) {
+        col_mat_cache_t *wc = &worker_sess[d].mat_cache;
+        for (uint32_t i = base_count; i < wc->count; i++)
+            col_rel_destroy(wc->entries[i].result);
+        /* Free worker's private full-arrangement cache (arr_*). */
+        for (uint32_t i = 0; i < worker_sess[d].arr_count; i++) {
+            col_arr_entry_t *e = &worker_sess[d].arr_entries[i];
+            free(e->rel_name);
+            free(e->key_cols);
+            arr_free_contents(&e->arr);
+        }
+        free(worker_sess[d].arr_entries);
+        /* Free worker's private delta-arrangement cache (darr_*). */
+        col_session_free_delta_arrangements(&worker_sess[d]);
+        delta_pool_destroy(worker_sess[d].delta_pool);
+    }
+    free(worker_sess);
+    free(results);
+    free(workers);
+    COL_SESSION(sess)->kfusion_cleanup_ns += now_ns() - _phase_t0;
+    return rc;
+}
+
+/* --- SEMIJOIN ------------------------------------------------------------ */
+
+int
+col_op_semijoin(const wl_plan_op_t *op, eval_stack_t *stack,
+                wl_col_session_t *sess)
+{
+    eval_entry_t left_e = eval_stack_pop(stack);
+    if (!left_e.rel)
+        return EINVAL;
+
+    col_rel_t *right = session_find_rel(sess, op->right_relation);
+    if (!right)
+        return eval_stack_push(stack, left_e.rel, left_e.owned);
+
+    col_rel_t *left = left_e.rel;
+    uint32_t kc = op->key_count;
+
+    uint32_t *lk = (uint32_t *)malloc(sizeof(uint32_t) * (kc ? kc : 1));
+    uint32_t *rk = (uint32_t *)malloc(sizeof(uint32_t) * (kc ? kc : 1));
+    if (!lk || !rk) {
+        free(lk);
+        free(rk);
+        if (left_e.owned)
+            col_rel_destroy(left);
+        return ENOMEM;
+    }
+    for (uint32_t k = 0; k < kc; k++) {
+        int li = col_rel_col_idx(left, op->left_keys ? op->left_keys[k] : NULL);
+        int ri
+            = col_rel_col_idx(right, op->right_keys ? op->right_keys[k] : NULL);
+        lk[k] = (li >= 0) ? (uint32_t)li : 0;
+        rk[k] = (ri >= 0) ? (uint32_t)ri : 0;
+    }
+
+    /* Output: project_indices selects output columns from left */
+    uint32_t ocols = op->project_count ? op->project_count : left->ncols;
+    col_rel_t *out
+        = col_rel_pool_new_auto(sess->delta_pool, "$semijoin", ocols);
+    if (!out) {
+        free(lk);
+        free(rk);
+        if (left_e.owned)
+            col_rel_destroy(left);
+        return ENOMEM;
+    }
+
+    int64_t *tmp = (int64_t *)malloc(sizeof(int64_t) * (ocols ? ocols : 1));
+    if (!tmp) {
+        col_rel_destroy(out);
+        free(lk);
+        free(rk);
+        if (left_e.owned)
+            col_rel_destroy(left);
+        return ENOMEM;
+    }
+
+    for (uint32_t lr = 0; lr < left->nrows; lr++) {
+        const int64_t *lrow = left->data + (size_t)lr * left->ncols;
+        bool found = false;
+        for (uint32_t rr = 0; rr < right->nrows && !found; rr++) {
+            const int64_t *rrow = right->data + (size_t)rr * right->ncols;
+            bool match = true;
+            for (uint32_t k = 0; k < kc && match; k++)
+                match = (lrow[lk[k]] == rrow[rk[k]]);
+            if (match)
+                found = true;
+        }
+        if (found) {
+            if (op->project_count > 0 && op->project_indices) {
+                for (uint32_t c = 0; c < ocols; c++) {
+                    uint32_t si = op->project_indices[c];
+                    tmp[c] = (si < left->ncols) ? lrow[si] : 0;
+                }
+            } else {
+                memcpy(tmp, lrow, sizeof(int64_t) * left->ncols);
+            }
+            int rc = col_rel_append_row(out, tmp);
+            if (rc != 0) {
+                free(tmp);
+                col_rel_destroy(out);
+                free(lk);
+                free(rk);
+                if (left_e.owned)
+                    col_rel_destroy(left);
+                return rc;
+            }
+        }
+    }
+
+    free(tmp);
+    free(lk);
+    free(rk);
+    if (left_e.owned)
+        col_rel_destroy(left);
+    return eval_stack_push(stack, out, true);
+}
+
+/* --- REDUCE (aggregate) -------------------------------------------------- */
+
+int
+col_op_reduce(const wl_plan_op_t *op, eval_stack_t *stack,
+              wl_col_session_t *sess)
+{
+    eval_entry_t e = eval_stack_pop(stack);
+    if (!e.rel)
+        return EINVAL;
+
+    col_rel_t *in = e.rel;
+    uint32_t gc = op->group_by_count;
+
+    /* Output: group_by columns + 1 aggregate column */
+    uint32_t ocols = gc + 1;
+    col_rel_t *out = col_rel_pool_new_auto(sess->delta_pool, "$reduce", ocols);
+    if (!out) {
+        if (e.owned)
+            col_rel_destroy(in);
+        return ENOMEM;
+    }
+
+    int64_t *tmp = (int64_t *)malloc(sizeof(int64_t) * (ocols ? ocols : 1));
+    if (!tmp) {
+        col_rel_destroy(out);
+        if (e.owned)
+            col_rel_destroy(in);
+        return ENOMEM;
+    }
+
+    /* Sort by group key for group-by */
+    /* (Simple O(n^2) implementation; sufficient for Phase 2A) */
+    for (uint32_t r = 0; r < in->nrows; r++) {
+        const int64_t *row = in->data + (size_t)r * in->ncols;
+
+        /* Check if this group key already exists in output */
+        bool found = false;
+        for (uint32_t o = 0; o < out->nrows; o++) {
+            int64_t *orow = out->data + (size_t)o * ocols;
+            bool match = true;
+            for (uint32_t k = 0; k < gc && match; k++) {
+                uint32_t gi
+                    = op->group_by_indices ? op->group_by_indices[k] : k;
+                match = (row[gi < in->ncols ? gi : 0] == orow[k]);
+            }
+            if (match) {
+                /* Update aggregate */
+                int64_t val = (in->ncols > gc) ? row[gc] : 1;
+                switch (op->agg_fn) {
+                case WIRELOG_AGG_COUNT:
+                    orow[gc]++;
+                    break;
+                case WIRELOG_AGG_SUM:
+                    orow[gc] += val;
+                    break;
+                case WIRELOG_AGG_MIN:
+                    if (val < orow[gc])
+                        orow[gc] = val;
+                    break;
+                case WIRELOG_AGG_MAX:
+                    if (val > orow[gc])
+                        orow[gc] = val;
+                    break;
+                default:
+                    break;
+                }
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            for (uint32_t k = 0; k < gc; k++) {
+                uint32_t gi
+                    = op->group_by_indices ? op->group_by_indices[k] : k;
+                tmp[k] = row[gi < in->ncols ? gi : 0];
+            }
+            int64_t init_val = (in->ncols > gc) ? row[gc] : 1;
+            tmp[gc] = (op->agg_fn == WIRELOG_AGG_COUNT) ? 1 : init_val;
+            int rc = col_rel_append_row(out, tmp);
+            if (rc != 0) {
+                free(tmp);
+                col_rel_destroy(out);
+                if (e.owned)
+                    col_rel_destroy(in);
+                return rc;
+            }
+        }
+    }
+
+    free(tmp);
+    if (e.owned)
+        col_rel_destroy(in);
+    return eval_stack_push(stack, out, true);
+}
+
+/* --- REDUCE WEIGHTED (Z-set / Mobius COUNT) ------------------------------ */
+
+/*
+ * col_op_reduce_weighted:
+ * Global COUNT aggregation using Z-set (signed multiplicity) semantics.
+ * Output: one row whose data value = sum of input multiplicities, and whose
+ * timestamp.multiplicity = the same sum.
+ *
+ * src - input relation; src->timestamps[i].multiplicity carries each row's
+ *       signed weight.
+ * dst - output relation (caller-allocated, empty on entry, ncols >= 1).
+ *
+ * Returns 0 on success, EINVAL / ENOMEM on error.
+ */
+int
+col_op_reduce_weighted(const col_rel_t *src, col_rel_t *dst)
+{
+    if (!src || !dst)
+        return EINVAL;
+
+    /* Sum all input multiplicities. */
+    int64_t total = 0;
+    if (src->timestamps) {
+        for (uint32_t i = 0; i < src->nrows; i++)
+            total += src->timestamps[i].multiplicity;
+    } else {
+        /* No timestamp tracking: treat each row as multiplicity 1. */
+        total = (int64_t)src->nrows;
+    }
+
+    /* Allocate timestamp tracking on dst if not already present. */
+    if (!dst->timestamps) {
+        dst->timestamps
+            = (col_delta_timestamp_t *)calloc(1, sizeof(col_delta_timestamp_t));
+        if (!dst->timestamps)
+            return ENOMEM;
+        dst->capacity = (dst->capacity == 0) ? 1 : dst->capacity;
+    }
+
+    /* Allocate data buffer for one output row if not already present. */
+    if (!dst->data) {
+        uint32_t ncols = dst->ncols ? dst->ncols : 1;
+        dst->data = (int64_t *)calloc(ncols, sizeof(int64_t));
+        if (!dst->data)
+            return ENOMEM;
+        dst->capacity = 1;
+    }
+
+    /* Write the single aggregate row. */
+    dst->data[0] = total;
+    dst->nrows = 1;
+
+    /* Set output row multiplicity. */
+    memset(&dst->timestamps[0], 0, sizeof(col_delta_timestamp_t));
+    dst->timestamps[0].multiplicity = total;
+
+    return 0;
+}
