@@ -747,6 +747,15 @@ col_session_step(wl_session_t *session)
         }
     }
 
+    /* Issue #217: Compact relation buffers after retraction cleanup.
+     * Releases oversized data/timestamps buffers and merge_buf when
+     * bulk retractions have left capacity >> nrows. */
+    for (uint32_t i = 0; i < sess->nrels; i++) {
+        col_rel_t *r = sess->rels[i];
+        if (r)
+            col_rel_compact(r);
+    }
+
     /* Reset after successful eval so next plain session_step runs all strata */
     sess->last_inserted_relation = NULL;
     return 0;
@@ -968,6 +977,15 @@ col_session_snapshot(wl_session_t *session, wl_on_tuple_fn callback,
         col_rel_t *r = sess->rels[i];
         if (r)
             r->base_nrows = r->nrows;
+    }
+
+    /* Issue #217: Compact relation buffers after convergence.
+     * Releases oversized data/timestamps buffers and merge_buf when
+     * bulk retractions have left capacity >> nrows. */
+    for (uint32_t i = 0; i < sess->nrels; i++) {
+        col_rel_t *r = sess->rels[i];
+        if (r)
+            col_rel_compact(r);
     }
 
     /* Invoke callback for every tuple in every IDB relation */

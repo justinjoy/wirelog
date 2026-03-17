@@ -189,6 +189,82 @@ col_rel_append_all(col_rel_t *dst, const col_rel_t *src)
     return 0;
 }
 
+/* ---- compaction ---------------------------------------------------------- */
+
+/*
+ * col_rel_compact:
+ * Shrink oversized data and timestamps buffers after bulk retraction.
+ *
+ * Guards:
+ *   - NULL or ncols==0: no-op
+ *   - nrows==0: release data, merge_buf, timestamps; zero capacities
+ *   - capacity <= nrows*4: already tight enough; skip
+ *
+ * On success the capacity is reduced to max(nrows*2, COL_REL_INIT_CAP).
+ * merge_buf is always freed (it will be re-allocated on next consolidation).
+ * Allocation failures are non-fatal: the relation remains valid.
+ * sorted_nrows is clamped to nrows if it drifted above.
+ */
+void
+col_rel_compact(col_rel_t *r)
+{
+    if (!r || r->ncols == 0)
+        return;
+
+    if (r->nrows == 0) {
+        free(r->data);
+        r->data = NULL;
+        r->capacity = 0;
+        free(r->merge_buf);
+        r->merge_buf = NULL;
+        r->merge_buf_cap = 0;
+        free(r->timestamps);
+        r->timestamps = NULL;
+        r->sorted_nrows = 0;
+        r->base_nrows = 0;
+        return;
+    }
+
+    /* Only compact when buffer is more than 4x oversized.
+     * Cast to uint64_t to prevent overflow when nrows > UINT32_MAX/4. */
+    if (r->capacity <= (uint64_t)r->nrows * 4)
+        goto free_merge_buf;
+
+    {
+        uint32_t tight = r->nrows * 2;
+        if (tight < r->nrows) /* overflow guard */
+            tight = UINT32_MAX;
+        if (tight < COL_REL_INIT_CAP)
+            tight = COL_REL_INIT_CAP;
+
+        int64_t *nd = (int64_t *)realloc(r->data, (size_t)tight * r->ncols
+                                                      * sizeof(int64_t));
+        if (!nd)
+            goto free_merge_buf; /* data shrink failed; skip timestamps too */
+        r->data = nd;
+        r->capacity = tight;
+
+        /* Shrink timestamps to match new capacity (non-fatal on failure). */
+        if (r->timestamps) {
+            col_delta_timestamp_t *nt = (col_delta_timestamp_t *)realloc(
+                r->timestamps, (size_t)tight * sizeof(col_delta_timestamp_t));
+            if (nt)
+                r->timestamps = nt;
+            /* failure: timestamps oversized but valid (accessed up to nrows) */
+        }
+    }
+
+free_merge_buf:
+    free(r->merge_buf);
+    r->merge_buf = NULL;
+    r->merge_buf_cap = 0;
+
+    if (r->sorted_nrows > r->nrows)
+        r->sorted_nrows = r->nrows;
+    if (r->base_nrows > r->nrows)
+        r->base_nrows = r->nrows;
+}
+
 /* ---- column name lookup ------------------------------------------------- */
 
 int
