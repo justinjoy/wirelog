@@ -2292,6 +2292,20 @@ col_op_consolidate(eval_stack_t *stack, wl_col_session_t *sess)
         }
         work->nrows = out;
         work->sorted_nrows = out;
+
+        /* Right-size data buffer after dedup (issue #218). */
+        if (out > 0 && work->capacity > out + out / 4) {
+            uint32_t tight = out + out / 4;
+            if (tight < COL_REL_INIT_CAP)
+                tight = COL_REL_INIT_CAP;
+            int64_t *shrunk = (int64_t *)realloc(
+                work->data, (size_t)tight * nc * sizeof(int64_t));
+            if (shrunk) {
+                work->data = shrunk;
+                work->capacity = tight;
+            }
+        }
+
         return eval_stack_push(stack, work, work_owned);
     }
 
