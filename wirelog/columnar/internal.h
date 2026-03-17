@@ -451,6 +451,8 @@ col_rel_pool_new_like(delta_pool_t *pool, const char *name,
                       const col_rel_t *like);
 col_rel_t *
 col_rel_pool_new_auto(delta_pool_t *pool, const char *name, uint32_t ncols);
+void
+col_rel_compact(col_rel_t *r);
 
 /* ======================================================================== */
 /* Cache & Materialized Join (columnar/cache.c)                             */
