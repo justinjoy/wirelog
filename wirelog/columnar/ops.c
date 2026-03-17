@@ -2378,19 +2378,16 @@ col_op_k_fusion(const wl_plan_op_t *op, eval_stack_t *stack,
 
     int rc = 0;
 
-    /* Snapshot the current mat_cache entry count.  Each worker inherits the
-     * existing cache entries for lookup (read-only for shared entries).
-     * At cleanup, only entries added by the worker (index >= base_count)
-     * are freed, avoiding double-free of the shared result pointers. */
-    uint32_t base_count = sess->mat_cache.count;
+    /* Issue #196: Workers start with zeroed mat_cache (no shared entries).
+     * All worker cache entries are worker-owned; cleanup frees all of them
+     * starting from index 0, so no base_count snapshot is needed. */
 
     /* Initialise per-worker session wrappers and submit all K tasks in one
      * batch so workers execute in parallel. */
     _phase_t0 = now_ns();
     for (uint32_t d = 0; d < k; d++) {
         /* Shallow copy shares rels[], plan, etc. (read-only during K-fusion).
-         * mat_cache is copied by value so workers can look up existing entries
-         * and add new ones without affecting the original session's cache.
+         * mat_cache is zeroed below (Issue #196): workers start fresh.
          * arr_* and darr_* are zeroed: each worker builds its own arrangement
          * cache independently (no sharing, no races). Lock-free: no mutex needed
          * because each worker owns its isolated cache. */
@@ -2402,6 +2399,10 @@ col_op_k_fusion(const wl_plan_op_t *op, eval_stack_t *stack,
         worker_sess[d].darr_entries = NULL;
         worker_sess[d].darr_count = 0;
         worker_sess[d].darr_cap = 0;
+        /* Issue #196: Workers start with empty mat_cache.  Divergent rule
+         * copies have ~0% cache hit rate, so inheriting parent entries
+         * wastes memory without benefit. */
+        memset(&worker_sess[d].mat_cache, 0, sizeof(col_mat_cache_t));
         /* Issue #196: Per-worker arena isolation (arena.h contract: NOT
          * thread-safe, each worker must own its arena). */
         {
@@ -2583,15 +2584,16 @@ cleanup_wq:
      * a stale dispatch value; reset it here so cleanup timing is correct. */
     _phase_t0 = now_ns();
     /* wq is session-owned and reused across iterations — do not destroy here.
-     * Only free mat_cache entries the worker added (index >= base_count).
-     * Entries 0..base_count-1 share result pointers with the original
-     * session's mat_cache and must not be double-freed here.
+     * Workers start with empty mat_cache (Issue #196), so all entries are
+     * worker-owned and freed from index 0.
      * Free each worker's private arrangement caches (arr_* and darr_*).
      * Lock-free design: no synchronization needed because each worker owns
      * its isolated cache — no races at cleanup time. */
     for (uint32_t d = 0; d < k; d++) {
         col_mat_cache_t *wc = &worker_sess[d].mat_cache;
-        for (uint32_t i = base_count; i < wc->count; i++)
+        /* Issue #196: worker mat_cache starts empty (zeroed above), so ALL
+         * entries were created by this worker — free from index 0. */
+        for (uint32_t i = 0; i < wc->count; i++)
             col_rel_destroy(wc->entries[i].result);
         /* Free worker's private full-arrangement cache (arr_*). */
         for (uint32_t i = 0; i < worker_sess[d].arr_count; i++) {
