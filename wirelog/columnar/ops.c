@@ -2528,6 +2528,23 @@ col_op_consolidate_incremental_delta(col_rel_t *rel, uint32_t old_nrows,
     rel->nrows = out;
     rel->sorted_nrows = out;
 
+    /* Phase 3b: Right-size data buffer after dedup (issue #218).
+     * After merge+dedup, nrows may be much smaller than capacity (e.g.,
+     * 2x-doubled capacity of 8M but only 3M unique rows). Shrink to
+     * nrows * 1.25 to reclaim wasted memory while keeping headroom. */
+    if (out > 0 && rel->capacity > out + out / 4) {
+        uint32_t tight = out + out / 4;
+        if (tight < COL_REL_INIT_CAP)
+            tight = COL_REL_INIT_CAP;
+        int64_t *shrunk = (int64_t *)realloc(rel->data, (size_t)tight * nc
+                                                            * sizeof(int64_t));
+        if (shrunk) {
+            rel->data = shrunk;
+            rel->capacity = tight;
+        }
+        /* realloc shrink failure is non-fatal; keep oversized buffer. */
+    }
+
     /* Phase 4: Update timestamp array to match consolidated data.
      * After merge, timestamps for old rows are still valid, but new rows
      * from delta have no timestamp information. Mark timestamps as invalid
