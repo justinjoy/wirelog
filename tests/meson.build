@@ -1495,3 +1495,24 @@ test_simd_filter_exe = executable(
 )
 
 test('simd_filter', test_simd_filter_exe)
+
+# ============================================================================
+# Relation Compaction Tests (Issue #217)
+# ============================================================================
+
+test_compaction_exe = executable(
+  'test_compaction',
+  files('test_compaction.c'),
+  parser_src,
+  ir_src,
+  optimizer_src,
+  backend_src,
+  io_src,
+  arena_src,
+  thread_src,
+  workqueue_src,
+  include_directories: [wirelog_inc, wirelog_src_inc],
+  dependencies: [nanoarrow_dep, threads_dep, xxhash_dep, mbedtls_dep],
+)
+
+test('compaction', test_compaction_exe)
