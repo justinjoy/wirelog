@@ -2,6 +2,81 @@
 
 All notable changes to wirelog are documented in this file.
 
+## [0.21.0] - 2026-03-19
+
+### Added
+
+- **ARM NEON SIMD Optimization** (#231): Full SIMD vectorization for hash and key-match operations on ARM64 architectures with correctness tests (#234)
+- **Memory Backpressure System** (#224): Thread-safe memory ledger tracking with JOIN budget enforcement and graceful backpressure mechanisms
+- **Intra-join Backpressure** (#5): Soft EOVERFLOW truncation with memory-aware output limiting to prevent cardinality explosion
+
+### Changed
+
+- **Performance**: AVX2 SIMD hash/key-match now paired with ARM NEON equivalents for complete x86-64/ARM64 coverage (#231)
+- **Stride-based Evaluation** (#237): Implemented in wirelog engine for improved iteration efficiency
+- **Consolidation Fast-path** (#239): Optimized append for pre-sorted delta relations
+- **Join Dispatch**: Inline scalar hash for kc<2 to eliminate function call overhead
+
+### Fixed
+
+- Handle missing right relation in JOIN by returning empty result
+- Guard direct stdatomic.h includes for MSVC compatibility
+- Propagate ENOMEM from col_rel_append_row at consolidation and delta-seeding sites
+- Fixed col_rel_compact() right-sizing after deduplication
+
+### Performance
+
+- K-fusion parallel threshold to avoid small-K overhead
+- Optimized row comparison via SIMD dispatcher (kway_merge)
+- Per-worker arena isolation and delta_pool right-sizing for K-copy reduction
+
+## [0.20.0] - 2026-02-28
+
+### Added
+
+- **CRC-32 Checksumming** (#145): Hardware-accelerated CRC-32 with Ethernet and Castagnoli variants via TDD
+- **Hash Function** (#144): Built-in `hash()` function using xxHash3 with high-throughput performance
+- **Bitwise Operators** (#72): Complete bitwise AND, OR, XOR, NOT support in parser and evaluator
+- **Symbol Type** (#137): String column type support via symbol interning
+- **CSV Output Directives** (#137): `.output(filename="...")` directive support for query result export
+- **wirelog-cli** (#136): Restored CLI driver executable with enhanced CSV loading and directives integration
+
+### Fixed
+
+- Variable name resolution in expression serializer
+- MSVC compilation compatibility (getcwd, atomics, C11 support)
+- Cross-platform CRLF line ending normalization in CLI tests
+- CSV loading for symbol/string columns
+- LTO linker compatibility for CLI executable
+
+## [0.11.0] - 2026-02-28 — Phase 1 Entry
+
+### Added
+
+- **ARM NEON SIMD Optimization** (#231): Full SIMD vectorization for hash and key-match operations on ARM64 architectures with correctness tests (#234)
+- **Memory Backpressure System** (#224): Thread-safe memory ledger tracking with JOIN budget enforcement and graceful backpressure mechanisms
+- **Intra-join Backpressure** (#5): Soft EOVERFLOW truncation with memory-aware output limiting to prevent cardinality explosion
+
+### Changed
+
+- **Performance**: AVX2 SIMD hash/key-match now paired with ARM NEON equivalents for complete x86-64/ARM64 coverage (#231)
+- **Stride-based Evaluation** (#237): Implemented in wirelog engine for improved iteration efficiency
+- **Consolidation Fast-path** (#239): Optimized append for pre-sorted delta relations
+- **Join Dispatch**: Inline scalar hash for kc<2 to eliminate function call overhead
+
+### Fixed
+
+- Handle missing right relation in JOIN by returning empty result
+- Guard direct stdatomic.h includes for MSVC compatibility
+- Propagate ENOMEM from col_rel_append_row at consolidation and delta-seeding sites
+- Fixed col_rel_compact() right-sizing after deduplication
+
+### Performance
+
+- K-fusion parallel threshold to avoid small-K overhead
+- Optimized row comparison via SIMD dispatcher (kway_merge)
+- Per-worker arena isolation and delta_pool right-sizing for K-copy reduction
+
 ## [0.11.0] - 2026-02-28 — Phase 1 Entry
 
 Phase 1 begins. wirelog now supports string-typed columns via symbol interning,
