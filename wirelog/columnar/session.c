@@ -121,7 +121,7 @@ col_session_get_iteration_count(wl_session_t *sess)
  */
 void
 col_session_get_cache_stats(wl_session_t *sess, uint64_t *out_hits,
-                            uint64_t *out_misses)
+    uint64_t *out_misses)
 {
     wl_col_session_t *cs = COL_SESSION(sess);
     if (out_hits)
@@ -143,11 +143,11 @@ col_session_get_cache_stats(wl_session_t *sess, uint64_t *out_hits,
  */
 void
 col_session_get_perf_stats(wl_session_t *sess, uint64_t *out_consolidation_ns,
-                           uint64_t *out_kfusion_ns,
-                           uint64_t *out_kfusion_alloc_ns,
-                           uint64_t *out_kfusion_dispatch_ns,
-                           uint64_t *out_kfusion_merge_ns,
-                           uint64_t *out_kfusion_cleanup_ns)
+    uint64_t *out_kfusion_ns,
+    uint64_t *out_kfusion_alloc_ns,
+    uint64_t *out_kfusion_dispatch_ns,
+    uint64_t *out_kfusion_merge_ns,
+    uint64_t *out_kfusion_cleanup_ns)
 {
     wl_col_session_t *cs = COL_SESSION(sess);
     if (out_consolidation_ns)
@@ -198,7 +198,7 @@ col_session_cleanup_old_data(wl_session_t *sess, col_frontier_t frontier)
             const col_delta_timestamp_t *ts = &rel->timestamps[row];
             if (ts->iteration > frontier.iteration
                 || (ts->iteration == frontier.iteration
-                    && ts->stratum > frontier.stratum)) {
+                && ts->stratum > frontier.stratum)) {
                 keep_from = row;
                 break;
             }
@@ -220,9 +220,9 @@ col_session_cleanup_old_data(wl_session_t *sess, col_frontier_t frontier)
             size_t row_bytes = (size_t)rel->ncols * sizeof(int64_t);
 
             memmove(rel->data, rel->data + (size_t)keep_from * rel->ncols,
-                    new_nrows * row_bytes);
+                new_nrows * row_bytes);
             memmove(rel->timestamps, rel->timestamps + keep_from,
-                    new_nrows * sizeof(col_delta_timestamp_t));
+                new_nrows * sizeof(col_delta_timestamp_t));
 
             rel->nrows = new_nrows;
             /* Invalidate arrangements (data changed) */
@@ -292,7 +292,7 @@ col_detect_physical_memory(void)
  */
 static int
 col_session_create(const wl_plan_t *plan, uint32_t num_workers,
-                   wl_session_t **out)
+    wl_session_t **out)
 {
     if (!plan || !out)
         return EINVAL;
@@ -302,6 +302,7 @@ col_session_create(const wl_plan_t *plan, uint32_t num_workers,
     if (!sess)
         return ENOMEM;
 
+    sess->frontier_ops = &col_frontier_epoch_ops;
     sess->plan = plan;
     sess->num_workers = num_workers > 0 ? num_workers : 1;
 
@@ -324,8 +325,8 @@ col_session_create(const wl_plan_t *plan, uint32_t num_workers,
                 /* 25% of RAM / (8 bytes * 5 avg cols * num_workers) */
                 sess->join_output_limit
                     = (phys / 4)
-                      / (40ULL
-                         * (sess->num_workers > 0 ? sess->num_workers : 1));
+                    / (40ULL
+                    * (sess->num_workers > 0 ? sess->num_workers : 1));
             } else {
                 sess->join_output_limit = COL_JOIN_OUTPUT_LIMIT_DEFAULT;
             }
@@ -471,7 +472,7 @@ col_session_destroy(wl_session_t *session)
 
 int
 col_session_insert(wl_session_t *session, const char *relation,
-                   const int64_t *data, uint32_t num_rows, uint32_t num_cols)
+    const int64_t *data, uint32_t num_rows, uint32_t num_cols)
 {
     if (!session || !relation || !data)
         return EINVAL;
@@ -526,8 +527,8 @@ col_session_insert(wl_session_t *session, const char *relation,
  */
 int
 col_session_insert_incremental(wl_session_t *session, const char *relation,
-                               const int64_t *data, uint32_t num_rows,
-                               uint32_t num_cols)
+    const int64_t *data, uint32_t num_rows,
+    uint32_t num_cols)
 {
     if (!session || !relation || !data)
         return EINVAL;
@@ -576,12 +577,12 @@ col_session_insert_incremental(wl_session_t *session, const char *relation,
 /* Forward declaration for col_session_remove_incremental */
 static int
 col_session_remove_incremental(wl_session_t *session, const char *relation,
-                               const int64_t *data, uint32_t num_rows,
-                               uint32_t num_cols);
+    const int64_t *data, uint32_t num_rows,
+    uint32_t num_cols);
 
 static int
 col_session_remove(wl_session_t *session, const char *relation,
-                   const int64_t *data, uint32_t num_rows, uint32_t num_cols)
+    const int64_t *data, uint32_t num_rows, uint32_t num_cols)
 {
     if (!session || !relation || !data)
         return EINVAL;
@@ -589,7 +590,7 @@ col_session_remove(wl_session_t *session, const char *relation,
     wl_col_session_t *sess = COL_SESSION(session);
     if (sess->delta_cb != NULL)
         return col_session_remove_incremental(session, relation, data, num_rows,
-                                              num_cols);
+                   num_cols);
 
     col_rel_t *r = session_find_rel(sess, relation);
     if (!r)
@@ -608,21 +609,21 @@ col_session_remove(wl_session_t *session, const char *relation,
             if (memcmp(row, del, sizeof(int64_t) * num_cols) != 0) {
                 if (out_r != ri)
                     memcpy(r->data + (size_t)out_r * num_cols, row,
-                           sizeof(int64_t) * num_cols);
+                        sizeof(int64_t) * num_cols);
                 out_r++;
             } else {
                 /* Remove first matching row only */
                 di = num_rows; /* break outer loop after this one */
                 for (uint32_t rest = ri + 1; rest < r->nrows; rest++, out_r++)
                     memcpy(r->data + (size_t)out_r * num_cols,
-                           r->data + (size_t)rest * num_cols,
-                           sizeof(int64_t) * num_cols);
+                        r->data + (size_t)rest * num_cols,
+                        sizeof(int64_t) * num_cols);
                 r->nrows = out_r;
                 goto next_del;
             }
         }
         r->nrows = out_r;
-    next_del:;
+next_del:;
     }
     return 0;
 }
@@ -642,8 +643,8 @@ col_session_remove(wl_session_t *session, const char *relation,
  */
 static int
 col_session_remove_incremental(wl_session_t *session, const char *relation,
-                               const int64_t *data, uint32_t num_rows,
-                               uint32_t num_cols)
+    const int64_t *data, uint32_t num_rows,
+    uint32_t num_cols)
 {
     if (!session || !relation || !data)
         return EINVAL;
@@ -705,21 +706,21 @@ col_session_remove_incremental(wl_session_t *session, const char *relation,
             if (memcmp(row, del, sizeof(int64_t) * num_cols) != 0) {
                 if (out_r != ri)
                     memcpy(r->data + (size_t)out_r * num_cols, row,
-                           sizeof(int64_t) * num_cols);
+                        sizeof(int64_t) * num_cols);
                 out_r++;
             } else {
                 /* Remove first matching row only */
                 di = num_rows; /* break outer loop after this one */
                 for (uint32_t rest = ri + 1; rest < r->nrows; rest++, out_r++)
                     memcpy(r->data + (size_t)out_r * num_cols,
-                           r->data + (size_t)rest * num_cols,
-                           sizeof(int64_t) * num_cols);
+                        r->data + (size_t)rest * num_cols,
+                        sizeof(int64_t) * num_cols);
                 r->nrows = out_r;
                 goto next_del_incr;
             }
         }
         r->nrows = out_r;
-    next_del_incr:;
+next_del_incr:;
     }
 
     /* Clamp base_nrows to current row count */
@@ -772,7 +773,7 @@ col_session_step(wl_session_t *session)
             session, sess->last_removed_relation);
         char rname[256];
         if (retraction_rel_name(sess->last_removed_relation, rname,
-                                sizeof(rname))
+            sizeof(rname))
             == 0) {
             col_rel_t *rdelta = session_find_rel(sess, rname);
             if (rdelta && rdelta->nrows > 0)
@@ -790,8 +791,8 @@ col_session_step(wl_session_t *session)
         /* Full evaluation (non-incremental): reset all rules to (current_epoch, UINT32_MAX)
          * sentinel. Prevents premature skip across different evaluation contexts. */
         for (uint32_t ri = 0; ri < MAX_RULES; ri++) {
-            sess->rule_frontiers[ri].outer_epoch = sess->outer_epoch;
-            sess->rule_frontiers[ri].iteration = UINT32_MAX;
+            sess->frontier_ops->reset_rule_frontier(sess, ri,
+                sess->outer_epoch);
         }
     } else {
         /* Incremental (delta callback mode): reset affected rules to (current_epoch, UINT32_MAX).
@@ -802,12 +803,11 @@ col_session_step(wl_session_t *session)
                 for (uint32_t j = 0; j < si; j++)
                     rule_base += plan->strata[j].relation_count;
                 for (uint32_t ri = 0; ri < plan->strata[si].relation_count;
-                     ri++) {
+                    ri++) {
                     uint32_t rule_id = rule_base + ri;
                     if (rule_id < MAX_RULES) {
-                        sess->rule_frontiers[rule_id].outer_epoch
-                            = sess->outer_epoch;
-                        sess->rule_frontiers[rule_id].iteration = UINT32_MAX;
+                        sess->frontier_ops->reset_rule_frontier(sess, rule_id,
+                            sess->outer_epoch);
                     }
                 }
             }
@@ -869,7 +869,7 @@ col_session_step(wl_session_t *session)
  */
 static void
 col_session_set_delta_cb(wl_session_t *session, wl_on_delta_fn callback,
-                         void *user_data)
+    void *user_data)
 {
     if (!session)
         return;
@@ -899,7 +899,7 @@ col_session_set_delta_cb(wl_session_t *session, wl_on_delta_fn callback,
  */
 static int
 col_session_snapshot(wl_session_t *session, wl_on_tuple_fn callback,
-                     void *user_data)
+    void *user_data)
 {
     if (!session || !callback)
         return EINVAL;
@@ -969,7 +969,7 @@ col_session_snapshot(wl_session_t *session, wl_on_tuple_fn callback,
      * cyclic multi-iteration patterns. CSPA benchmark confirms safety. */
     if (affected_mask != UINT64_MAX) {
         for (uint32_t si = 0; si < plan->stratum_count && si < MAX_STRATA;
-             si++) {
+            si++) {
             if ((affected_mask & ((uint64_t)1 << si)) != 0) {
                 /* Issue #107: Selective rule frontier reset based on pre-seeded delta presence.
                  * Reset frontier for strata that have pre-seeded EDB deltas.
@@ -982,8 +982,8 @@ col_session_snapshot(wl_session_t *session, wl_on_tuple_fn callback,
                  *
                  * Test coverage: test_delta_propagation validates cyclic correctness. */
                 if (stratum_has_preseeded_delta(&plan->strata[si], sess)) {
-                    sess->frontiers[si].outer_epoch = sess->outer_epoch;
-                    sess->frontiers[si].iteration = UINT32_MAX;
+                    sess->frontier_ops->reset_stratum_frontier(sess, si,
+                        sess->outer_epoch);
                 }
                 /* Else: stratum affected but no pre-seeded delta → KEEP frontier */
             }
@@ -1015,17 +1015,17 @@ col_session_snapshot(wl_session_t *session, wl_on_tuple_fn callback,
             if ((affected_mask & ((uint64_t)1 << si)) == 0)
                 continue;
             if (stratum_has_preseeded_delta(&plan->strata[si], sess)) {
-                sess->rule_frontiers[ri].outer_epoch = sess->outer_epoch;
-                sess->rule_frontiers[ri].iteration = UINT32_MAX;
+                sess->frontier_ops->reset_rule_frontier(sess, ri,
+                    sess->outer_epoch);
             }
             /* Else: rule's stratum affected but no pre-seeded delta → KEEP frontier */
         }
     } else {
         /* Full re-evaluation (non-incremental call): reset ALL rule frontiers
-         * to (current_epoch, UINT32_MAX) sentinel. Prevents premature skip. */
+        * to (current_epoch, UINT32_MAX) sentinel. Prevents premature skip. */
         for (uint32_t ri = 0; ri < MAX_RULES; ri++) {
-            sess->rule_frontiers[ri].outer_epoch = sess->outer_epoch;
-            sess->rule_frontiers[ri].iteration = UINT32_MAX;
+            sess->frontier_ops->reset_rule_frontier(sess, ri,
+                sess->outer_epoch);
         }
     }
 
@@ -1091,7 +1091,7 @@ col_session_snapshot(wl_session_t *session, wl_on_tuple_fn callback,
                 continue;
             for (uint32_t row = 0; row < r->nrows; row++) {
                 callback(rname, r->data + (size_t)row * r->ncols, r->ncols,
-                         user_data);
+                    user_data);
             }
         }
     }
