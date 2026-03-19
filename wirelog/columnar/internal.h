@@ -299,6 +299,9 @@ struct col_frontier_ops {
 /* Default epoch-based frontier vtable (defined in frontier_epoch.c). */
 extern const col_frontier_ops_t col_frontier_epoch_ops;
 
+/* Differential frontier vtable (defined in diff_vtable.c). */
+extern const col_frontier_ops_t col_frontier_diff_ops;
+
 /* ======================================================================== */
 /* Session                                                                  */
 /* ======================================================================== */
