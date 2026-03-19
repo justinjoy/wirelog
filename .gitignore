@@ -34,6 +34,8 @@ __pycache__/
 *.tmp
 *.bak
 .#*
+prd.json
+progress.txt
 
 # Documentation generated files
 docs/_build/
