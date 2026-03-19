@@ -135,26 +135,15 @@ Wirelog's incremental evaluation shines when processing updates to derived relat
 
 ### End-to-End Pipeline
 
-```
-.dl file
-    |
-    v  wl_read_file()
-Parser (C11, hand-written recursive descent)
-    |
-    v
-IR -> Fusion -> JPP -> SIP
-    |
-    v
-Columnar Plan
-    |
-    v
-Columnar Executor (nanoarrow)
-    |   |
-    |   +-- Incremental path: delta-seeded re-evaluation,
-    |       frontier tracking, per-stratum skip
-    v
-Result callback / output
-```
+![Wirelog Pipeline](docs/pipeline.svg)
+
+**Pipeline Stages:**
+
+1. **Parser** — C11 hand-written recursive descent parses `.dl` files into IR
+2. **Optimization Passes** — IR → Fusion → JPP → SIP (logic fusion, join planning, semijoin filtering)
+3. **Columnar Executor** — Apache Arrow operators (FILTER, PROJECT, JOIN, FLATMAP, ARRANGE)
+4. **Evaluation Modes** — Baseline (full re-eval) or Incremental (delta-seeded with selective frontier skip)
+5. **Result Callback** — Query results delivered via session callback or written to output files
 
 ### Incremental Evaluation with Delta-Seeding
 
