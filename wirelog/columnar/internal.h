@@ -676,6 +676,10 @@ col_session_get_diff_arrangement(wl_col_session_t *cs, const char *rel_name,
     const uint32_t *key_cols, uint32_t key_count);
 void
 col_session_free_diff_arrangements(wl_col_session_t *cs);
+/* Issue #274: Deep-copy differential arrangement entries for K-fusion worker isolation. */
+int
+col_diff_arr_entries_clone(const col_diff_arr_entry_t *src, uint32_t count,
+    col_diff_arr_entry_t **out_entries, uint32_t *out_cap);
 col_sorted_arr_t *
 col_session_get_sorted_arrangement(wl_col_session_t *cs, const char *rel_name,
     uint32_t key_col);
