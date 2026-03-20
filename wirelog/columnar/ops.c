@@ -3355,6 +3355,26 @@ col_op_k_fusion(const wl_plan_op_t *op, eval_stack_t *stack,
             worker_sess[d].arr_count = sess->arr_count;
             worker_sess[d].arr_cap = clone_cap;
         }
+        /* Issue #274: Deep-copy differential arrangement cache so each worker
+         * has an independent copy. This prevents concurrent realloc() races
+         * when col_session_get_diff_arrangement() grows the registry. */
+        worker_sess[d].diff_arr_entries = NULL;
+        worker_sess[d].diff_arr_count = 0;
+        worker_sess[d].diff_arr_cap = 0;
+        {
+            uint32_t diff_clone_cap = 0;
+            int diff_clone_rc = col_diff_arr_entries_clone(
+                sess->diff_arr_entries, sess->diff_arr_count,
+                &worker_sess[d].diff_arr_entries, &diff_clone_cap);
+            if (diff_clone_rc != 0) {
+                rc = diff_clone_rc;
+                if (wq)
+                    wl_workqueue_drain(wq);
+                goto cleanup_wq;
+            }
+            worker_sess[d].diff_arr_count = sess->diff_arr_count;
+            worker_sess[d].diff_arr_cap = diff_clone_cap;
+        }
         worker_sess[d].darr_entries = NULL;
         worker_sess[d].darr_count = 0;
         worker_sess[d].darr_cap = 0;

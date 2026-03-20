@@ -705,3 +705,90 @@ col_session_free_diff_arrangements(wl_col_session_t *cs)
     cs->diff_arr_count = 0;
     cs->diff_arr_cap = 0;
 }
+
+/*
+ * col_diff_arr_entry_clone - Deep-copy a single differential arrangement entry.
+ *
+ * Clones rel_name, key_cols, and the diff_arrangement for a K-fusion worker (#274).
+ * On success, dst owns all allocations. On failure, dst is zeroed.
+ *
+ * Returns: 0 on success, ENOMEM on allocation failure.
+ */
+static int
+col_diff_arr_entry_clone(const col_diff_arr_entry_t *src,
+    col_diff_arr_entry_t *dst)
+{
+    memset(dst, 0, sizeof(*dst));
+
+    if (!src || !src->rel_name)
+        return ENOMEM;
+
+    dst->rel_name = wl_strdup(src->rel_name);
+    if (!dst->rel_name)
+        return ENOMEM;
+
+    if (src->key_count > 0) {
+        dst->key_cols = (uint32_t *)malloc(src->key_count * sizeof(uint32_t));
+        if (!dst->key_cols) {
+            free(dst->rel_name);
+            memset(dst, 0, sizeof(*dst));
+            return ENOMEM;
+        }
+        memcpy(dst->key_cols, src->key_cols, src->key_count * sizeof(uint32_t));
+    }
+    dst->key_count = src->key_count;
+
+    if (src->diff_arr) {
+        dst->diff_arr = col_diff_arrangement_deep_copy(src->diff_arr);
+        if (!dst->diff_arr) {
+            free(dst->key_cols);
+            free(dst->rel_name);
+            memset(dst, 0, sizeof(*dst));
+            return ENOMEM;
+        }
+    }
+
+    return 0;
+}
+
+/*
+ * col_diff_arr_entries_clone - Deep-copy a differential arrangement registry (#274).
+ *
+ * Creates an independent copy of `count` entries for a K-fusion worker.
+ * On success, *out_entries owns all allocations and *out_cap equals count.
+ * On failure, *out_entries is NULL.
+ *
+ * Returns: 0 on success, ENOMEM on allocation failure.
+ */
+int
+col_diff_arr_entries_clone(const col_diff_arr_entry_t *src, uint32_t count,
+    col_diff_arr_entry_t **out_entries, uint32_t *out_cap)
+{
+    *out_entries = NULL;
+    *out_cap = 0;
+
+    if (count == 0)
+        return 0;
+
+    col_diff_arr_entry_t *cloned
+        = (col_diff_arr_entry_t *)calloc(count, sizeof(col_diff_arr_entry_t));
+    if (!cloned)
+        return ENOMEM;
+
+    for (uint32_t i = 0; i < count; i++) {
+        int clone_rc = col_diff_arr_entry_clone(&src[i], &cloned[i]);
+        if (clone_rc != 0) {
+            for (uint32_t j = 0; j < i; j++) {
+                free(cloned[j].rel_name);
+                free(cloned[j].key_cols);
+                col_diff_arrangement_destroy(cloned[j].diff_arr);
+            }
+            free(cloned);
+            return clone_rc;
+        }
+    }
+
+    *out_entries = cloned;
+    *out_cap = count;
+    return 0;
+}
