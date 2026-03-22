@@ -138,8 +138,8 @@ test_basic_join_correctness(void)
     op.key_count = 1;
     char *lkeys[] = {"x"};
     char *rkeys[] = {"x"};
-    op.left_keys = lkeys;
-    op.right_keys = rkeys;
+    op.left_keys = (const char *const *)lkeys;
+    op.right_keys = (const char *const *)rkeys;
     op.delta_mode = WL_DELTA_FORCE_FULL;
 
     eval_stack_t stack;
@@ -187,8 +187,8 @@ test_empty_left(void)
     op.right_relation = "right";
     op.key_count = 1;
     char *keys[] = {"x"};
-    op.left_keys = keys;
-    op.right_keys = keys;
+    op.left_keys = (const char *const *)keys;
+    op.right_keys = (const char *const *)keys;
     op.delta_mode = WL_DELTA_FORCE_FULL;
 
     eval_stack_t stack;
@@ -225,8 +225,8 @@ test_empty_right(void)
     op.right_relation = "nonexistent";
     op.key_count = 1;
     char *keys[] = {"x"};
-    op.left_keys = keys;
-    op.right_keys = keys;
+    op.left_keys = (const char *const *)keys;
+    op.right_keys = (const char *const *)keys;
     op.delta_mode = WL_DELTA_FORCE_FULL;
 
     eval_stack_t stack;
@@ -269,8 +269,8 @@ test_no_matching_keys(void)
     op.key_count = 1;
     char *lkeys[] = {"x"};
     char *rkeys[] = {"x"};
-    op.left_keys = lkeys;
-    op.right_keys = rkeys;
+    op.left_keys = (const char *const *)lkeys;
+    op.right_keys = (const char *const *)rkeys;
     op.delta_mode = WL_DELTA_FORCE_FULL;
 
     eval_stack_t stack;
@@ -317,8 +317,8 @@ test_all_rows_match(void)
     op.key_count = 1;
     char *lkeys[] = {"x"};
     char *rkeys[] = {"x"};
-    op.left_keys = lkeys;
-    op.right_keys = rkeys;
+    op.left_keys = (const char *const *)lkeys;
+    op.right_keys = (const char *const *)rkeys;
     op.delta_mode = WL_DELTA_FORCE_FULL;
 
     eval_stack_t stack;
@@ -365,8 +365,8 @@ test_multi_key_columns(void)
     op.key_count = 2;
     char *lkeys[] = {"a", "b"};
     char *rkeys[] = {"a", "b"};
-    op.left_keys = lkeys;
-    op.right_keys = rkeys;
+    op.left_keys = (const char *const *)lkeys;
+    op.right_keys = (const char *const *)rkeys;
     op.delta_mode = WL_DELTA_FORCE_FULL;
 
     /* Verify differential join matches standard join output */
@@ -428,8 +428,8 @@ test_duplicate_keys_in_right(void)
     op.key_count = 1;
     char *lkeys[] = {"x"};
     char *rkeys[] = {"x"};
-    op.left_keys = lkeys;
-    op.right_keys = rkeys;
+    op.left_keys = (const char *const *)lkeys;
+    op.right_keys = (const char *const *)rkeys;
     op.delta_mode = WL_DELTA_FORCE_FULL;
 
     eval_stack_t stack;
@@ -470,8 +470,8 @@ test_arrangement_reuse(void)
     op.key_count = 1;
     char *lkeys[] = {"x"};
     char *rkeys[] = {"x"};
-    op.left_keys = lkeys;
-    op.right_keys = rkeys;
+    op.left_keys = (const char *const *)lkeys;
+    op.right_keys = (const char *const *)rkeys;
     op.delta_mode = WL_DELTA_FORCE_FULL;
 
     /* First join */
@@ -534,8 +534,8 @@ test_arrangement_incremental(void)
     op.key_count = 1;
     char *lkeys[] = {"x"};
     char *rkeys[] = {"x"};
-    op.left_keys = lkeys;
-    op.right_keys = rkeys;
+    op.left_keys = (const char *const *)lkeys;
+    op.right_keys = (const char *const *)rkeys;
     op.delta_mode = WL_DELTA_FORCE_FULL;
 
     /* First join: right has 1 row */
@@ -603,8 +603,8 @@ test_result_is_delta_flag(void)
     op.right_relation = "right";
     op.key_count = 1;
     char *keys[] = {"x"};
-    op.left_keys = keys;
-    op.right_keys = keys;
+    op.left_keys = (const char *const *)keys;
+    op.right_keys = (const char *const *)keys;
     op.delta_mode = WL_DELTA_FORCE_FULL;
 
     eval_stack_t stack;
@@ -652,8 +652,8 @@ test_large_dataset(void)
     op.key_count = 1;
     char *lkeys[] = {"x"};
     char *rkeys[] = {"x"};
-    op.left_keys = lkeys;
-    op.right_keys = rkeys;
+    op.left_keys = (const char *const *)lkeys;
+    op.right_keys = (const char *const *)rkeys;
     op.delta_mode = WL_DELTA_FORCE_FULL;
 
     eval_stack_t stack;
@@ -726,8 +726,8 @@ test_force_full_mode(void)
     op.right_relation = "right";
     op.key_count = 1;
     char *keys[] = {"x"};
-    op.left_keys = keys;
-    op.right_keys = keys;
+    op.left_keys = (const char *const *)keys;
+    op.right_keys = (const char *const *)keys;
     op.delta_mode = WL_DELTA_FORCE_FULL;
 
     eval_stack_t stack;
@@ -780,8 +780,8 @@ test_delta_substitution(void)
     op.right_relation = "right";
     op.key_count = 1;
     char *keys[] = {"x"};
-    op.left_keys = keys;
-    op.right_keys = keys;
+    op.left_keys = (const char *const *)keys;
+    op.right_keys = (const char *const *)keys;
     op.delta_mode = WL_DELTA_FORCE_DELTA;
 
     eval_stack_t stack;
@@ -836,8 +836,8 @@ test_single_key_column(void)
     op.key_count = 1;
     char *lkeys[] = {"k"};
     char *rkeys[] = {"k"};
-    op.left_keys = lkeys;
-    op.right_keys = rkeys;
+    op.left_keys = (const char *const *)lkeys;
+    op.right_keys = (const char *const *)rkeys;
     op.delta_mode = WL_DELTA_FORCE_FULL;
 
     eval_stack_t stack;
@@ -884,8 +884,8 @@ test_diff_arr_entry_cleanup(void)
     op.right_relation = "right";
     op.key_count = 1;
     char *keys[] = {"x"};
-    op.left_keys = keys;
-    op.right_keys = keys;
+    op.left_keys = (const char *const *)keys;
+    op.right_keys = (const char *const *)keys;
     op.delta_mode = WL_DELTA_FORCE_FULL;
 
     eval_stack_t stack;
