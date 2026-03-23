@@ -947,8 +947,8 @@ col_op_map(const wl_plan_op_t *op, eval_stack_t *stack, wl_col_session_t *sess)
         ce_map = (col_expr_compiled_t **)calloc(pc,
                 sizeof(col_expr_compiled_t *));
         if (ce_map) {
-            ce_map_count = pc;
-            for (uint32_t c = 0; c < op->map_expr_count && c < pc; c++) {
+            ce_map_count = (op->map_expr_count < pc) ? op->map_expr_count : pc;
+            for (uint32_t c = 0; c < ce_map_count; c++) {
                 if (op->map_exprs[c].data && op->map_exprs[c].size > 0)
                     ce_map[c] = col_expr_compile(op->map_exprs[c].data,
                             op->map_exprs[c].size);
