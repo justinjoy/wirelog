@@ -201,7 +201,7 @@ col_rel_append_row(col_rel_t *r, const int64_t *row)
  * timestamps are propagated to the newly appended rows.
  * Optimized (Issue #300): bulk memcpy instead of per-row append. */
 int
-col_rel_append_all(col_rel_t *dst, const col_rel_t *src)
+col_rel_append_all(col_rel_t *dst, const col_rel_t *src, wl_arena_t *arena)
 {
     if (src->nrows == 0)
         return 0;
@@ -230,14 +230,21 @@ col_rel_append_all(col_rel_t *dst, const col_rel_t *src)
 
         int64_t *nd;
         if (dst->arena_owned) {
-            /* Arena data cannot be realloc'd; migrate to heap */
-            nd = (int64_t *)malloc(sizeof(int64_t) * (size_t)new_cap *
-                    dst->ncols);
-            if (!nd)
-                return ENOMEM;
+            /* Arena data: allocate from same arena, preserve arena_owned flag */
+            size_t data_bytes = (size_t)new_cap * dst->ncols * sizeof(int64_t);
+            if (arena) {
+                nd = (int64_t *)wl_arena_alloc(arena, data_bytes);
+                if (!nd)
+                    return ENOMEM;
+            } else {
+                /* Fallback to heap if arena unavailable */
+                nd = (int64_t *)malloc(data_bytes);
+                if (!nd)
+                    return ENOMEM;
+                dst->arena_owned = false;
+            }
             memcpy(nd, dst->data,
                 sizeof(int64_t) * (size_t)dst->nrows * dst->ncols);
-            dst->arena_owned = false;
         } else {
             nd = (int64_t *)realloc(
                 dst->data, sizeof(int64_t) * (size_t)new_cap * dst->ncols);
