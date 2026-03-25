@@ -3595,7 +3595,7 @@ col_arr_entry_clone(const col_arr_entry_t *src, col_arr_entry_t *dst)
  * On success, *out_entries owns all allocations and *out_cap equals count.
  * On failure, *out_entries is NULL.
  */
-static int
+int
 col_arr_entries_clone(const col_arr_entry_t *src, uint32_t count,
     col_arr_entry_t **out_entries, uint32_t *out_cap)
 {
