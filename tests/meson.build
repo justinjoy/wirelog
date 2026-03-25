@@ -1869,3 +1869,24 @@ test_partition_exe = executable(
 )
 
 test('partition', test_partition_exe)
+
+# ============================================================================
+# Per-Worker Session State (Issue #315)
+# ============================================================================
+
+test_worker_session_exe = executable(
+  'test_worker_session',
+  files('test_worker_session.c'),
+  backend_src,
+  parser_src,
+  ir_src,
+  optimizer_src,
+  arena_src,
+  io_src,
+  thread_src,
+  workqueue_src,
+  include_directories: [wirelog_inc, wirelog_src_inc],
+  dependencies: [nanoarrow_dep, threads_dep, xxhash_dep, mbedtls_dep],
+)
+
+test('worker_session', test_worker_session_exe)

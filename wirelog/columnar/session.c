@@ -581,6 +581,182 @@ col_session_destroy(wl_session_t *session)
     free(sess);
 }
 
+/* ======================================================================== */
+/* Per-Worker Session State (Issue #315)                                    */
+/* ======================================================================== */
+
+/*
+ * col_worker_session_create:
+ * Create an isolated worker session from a coordinator session.
+ * See internal.h for full documentation.
+ */
+int
+col_worker_session_create(wl_col_session_t *coordinator,
+    uint32_t worker_id, col_rel_t **partitions,
+    uint32_t num_partitions, wl_col_session_t *out_worker)
+{
+    if (!coordinator || !out_worker || !partitions)
+        return EINVAL;
+
+    /* Step 1: Bitwise copy — copies all value fields (frontiers,
+     * counters, booleans, plan pointer, frontier_ops). */
+    *out_worker = *coordinator;
+
+    /* Step 2: Set identity fields */
+    out_worker->worker_id = worker_id;
+    out_worker->coordinator = coordinator;
+
+    /* Prevent accidental wl_session_destroy on stack-allocated worker */
+    out_worker->base.backend = NULL;
+
+    /* Step 3: NULL all owned pointers (safe for cleanup on early abort) */
+    out_worker->wq = NULL;
+    out_worker->eval_arena = NULL;
+    out_worker->delta_pool = NULL;
+    out_worker->rels = NULL;
+    out_worker->nrels = 0;
+    out_worker->rel_cap = 0;
+    out_worker->rel_hash_head = NULL;
+    out_worker->rel_hash_next = NULL;
+    out_worker->rel_hash_nbuckets = 0;
+    out_worker->rel_hash_chain_cap = 0;
+    out_worker->arr_entries = NULL;
+    out_worker->arr_count = 0;
+    out_worker->arr_cap = 0;
+    out_worker->diff_arr_entries = NULL;
+    out_worker->diff_arr_count = 0;
+    out_worker->diff_arr_cap = 0;
+    out_worker->darr_entries = NULL;
+    out_worker->darr_count = 0;
+    out_worker->darr_cap = 0;
+    out_worker->sarr_entries = NULL;
+    out_worker->sarr_count = 0;
+    out_worker->sarr_cap = 0;
+    memset(&out_worker->mat_cache, 0, sizeof(col_mat_cache_t));
+
+    /* Step 4: NULL borrowed fields that workers must not use */
+    out_worker->delta_cb = NULL;
+    out_worker->delta_data = NULL;
+    out_worker->last_inserted_relation = NULL;
+    out_worker->last_removed_relation = NULL;
+
+    /* Step 5: Initialize independent mem_ledger (avoid copying atomics) */
+    wl_mem_ledger_init(&out_worker->mem_ledger,
+        coordinator->mem_ledger.total_budget);
+
+    /* Step 6: Populate rels[] with partition relations (ownership transfer) */
+    out_worker->rels
+        = (col_rel_t **)calloc(num_partitions, sizeof(col_rel_t *));
+    if (!out_worker->rels)
+        goto cleanup;
+    for (uint32_t i = 0; i < num_partitions; i++) {
+        out_worker->rels[i] = partitions[i];
+        partitions[i] = NULL; /* Mark as transferred */
+    }
+    out_worker->nrels = num_partitions;
+    out_worker->rel_cap = num_partitions;
+
+    /* Step 7: Allocate per-worker arena (scaled by num_workers) */
+    {
+        uint32_t k = coordinator->num_workers > 0
+            ? coordinator->num_workers
+            : 1;
+        size_t arena_cap = coordinator->eval_arena
+            ? coordinator->eval_arena->capacity / k
+            : 8UL * 1024 * 1024;
+        if (arena_cap < 8UL * 1024 * 1024)
+            arena_cap = 8UL * 1024 * 1024;
+        out_worker->eval_arena = wl_arena_create(arena_cap);
+        /* Non-fatal if NULL: operators fall back to malloc */
+    }
+
+    /* Step 8: Allocate per-worker delta_pool (scaled by num_workers) */
+    {
+        uint32_t k = coordinator->num_workers > 0
+            ? coordinator->num_workers
+            : 1;
+        size_t pool_arena = 32UL * 1024 * 1024 / k;
+        if (pool_arena < 4UL * 1024 * 1024)
+            pool_arena = 4UL * 1024 * 1024;
+        uint32_t pool_slots = 128 / k;
+        if (pool_slots < 16)
+            pool_slots = 16;
+        out_worker->delta_pool
+            = delta_pool_create(pool_slots, sizeof(col_rel_t), pool_arena);
+        /* Non-fatal if NULL: operators fall back to malloc */
+    }
+
+    /* Step 9: Deep-clone arrangement registries */
+    if (coordinator->arr_count > 0) {
+        int rc = col_arr_entries_clone(coordinator->arr_entries,
+                coordinator->arr_count, &out_worker->arr_entries,
+                &out_worker->arr_cap);
+        if (rc != 0)
+            goto cleanup;
+        out_worker->arr_count = coordinator->arr_count;
+    }
+    if (coordinator->diff_arr_count > 0) {
+        int rc = col_diff_arr_entries_clone(coordinator->diff_arr_entries,
+                coordinator->diff_arr_count, &out_worker->diff_arr_entries,
+                &out_worker->diff_arr_cap);
+        if (rc != 0)
+            goto cleanup;
+        out_worker->diff_arr_count = coordinator->diff_arr_count;
+    }
+
+    return 0;
+
+cleanup:
+    col_worker_session_destroy(out_worker);
+    return ENOMEM;
+}
+
+/*
+ * col_worker_session_destroy:
+ * Free all resources owned by a worker session.
+ * See internal.h for full documentation.
+ */
+void
+col_worker_session_destroy(wl_col_session_t *worker)
+{
+    if (!worker)
+        return;
+
+    /* Free mat_cache entries (all worker-owned since zeroed at create) */
+    col_mat_cache_clear(&worker->mat_cache);
+
+    /* Free arrangement registries */
+    for (uint32_t i = 0; i < worker->arr_count; i++) {
+        free(worker->arr_entries[i].rel_name);
+        free(worker->arr_entries[i].key_cols);
+        arr_free_contents(&worker->arr_entries[i].arr);
+    }
+    free(worker->arr_entries);
+    col_session_free_delta_arrangements(worker);
+    col_session_free_sorted_arrangements(worker);
+    col_session_free_diff_arrangements(worker);
+
+    /* Free owned relations (partition data) */
+    for (uint32_t i = 0; i < worker->nrels; i++) {
+        if (worker->rels[i]) {
+            col_rel_free_contents(worker->rels[i]);
+            free(worker->rels[i]);
+        }
+    }
+    free(worker->rels);
+
+    /* Free hash table (may have been lazily built) */
+    session_rel_free_hash(worker);
+
+    /* Free allocators (all NULL-safe) */
+    wl_workqueue_destroy(worker->wq);
+    delta_pool_destroy(worker->delta_pool);
+    wl_arena_free(worker->eval_arena);
+
+    /* Zero the struct to prevent dangling pointer use */
+    memset(worker, 0, sizeof(*worker));
+}
+
 int
 col_session_insert(wl_session_t *session, const char *relation,
     const int64_t *data, uint32_t num_rows, uint32_t num_cols)
