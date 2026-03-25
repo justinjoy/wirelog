@@ -173,6 +173,69 @@ typedef struct {
     uint32_t retract_backup_sorted_nrows;
 } col_rel_t;
 
+/* ======================================================================== */
+/* col_rel_t Accessor Layer (Phase 0, Issue #326)                           */
+/*                                                                          */
+/* All row-major access to r->data SHOULD go through these accessors.       */
+/* Phase 5 (#332) will flip the internal layout to column-major; these      */
+/* functions are the ONLY place that needs to change.                       */
+/*                                                                          */
+/* Target layout: int64_t **columns; columns[col][row]                      */
+/* ======================================================================== */
+
+/** Read a single cell value at (row, col). */
+static inline int64_t
+col_rel_get(const col_rel_t *r, uint32_t row, uint32_t col)
+{
+    return r->data[(size_t)row * r->ncols + col];
+}
+
+/** Write a single cell value at (row, col). */
+static inline void
+col_rel_set(col_rel_t *r, uint32_t row, uint32_t col, int64_t val)
+{
+    r->data[(size_t)row * r->ncols + col] = val;
+}
+
+/** Const pointer to the start of a row (row-major: contiguous ncols elements).
+ *  NOTE: In column-major (Phase 5), this returns a gathered scratch buffer
+ *  or must be replaced with col_rel_get() per-cell access. */
+static inline const int64_t *
+col_rel_row(const col_rel_t *r, uint32_t row)
+{
+    return r->data + (size_t)row * r->ncols;
+}
+
+/** Mutable pointer to the start of a row. */
+static inline int64_t *
+col_rel_row_mut(col_rel_t *r, uint32_t row)
+{
+    return r->data + (size_t)row * r->ncols;
+}
+
+/** Copy one row out into a caller-provided buffer. */
+static inline void
+col_rel_row_copy_out(const col_rel_t *r, uint32_t row, int64_t *dst)
+{
+    memcpy(dst, r->data + (size_t)row * r->ncols,
+        (size_t)r->ncols * sizeof(int64_t));
+}
+
+/** Copy one row in from a caller-provided buffer. */
+static inline void
+col_rel_row_copy_in(col_rel_t *r, uint32_t row, const int64_t *src)
+{
+    memcpy(r->data + (size_t)row * r->ncols, src,
+        (size_t)r->ncols * sizeof(int64_t));
+}
+
+/** Compute buffer size in bytes for row_count rows. */
+static inline size_t
+col_rel_buf_bytes(const col_rel_t *r, uint32_t row_count)
+{
+    return (size_t)row_count * (size_t)r->ncols * sizeof(int64_t);
+}
+
 /**
  * col_materialized_join_t - Cached intermediate join result for CSE
  *
