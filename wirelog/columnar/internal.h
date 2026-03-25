@@ -355,7 +355,7 @@ extern const col_frontier_ops_t col_frontier_diff_ops;
  * wl_session_t* to wl_col_session_t* is valid per C11 pointer
  * compatibility (address of struct == address of first member).
  */
-typedef struct {
+typedef struct wl_col_session_t {
     wl_session_t base;         /* MUST be first field (vtable dispatch)  */
     const col_frontier_ops_t *frontier_ops; /* frontier vtable (#261)   */
     const wl_plan_t *plan;     /* borrowed, lifetime: caller             */
@@ -524,6 +524,16 @@ typedef struct {
      * getenv() calls in hot paths. */
     bool debug_join;         /* WL_DEBUG_JOIN=1 enables DEBUG[JOIN] output  */
     bool consolidation_log;  /* WL_CONSOLIDATION_LOG=1 enables CONS output  */
+    /* Per-worker session state (Issue #315): data-partitioned worker isolation.
+     * worker_id:    0-based worker index.  Only meaningful when coordinator
+     *               is non-NULL (i.e., this session is a worker, not the
+     *               coordinator).
+     * coordinator:  borrowed pointer to parent session.  NULL means this
+     *               IS the coordinator session.  Non-NULL is the canonical
+     *               "is this a worker?" test and prevents freeing borrowed
+     *               resources (plan, frontier_ops) in worker destroy. */
+    uint32_t worker_id;
+    struct wl_col_session_t *coordinator;
 } wl_col_session_t;
 
 /*
@@ -783,6 +793,10 @@ col_session_get_diff_arrangement(wl_col_session_t *cs, const char *rel_name,
     const uint32_t *key_cols, uint32_t key_count);
 void
 col_session_free_diff_arrangements(wl_col_session_t *cs);
+/* Issue #260: Deep-copy arrangement entries for K-fusion worker isolation. */
+int
+col_arr_entries_clone(const col_arr_entry_t *src, uint32_t count,
+    col_arr_entry_t **out_entries, uint32_t *out_cap);
 /* Issue #274: Deep-copy differential arrangement entries for K-fusion worker isolation. */
 int
 col_diff_arr_entries_clone(const col_diff_arr_entry_t *src, uint32_t count,
@@ -934,5 +948,37 @@ col_rel_partition_by_key(const col_rel_t *src,
 int
 col_rel_merge_partitions(col_rel_t **parts, uint32_t num_workers,
     col_rel_t **out);
+
+/* ======================================================================== */
+/* Per-Worker Session State (columnar/session.c, Issue #315)                */
+/* ======================================================================== */
+
+/*
+ * col_worker_session_create:
+ * Create an isolated worker session from a coordinator session.
+ * The worker owns independent rels[] (populated with partitions),
+ * eval_arena, delta_pool, arrangement clones, and mat_cache.
+ * Borrowed fields (plan, frontier_ops) are shared read-only.
+ *
+ * out_worker must be caller-allocated (e.g., from calloc'd array).
+ * partitions[] ownership transfers to the worker on success;
+ * on failure, partitions[] are NOT consumed (caller must free).
+ *
+ * Returns 0 on success, EINVAL for bad arguments, ENOMEM on failure.
+ */
+int
+col_worker_session_create(wl_col_session_t *coordinator,
+    uint32_t worker_id, col_rel_t **partitions,
+    uint32_t num_partitions, wl_col_session_t *out_worker);
+
+/*
+ * col_worker_session_destroy:
+ * Free all resources owned by a worker session.  Does NOT free borrowed
+ * resources (plan, frontier_ops) or the out_worker struct itself.
+ * Safe to call on a partially-initialized worker (all owned pointers
+ * are pre-NULLed during create).  Zeroes the struct on completion.
+ */
+void
+col_worker_session_destroy(wl_col_session_t *worker);
 
 #endif /* WL_COLUMNAR_INTERNAL_H */
