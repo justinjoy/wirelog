@@ -128,7 +128,7 @@ col_mat_cache_key_content(const col_rel_t *rel)
 
     for (uint32_t i = 0; i < k; i++) {
         for (uint32_t j = 0; j < rel->ncols; j++) {
-            uint64_t val = (uint64_t)rel->data[i * rel->ncols + j];
+            uint64_t val = (uint64_t)col_rel_get(rel, i, j);
             hash ^= val;
             hash *= 1099511628211ULL; /* FNV-1a prime */
         }
@@ -176,14 +176,14 @@ col_mat_cache_evict_until(col_mat_cache_t *cache, size_t target_bytes)
         cache->total_bytes -= cache->entries[lru].mem_bytes;
         col_rel_destroy(cache->entries[lru].result);
         memmove(&cache->entries[lru], &cache->entries[lru + 1],
-                (cache->count - lru - 1) * sizeof(col_mat_entry_t));
+            (cache->count - lru - 1) * sizeof(col_mat_entry_t));
         cache->count--;
     }
 }
 
 col_rel_t *
 col_mat_cache_lookup(col_mat_cache_t *cache, const col_rel_t *left,
-                     const col_rel_t *right)
+    const col_rel_t *right)
 {
     uint64_t lh = col_mat_cache_key_content(left);
     uint64_t rh = col_mat_cache_key_content(right);
@@ -201,7 +201,7 @@ col_mat_cache_lookup(col_mat_cache_t *cache, const col_rel_t *left,
 
 void
 col_mat_cache_insert(col_mat_cache_t *cache, const col_rel_t *left,
-                     const col_rel_t *right, col_rel_t *result)
+    const col_rel_t *right, col_rel_t *result)
 {
     size_t result_bytes
         = (result->nrows > 0 && result->ncols > 0)
@@ -210,7 +210,7 @@ col_mat_cache_insert(col_mat_cache_t *cache, const col_rel_t *left,
 
     /* Evict LRU entries until within memory limit */
     while (cache->count > 0
-           && cache->total_bytes + result_bytes > COL_MAT_CACHE_LIMIT_BYTES) {
+        && cache->total_bytes + result_bytes > COL_MAT_CACHE_LIMIT_BYTES) {
         uint32_t lru = 0;
         for (uint32_t i = 1; i < cache->count; i++) {
             if (cache->entries[i].lru_clock < cache->entries[lru].lru_clock)
@@ -219,7 +219,7 @@ col_mat_cache_insert(col_mat_cache_t *cache, const col_rel_t *left,
         cache->total_bytes -= cache->entries[lru].mem_bytes;
         col_rel_destroy(cache->entries[lru].result);
         memmove(&cache->entries[lru], &cache->entries[lru + 1],
-                (cache->count - lru - 1) * sizeof(col_mat_entry_t));
+            (cache->count - lru - 1) * sizeof(col_mat_entry_t));
         cache->count--;
     }
 
@@ -233,7 +233,7 @@ col_mat_cache_insert(col_mat_cache_t *cache, const col_rel_t *left,
         cache->total_bytes -= cache->entries[lru].mem_bytes;
         col_rel_destroy(cache->entries[lru].result);
         memmove(&cache->entries[lru], &cache->entries[lru + 1],
-                (cache->count - lru - 1) * sizeof(col_mat_entry_t));
+            (cache->count - lru - 1) * sizeof(col_mat_entry_t));
         cache->count--;
     }
 
