@@ -29,20 +29,22 @@
 
 /*
  * Compute partition index for a single row by hashing the specified
- * key columns with XXH3_64bits.
+ * key columns with XXH3_64bits.  Column-major variant reads key values
+ * directly from contiguous column arrays.
  *
  * key_buf is a caller-provided scratch buffer of at least key_count
  * entries, used to concatenate the key column values before hashing.
  */
 static uint32_t
-row_partition(const int64_t *row, const uint32_t *key_cols,
-    uint32_t key_count, uint32_t num_workers, int64_t *key_buf)
+row_partition_colmajor(int64_t *const *columns, uint32_t row,
+    const uint32_t *key_cols, uint32_t key_count,
+    uint32_t num_workers, int64_t *key_buf)
 {
     if (num_workers == 1)
         return 0;
 
     for (uint32_t i = 0; i < key_count; i++)
-        key_buf[i] = row[key_cols[i]];
+        key_buf[i] = columns[key_cols[i]][row];
 
     uint64_t hash = XXH3_64bits(key_buf, key_count * sizeof(int64_t));
     return (uint32_t)(hash % num_workers);
@@ -107,13 +109,13 @@ col_rel_partition_by_key(const col_rel_t *src,
 
     /* Pass 1: count rows per partition */
     for (uint32_t i = 0; i < nrows; i++) {
-        const int64_t *row = col_rel_row(src, i);
-        uint32_t p = row_partition(row, key_cols, key_count, num_workers,
-                key_buf);
+        uint32_t p = row_partition_colmajor(src->columns, i, key_cols,
+                key_count, num_workers, key_buf);
         counts[p]++;
     }
 
     /* Allocate partition relations with exact capacity */
+    uint32_t *part_idx = NULL;
     int rc = 0;
     for (uint32_t w = 0; w < num_workers; w++) {
         char name_buf[256];
@@ -153,14 +155,29 @@ col_rel_partition_by_key(const col_rel_t *src,
         out_parts[w] = part;
     }
 
-    /* Pass 2: scatter rows into partitions */
-    for (uint32_t i = 0; i < nrows; i++) {
-        const int64_t *row = col_rel_row(src, i);
-        uint32_t p = row_partition(row, key_cols, key_count, num_workers,
-                key_buf);
-        col_rel_row_copy_in(out_parts[p], offsets[p], row);
-        offsets[p]++;
+    /* Pass 2: compute partition indices for all rows */
+    if (nrows > 0) {
+        part_idx = (uint32_t *)malloc(nrows * sizeof(uint32_t));
+        if (!part_idx) {
+            rc = ENOMEM;
+            goto cleanup;
+        }
+        for (uint32_t i = 0; i < nrows; i++)
+            part_idx[i] = row_partition_colmajor(src->columns, i, key_cols,
+                    key_count, num_workers, key_buf);
     }
+
+    /* Pass 3: scatter per column (contiguous source reads) */
+    for (uint32_t c = 0; c < ncols; c++) {
+        memset(offsets, 0, num_workers * sizeof(uint32_t));
+        for (uint32_t i = 0; i < nrows; i++) {
+            uint32_t p = part_idx[i];
+            out_parts[p]->columns[c][offsets[p]] = src->columns[c][i];
+            offsets[p]++;
+        }
+    }
+    free(part_idx);
+    part_idx = NULL;
 
     /* Set final row counts */
     for (uint32_t w = 0; w < num_workers; w++)
@@ -176,6 +193,7 @@ col_rel_partition_by_key(const col_rel_t *src,
     return 0;
 
 cleanup:
+    free(part_idx);
     for (uint32_t w = 0; w < num_workers; w++) {
         if (out_parts[w]) {
             col_rel_destroy(out_parts[w]);
