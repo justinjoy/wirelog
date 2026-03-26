@@ -601,6 +601,138 @@ col_radix_sort_rows(int64_t *data, uint32_t nrows, uint32_t ncols)
 }
 
 /*
+ * col_rel_radix_sort: index-permutation LSD radix sort (Phase B, Issue #330).
+ *
+ * Sort sub-range [start_row, start_row + nrows) of r in-place.
+ * Uses col_rel_get() for key extraction (layout-independent).
+ * Sorts a permutation array instead of scattering full rows.
+ * Permutation is applied once at the end via col_rel_row_copy_out/in.
+ *
+ * Falls back to insertion sort (via col_rel_row_cmp) on allocation failure.
+ */
+int
+col_rel_radix_sort(col_rel_t *r, uint32_t start_row, uint32_t nrows)
+{
+    if (nrows <= 1)
+        return 0;
+
+    uint32_t nc = r->ncols;
+
+    /* Allocate permutation arrays (double-buffered for radix scatter) */
+    uint32_t *perm_a = (uint32_t *)malloc(nrows * sizeof(uint32_t));
+    uint32_t *perm_b = (uint32_t *)malloc(nrows * sizeof(uint32_t));
+    if (!perm_a || !perm_b) {
+        /* Fallback: insertion sort using col_rel_row_cmp */
+        free(perm_a);
+        free(perm_b);
+        for (uint32_t i = 1; i < nrows; i++) {
+            int64_t tmp[COL_STACK_MAX];
+            int64_t *tbuf = nc <= COL_STACK_MAX ? tmp
+                : (int64_t *)malloc((size_t)nc * sizeof(int64_t));
+            if (!tbuf)
+                return ENOMEM;
+            col_rel_row_copy_out(r, start_row + i, tbuf);
+            uint32_t j = i;
+            while (j > 0) {
+                /* Compare r[start_row + j - 1] against saved key
+                 * in tbuf (not the relation — row i is overwritten
+                 * after the first shift). */
+                int cmp = 0;
+                for (uint32_t c = 0; c < nc; c++) {
+                    int64_t va = col_rel_get(r, start_row + j - 1, c);
+                    int64_t vb = tbuf[c];
+                    if (va > vb) {
+                        cmp = 1;
+                        break;
+                    }
+                    if (va < vb) {
+                        cmp = -1;
+                        break;
+                    }
+                }
+                if (cmp <= 0)
+                    break;
+                col_rel_row_move(r, start_row + j, start_row + j - 1);
+                j--;
+            }
+            col_rel_row_copy_in(r, start_row + j, tbuf);
+            if (tbuf != tmp)
+                free(tbuf);
+        }
+        return 0;
+    }
+
+    /* Initialize identity permutation */
+    for (uint32_t i = 0; i < nrows; i++)
+        perm_a[i] = i;
+
+    uint32_t *src = perm_a;
+    uint32_t *dst = perm_b;
+    uint32_t count[256];
+    uint32_t prefix[256];
+
+    /* LSD radix sort: column nc-1 (LSB) to column 0 (MSB),
+     * byte 0 (LSB) to byte 7 (MSB) within each column. */
+    for (int c = (int)nc - 1; c >= 0; c--) {
+        for (int b = 0; b < 8; b++) {
+            int shift = b * 8;
+            int is_sign_byte = (b == 7);
+
+            memset(count, 0, sizeof(count));
+            for (uint32_t i = 0; i < nrows; i++) {
+                int64_t val = col_rel_get(r, start_row + src[i],
+                        (uint32_t)c);
+                uint8_t bv = (uint8_t)((uint64_t)val >> shift);
+                if (is_sign_byte)
+                    bv ^= 0x80u;
+                count[bv]++;
+            }
+
+            prefix[0] = 0;
+            for (int i = 1; i < 256; i++)
+                prefix[i] = prefix[i - 1] + count[i - 1];
+
+            for (uint32_t i = 0; i < nrows; i++) {
+                int64_t val = col_rel_get(r, start_row + src[i],
+                        (uint32_t)c);
+                uint8_t bv = (uint8_t)((uint64_t)val >> shift);
+                if (is_sign_byte)
+                    bv ^= 0x80u;
+                dst[prefix[bv]++] = src[i];
+            }
+
+            uint32_t *t = src;
+            src = dst;
+            dst = t;
+        }
+    }
+
+    /* Apply permutation: gather rows into temp buffer, then scatter back.
+     * Uses col_rel_row_copy_out/in for layout independence. */
+    size_t row_bytes = (size_t)nc * sizeof(int64_t);
+    int64_t *temp = (int64_t *)malloc((size_t)nrows * row_bytes);
+    if (!temp) {
+        free(perm_a);
+        free(perm_b);
+        return ENOMEM;
+    }
+
+    /* Gather: copy rows in permuted order into temp */
+    for (uint32_t i = 0; i < nrows; i++)
+        col_rel_row_copy_out(r, start_row + src[i],
+            temp + (size_t)i * nc);
+
+    /* Scatter: write back in order */
+    for (uint32_t i = 0; i < nrows; i++)
+        col_rel_row_copy_in(r, start_row + i, temp + (size_t)i * nc);
+
+    free(temp);
+    free(perm_a);
+    free(perm_b);
+    return 0;
+}
+
+/*
  * col_rel_radix_sort_int64: sort all rows of r in-place using LSD radix sort.
  *
  * Sorts lexicographically by all ncols columns (column 0 is most significant).
@@ -609,7 +741,7 @@ col_radix_sort_rows(int64_t *data, uint32_t nrows, uint32_t ncols)
  *
  * Complexity: O(ncols * 8 * nrows) time, O(nrows * ncols) extra space.
  * Sets r->sorted_nrows = r->nrows on completion.
- * Falls back to qsort on allocation failure.
+ * Falls back to insertion sort on allocation failure.
  */
 void
 col_rel_radix_sort_int64(col_rel_t *r)
@@ -624,6 +756,6 @@ col_rel_radix_sort_int64(col_rel_t *r)
         return;
     }
 
-    col_radix_sort_rows(r->data, r->nrows, r->ncols);
+    col_rel_radix_sort(r, 0, r->nrows);
     r->sorted_nrows = r->nrows;
 }
