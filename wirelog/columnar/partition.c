@@ -282,6 +282,27 @@ col_rel_merge_partitions(col_rel_t **parts, uint32_t num_workers,
             row_offset += parts[w]->nrows;
         }
     }
+
+    /* Merge timestamps if any partition has them */
+    bool has_ts = false;
+    for (uint32_t w = 0; w < num_workers; w++)
+        if (parts[w]->timestamps) {
+            has_ts = true; break;
+        }
+    if (has_ts && total_rows > 0) {
+        merged->timestamps = calloc(total_rows, sizeof(col_delta_timestamp_t));
+        if (!merged->timestamps) {
+            col_rel_destroy(merged); return ENOMEM;
+        }
+        uint32_t off = 0;
+        for (uint32_t w = 0; w < num_workers; w++) {
+            if (parts[w]->nrows > 0 && parts[w]->timestamps)
+                memcpy(merged->timestamps + off, parts[w]->timestamps,
+                    parts[w]->nrows * sizeof(col_delta_timestamp_t));
+            off += parts[w]->nrows;
+        }
+    }
+
     merged->nrows = total_rows;
 
     *out = merged;

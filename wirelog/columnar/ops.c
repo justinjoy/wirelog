@@ -5039,3 +5039,80 @@ col_op_consolidate_diff(eval_stack_t *stack, wl_col_session_t *sess)
 
     return eval_stack_push(stack, work, work_owned);
 }
+
+/* ======================================================================== */
+/* Exchange Operator (Issue #316)                                           */
+/* ======================================================================== */
+
+/*
+ * col_op_exchange:
+ * Redistribute tuples by hash(key_columns) % W across workers.
+ *
+ * Single-worker (W=1): no-op, leave stack unchanged.
+ *
+ * Multi-worker: pops input from eval stack, partitions it into W
+ * sub-relations stored in coord->exchange_bufs[my_worker_id][0..W-1].
+ * Does NOT push a result -- the coordinator gathers exchange_bufs[*][w]
+ * for each worker w after the barrier.
+ *
+ * Precondition: coord->exchange_bufs must be allocated by the caller
+ * (coordinator) before submitting workers to the workqueue.
+ */
+int
+col_op_exchange(const wl_plan_op_t *op, eval_stack_t *stack,
+    wl_col_session_t *sess)
+{
+    if (!op->opaque_data)
+        return EINVAL;
+
+    const wl_plan_op_exchange_t *meta
+        = (const wl_plan_op_exchange_t *)op->opaque_data;
+
+    /* Single-worker no-op: leave stack unchanged */
+    if (meta->num_workers <= 1)
+        return 0;
+
+    /* Pop input from eval stack */
+    if (stack->top == 0)
+        return EINVAL;
+    eval_entry_t input_entry = eval_stack_pop(stack);
+    col_rel_t *input = input_entry.rel;
+
+    /* NULL or empty input is a no-op for exchange */
+    if (!input || input->ncols == 0) {
+        if (input_entry.owned && input)
+            col_rel_destroy(input);
+        return 0;
+    }
+
+    /* Validate key column indices against input schema */
+    if (input->ncols > 0) {
+        for (uint32_t i = 0; i < meta->key_col_count; i++) {
+            if (meta->key_col_idxs[i] >= input->ncols) {
+                if (input_entry.owned)
+                    col_rel_destroy(input);
+                return EINVAL;
+            }
+        }
+    }
+
+    /* Locate coordinator and determine this worker's id */
+    wl_col_session_t *coord = sess->coordinator ? sess->coordinator : sess;
+    uint32_t my_id = sess->coordinator ? sess->worker_id : 0;
+
+    if (!coord->exchange_bufs || my_id >= coord->exchange_num_workers) {
+        if (input_entry.owned)
+            col_rel_destroy(input);
+        return EINVAL;
+    }
+
+    /* Scatter: partition input into exchange_bufs[my_id][0..W-1] */
+    int rc = col_rel_partition_by_key(input, meta->key_col_idxs,
+            meta->key_col_count, meta->num_workers,
+            coord->exchange_bufs[my_id]);
+
+    if (input_entry.owned)
+        col_rel_destroy(input);
+
+    return rc;
+}
