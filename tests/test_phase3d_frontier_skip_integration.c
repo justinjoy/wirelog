@@ -51,18 +51,77 @@ typedef struct {
 } col_delta_timestamp_t;
 
 /*
- * col_rel_t - minimal columnar relation
+ * col_rel_t - minimal columnar relation (column-major, Phase C)
  */
 typedef struct {
     char *name;
     uint32_t ncols;
+    int64_t **columns;         /* column-major: columns[col][row] */
     uint32_t nrows;
     uint32_t capacity;
-    int64_t *data;
-    col_delta_timestamp_t *timestamps;
     char **col_names;
     struct ArrowSchema *arrow_schema;
+    col_delta_timestamp_t *timestamps;
+    int64_t *row_scratch;
 } col_rel_t;
+
+/* Column-major allocation helpers (inline, matching internal.h) */
+static inline int64_t **
+col_columns_alloc(uint32_t ncols, uint32_t capacity)
+{
+    if (ncols == 0)
+        return NULL;
+    int64_t **cols = (int64_t **)calloc(ncols, sizeof(int64_t *));
+    if (!cols)
+        return NULL;
+    for (uint32_t c = 0; c < ncols; c++) {
+        cols[c] = (int64_t *)malloc(capacity > 0
+            ? (size_t)capacity * sizeof(int64_t) : sizeof(int64_t));
+        if (!cols[c]) {
+            for (uint32_t j = 0; j < c; j++)
+                free(cols[j]);
+            free(cols);
+            return NULL;
+        }
+    }
+    return cols;
+}
+
+static inline void
+col_columns_free(int64_t **cols, uint32_t ncols)
+{
+    if (!cols)
+        return;
+    for (uint32_t c = 0; c < ncols; c++)
+        free(cols[c]);
+    free(cols);
+}
+
+static inline int
+col_columns_realloc(int64_t **cols, uint32_t ncols, uint32_t new_cap)
+{
+    for (uint32_t c = 0; c < ncols; c++) {
+        int64_t *nc = (int64_t *)realloc(cols[c],
+                (size_t)new_cap * sizeof(int64_t));
+        if (!nc)
+            return -1;
+        cols[c] = nc;
+    }
+    return 0;
+}
+
+static inline int64_t
+col_rel_get(const col_rel_t *r, uint32_t row, uint32_t col)
+{
+    return r->columns[col][row];
+}
+
+static inline void
+col_rel_row_copy_in(col_rel_t *r, uint32_t row, const int64_t *src)
+{
+    for (uint32_t c = 0; c < r->ncols; c++)
+        r->columns[c][row] = src[c];
+}
 
 /* Test result tracking */
 static int test_count = 0;
@@ -70,23 +129,23 @@ static int pass_count = 0;
 static int fail_count = 0;
 
 #define PASS(msg)                    \
-    do {                             \
-        pass_count++;                \
-        printf("PASS: %s\n", (msg)); \
-    } while (0)
+        do {                             \
+            pass_count++;                \
+            printf("PASS: %s\n", (msg)); \
+        } while (0)
 
 #define FAIL(msg)                    \
-    do {                             \
-        fail_count++;                \
-        printf("FAIL: %s\n", (msg)); \
-        return;                      \
-    } while (0)
+        do {                             \
+            fail_count++;                \
+            printf("FAIL: %s\n", (msg)); \
+            return;                      \
+        } while (0)
 
 #define ASSERT(cond, msg) \
-    do {                  \
-        if (!(cond))      \
+        do {                  \
+            if (!(cond))      \
             FAIL(msg);    \
-    } while (0)
+        } while (0)
 
 /* ================================================================
  * Helpers
@@ -127,7 +186,8 @@ test_rel_free(col_rel_t *r)
     if (!r)
         return;
     free(r->name);
-    free(r->data);
+    col_columns_free(r->columns, r->ncols);
+    free(r->row_scratch);
     free(r->timestamps);
     if (r->col_names) {
         for (uint32_t i = 0; i < r->ncols; i++)
@@ -139,28 +199,28 @@ test_rel_free(col_rel_t *r)
 
 static int
 test_rel_append_row_mult(col_rel_t *r, const int64_t *row, uint32_t iter,
-                         uint32_t strat, uint32_t rule_id, int64_t multiplicity)
+    uint32_t strat, uint32_t rule_id, int64_t multiplicity)
 {
     if (r->nrows >= r->capacity) {
         uint32_t cap = r->capacity == 0 ? 16 : r->capacity * 2;
-        int64_t *nd = (int64_t *)realloc(r->data, (size_t)cap * r->ncols
-                                                      * sizeof(int64_t));
-        if (!nd)
-            return -1;
-        r->data = nd;
+        if (!r->columns) {
+            r->columns = col_columns_alloc(r->ncols, cap);
+            if (!r->columns)
+                return -1;
+        } else {
+            if (col_columns_realloc(r->columns, r->ncols, cap) != 0)
+                return -1;
+        }
 
         col_delta_timestamp_t *nt = (col_delta_timestamp_t *)realloc(
             r->timestamps, (size_t)cap * sizeof(col_delta_timestamp_t));
-        if (!nt) {
-            free(nd);
+        if (!nt)
             return -1;
-        }
         r->timestamps = nt;
         r->capacity = cap;
     }
 
-    memcpy(&r->data[(size_t)r->nrows * r->ncols], row,
-           (size_t)r->ncols * sizeof(int64_t));
+    col_rel_row_copy_in(r, r->nrows, row);
 
     r->timestamps[r->nrows].iteration = iter;
     r->timestamps[r->nrows].stratum = strat;
@@ -197,7 +257,7 @@ test_phase3d_multiiter_skip(void)
     col_rel_t *iter3 = test_rel_alloc(1); /* Unreachable due to skip */
 
     ASSERT(iter0 != NULL && iter1 != NULL && iter2 != NULL && iter3 != NULL,
-           "allocate iteration relations");
+        "allocate iteration relations");
 
     /* Iteration 0: Base facts: insert facts A and B */
     int64_t fact_a[] = { 1 };
@@ -258,7 +318,7 @@ test_phase3d_correctness_skip_vs_noskip(void)
     col_rel_t *without_skip = test_rel_alloc(1);
 
     ASSERT(with_skip != NULL && without_skip != NULL,
-           "allocate comparison relations");
+        "allocate comparison relations");
 
     /* Both evaluations produce the same facts */
     int64_t fact_x[] = { 10 };
@@ -277,13 +337,13 @@ test_phase3d_correctness_skip_vs_noskip(void)
 
     /* Verify output equality */
     ASSERT(with_skip->nrows == without_skip->nrows,
-           "both paths produce same number of facts");
+        "both paths produce same number of facts");
     for (uint32_t i = 0; i < with_skip->nrows; i++) {
-        ASSERT(with_skip->data[i] == without_skip->data[i],
-               "both paths produce identical data");
+        ASSERT(col_rel_get(with_skip, i, 0) == col_rel_get(without_skip, i, 0),
+            "both paths produce identical data");
         ASSERT(with_skip->timestamps[i].multiplicity
-                   == without_skip->timestamps[i].multiplicity,
-               "both paths preserve multiplicities");
+            == without_skip->timestamps[i].multiplicity,
+            "both paths preserve multiplicities");
     }
 
     test_rel_free(with_skip);
@@ -306,7 +366,7 @@ main(void)
 
     printf("\n========================================\n");
     printf("Results: %d passed, %d failed (out of %d tests)\n", pass_count,
-           fail_count, test_count);
+        fail_count, test_count);
     printf("========================================\n");
 
     return fail_count == 0 ? 0 : 1;
