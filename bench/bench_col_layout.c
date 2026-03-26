@@ -81,7 +81,7 @@ bench_col_scan_strided(col_rel_t *r, uint32_t key_col)
     bench_time_t t0 = bench_time_now();
     int64_t sum = 0;
     for (uint32_t i = 0; i < r->nrows; i++)
-        sum += r->data[(size_t)i * r->ncols + key_col];
+        sum += col_rel_get(r, i, key_col);
     g_sink = sum;
     bench_time_t t1 = bench_time_now();
     return bench_time_diff_ms(t0, t1);
@@ -245,7 +245,7 @@ fn_scan_contiguous(void *ctx)
     /* Extract column 0 into contiguous array */
     int64_t *col = (int64_t *)malloc(s->rel->nrows * sizeof(int64_t));
     for (uint32_t i = 0; i < s->rel->nrows; i++)
-        col[i] = s->rel->data[(size_t)i * s->rel->ncols + s->key_col];
+        col[i] = col_rel_get(s->rel, i, s->key_col);
     double t = bench_col_scan_contiguous(col, s->rel->nrows);
     free(col);
     return t;
@@ -318,7 +318,7 @@ main(void)
                     = (int64_t *)malloc(nrows * sizeof(int64_t));
                 for (uint32_t i = 0; i < nrows; i++)
                     col_arrays[c][i]
-                        = r->data[(size_t)i * ncols + c];
+                        = col_rel_get(r, i, c);
             }
             reconstruct_ctx_t recon_ctx = {
                 .col_arrays = (const int64_t **)col_arrays,
