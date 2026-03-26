@@ -20,37 +20,38 @@
 #include <assert.h>
 
 /* Test result macros */
-#define TEST(name) static void test_##name(void)
+#define TEST(name) static void test_ ## name(void)
 #define PASS() printf("  ✓ %s\n", __func__)
 #define FAIL(msg)                              \
-    do {                                       \
-        printf("  ✗ %s: %s\n", __func__, msg); \
-        exit(1);                               \
-    } while (0)
+        do {                                       \
+            printf("  ✗ %s: %s\n", __func__, msg); \
+            exit(1);                               \
+        } while (0)
 
 #define ASSERT_EQ(a, b, msg) \
-    if ((a) != (b))          \
-    FAIL(msg)
+        if ((a) != (b))          \
+        FAIL(msg)
 
 #define ASSERT_NE(a, b, msg) \
-    if ((a) == (b))          \
-    FAIL(msg)
+        if ((a) == (b))          \
+        FAIL(msg)
 
 #define ASSERT_PTR(p, msg) \
-    if (!(p))              \
-    FAIL(msg)
+        if (!(p))              \
+        FAIL(msg)
 
 #define ASSERT_PTR_NULL(p, msg) \
-    if ((p))                    \
-    FAIL(msg)
+        if ((p))                    \
+        FAIL(msg)
 
-/* Minimal mock for col_rel_t structure */
+/* Minimal mock for col_rel_t structure (column-major) */
 typedef struct {
     char *name;
     uint32_t ncols;
-    int64_t *data;
+    int64_t **columns;     /* column-major: columns[col][row] */
     uint32_t nrows;
     uint32_t capacity;
+    int64_t *row_scratch;
 } mock_col_rel_t;
 
 /* Helper: create mock relation */
@@ -65,8 +66,14 @@ mock_col_rel_new(const char *name, uint32_t ncols, uint32_t init_capacity)
     r->ncols = ncols;
     r->capacity = init_capacity;
     r->nrows = 0;
-    r->data = (int64_t *)malloc(init_capacity * ncols * sizeof(int64_t));
-    ASSERT_PTR(r->data, "data malloc failed");
+    r->columns = (int64_t **)calloc(ncols, sizeof(int64_t *));
+    ASSERT_PTR(r->columns, "columns malloc failed");
+    for (uint32_t c = 0; c < ncols; c++) {
+        r->columns[c] = (int64_t *)malloc(init_capacity * sizeof(int64_t));
+        ASSERT_PTR(r->columns[c], "column malloc failed");
+    }
+    r->row_scratch = (int64_t *)malloc(ncols * sizeof(int64_t));
+    ASSERT_PTR(r->row_scratch, "row_scratch malloc failed");
 
     return r;
 }
@@ -77,7 +84,12 @@ mock_col_rel_free(mock_col_rel_t *r)
     if (!r)
         return;
     free(r->name);
-    free(r->data);
+    if (r->columns) {
+        for (uint32_t c = 0; c < r->ncols; c++)
+            free(r->columns[c]);
+        free(r->columns);
+    }
+    free(r->row_scratch);
     free(r);
 }
 
@@ -86,8 +98,8 @@ static void
 mock_col_rel_add_row(mock_col_rel_t *r, const int64_t *row)
 {
     ASSERT_EQ(r->nrows < r->capacity, 1, "capacity exceeded");
-    memcpy(r->data + (size_t)r->nrows * r->ncols, row,
-           (size_t)r->ncols * sizeof(int64_t));
+    for (uint32_t c = 0; c < r->ncols; c++)
+        r->columns[c][r->nrows] = row[c];
     r->nrows++;
 }
 

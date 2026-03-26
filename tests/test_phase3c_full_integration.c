@@ -56,18 +56,77 @@ typedef struct {
 
 /*
  * col_rel_t - minimal columnar relation representation.
- * Must exactly match the definition in columnar_nanoarrow.h.
+ * Must exactly match the definition in internal.h (column-major, Phase C).
  */
 typedef struct {
     char *name;
     uint32_t ncols;
+    int64_t **columns;         /* column-major: columns[col][row] */
     uint32_t nrows;
     uint32_t capacity;
-    int64_t *data;
-    col_delta_timestamp_t *timestamps;
     char **col_names;
     struct ArrowSchema *arrow_schema;
+    col_delta_timestamp_t *timestamps;
+    int64_t *row_scratch;
 } col_rel_t;
+
+/* Column-major allocation helpers (inline, matching internal.h) */
+static inline int64_t **
+col_columns_alloc(uint32_t ncols, uint32_t capacity)
+{
+    if (ncols == 0)
+        return NULL;
+    int64_t **cols = (int64_t **)calloc(ncols, sizeof(int64_t *));
+    if (!cols)
+        return NULL;
+    for (uint32_t c = 0; c < ncols; c++) {
+        cols[c] = (int64_t *)malloc(capacity > 0
+            ? (size_t)capacity * sizeof(int64_t) : sizeof(int64_t));
+        if (!cols[c]) {
+            for (uint32_t j = 0; j < c; j++)
+                free(cols[j]);
+            free(cols);
+            return NULL;
+        }
+    }
+    return cols;
+}
+
+static inline void
+col_columns_free(int64_t **cols, uint32_t ncols)
+{
+    if (!cols)
+        return;
+    for (uint32_t c = 0; c < ncols; c++)
+        free(cols[c]);
+    free(cols);
+}
+
+static inline int
+col_columns_realloc(int64_t **cols, uint32_t ncols, uint32_t new_cap)
+{
+    for (uint32_t c = 0; c < ncols; c++) {
+        int64_t *nc = (int64_t *)realloc(cols[c],
+                (size_t)new_cap * sizeof(int64_t));
+        if (!nc)
+            return -1;
+        cols[c] = nc;
+    }
+    return 0;
+}
+
+static inline int64_t
+col_rel_get(const col_rel_t *r, uint32_t row, uint32_t col)
+{
+    return r->columns[col][row];
+}
+
+static inline void
+col_rel_row_copy_in(col_rel_t *r, uint32_t row, const int64_t *src)
+{
+    for (uint32_t c = 0; c < r->ncols; c++)
+        r->columns[c][row] = src[c];
+}
 
 /* Test result tracking */
 static int test_count = 0;
@@ -75,23 +134,23 @@ static int pass_count = 0;
 static int fail_count = 0;
 
 #define PASS(msg)                    \
-    do {                             \
-        pass_count++;                \
-        printf("PASS: %s\n", (msg)); \
-    } while (0)
+        do {                             \
+            pass_count++;                \
+            printf("PASS: %s\n", (msg)); \
+        } while (0)
 
 #define FAIL(msg)                    \
-    do {                             \
-        fail_count++;                \
-        printf("FAIL: %s\n", (msg)); \
-        return;                      \
-    } while (0)
+        do {                             \
+            fail_count++;                \
+            printf("FAIL: %s\n", (msg)); \
+            return;                      \
+        } while (0)
 
 #define ASSERT(cond, msg) \
-    do {                  \
-        if (!(cond))      \
+        do {                  \
+            if (!(cond))      \
             FAIL(msg);    \
-    } while (0)
+        } while (0)
 
 /* ----------------------------------------------------------------
  * Helper: allocate col_rel_t with ncols columns.
@@ -134,7 +193,8 @@ test_rel_free(col_rel_t *r)
     if (!r)
         return;
     free(r->name);
-    free(r->data);
+    col_columns_free(r->columns, r->ncols);
+    free(r->row_scratch);
     free(r->timestamps);
     if (r->col_names) {
         for (uint32_t i = 0; i < r->ncols; i++)
@@ -149,28 +209,28 @@ test_rel_free(col_rel_t *r)
  * ---------------------------------------------------------------- */
 static int
 test_rel_append_row_mult(col_rel_t *r, const int64_t *row, uint32_t iter,
-                         uint32_t strat, uint32_t rule_id, int64_t multiplicity)
+    uint32_t strat, uint32_t rule_id, int64_t multiplicity)
 {
     if (r->nrows >= r->capacity) {
         uint32_t cap = r->capacity == 0 ? 16 : r->capacity * 2;
-        int64_t *nd = (int64_t *)realloc(r->data, (size_t)cap * r->ncols
-                                                      * sizeof(int64_t));
-        if (!nd)
-            return -1;
-        r->data = nd;
+        if (!r->columns) {
+            r->columns = col_columns_alloc(r->ncols, cap);
+            if (!r->columns)
+                return -1;
+        } else {
+            if (col_columns_realloc(r->columns, r->ncols, cap) != 0)
+                return -1;
+        }
 
         col_delta_timestamp_t *nt = (col_delta_timestamp_t *)realloc(
             r->timestamps, (size_t)cap * sizeof(col_delta_timestamp_t));
-        if (!nt) {
-            free(nd);
+        if (!nt)
             return -1;
-        }
         r->timestamps = nt;
         r->capacity = cap;
     }
 
-    memcpy(&r->data[(size_t)r->nrows * r->ncols], row,
-           (size_t)r->ncols * sizeof(int64_t));
+    col_rel_row_copy_in(r, r->nrows, row);
 
     r->timestamps[r->nrows].iteration = iter;
     r->timestamps[r->nrows].stratum = strat;
@@ -200,11 +260,11 @@ test_phase3c_base_iteration(void)
     int64_t row3[] = { 3, 30 };
 
     ASSERT(test_rel_append_row_mult(base, row1, 0, 0, 0, 1) == 0,
-           "append row1 with mult=1");
+        "append row1 with mult=1");
     ASSERT(test_rel_append_row_mult(base, row2, 0, 0, 0, 1) == 0,
-           "append row2 with mult=1");
+        "append row2 with mult=1");
     ASSERT(test_rel_append_row_mult(base, row3, 0, 0, 0, 1) == 0,
-           "append row3 with mult=1");
+        "append row3 with mult=1");
 
     ASSERT(base->nrows == 3, "base has 3 rows");
     ASSERT(base->timestamps[0].multiplicity == 1, "row1 mult=1");
@@ -230,7 +290,7 @@ test_phase3c_join_output(void)
     col_rel_t *output = test_rel_alloc(2);
 
     ASSERT(left != NULL && right != NULL && output != NULL,
-           "allocate left, right, output relations");
+        "allocate left, right, output relations");
 
     /* Iteration 1: left fact with mult=2 */
     int64_t l1[] = { 10 };
@@ -246,7 +306,7 @@ test_phase3c_join_output(void)
 
     ASSERT(output->nrows == 1, "output has 1 row");
     ASSERT(output->timestamps[0].multiplicity == 6,
-           "JOIN multiplies multiplicities (2*3=6)");
+        "JOIN multiplies multiplicities (2*3=6)");
 
     test_rel_free(left);
     test_rel_free(right);
@@ -268,7 +328,7 @@ test_phase3c_reduce_output(void)
     col_rel_t *reduced = test_rel_alloc(2); /* (key, count) */
 
     ASSERT(joined != NULL && reduced != NULL,
-           "allocate joined and reduced relations");
+        "allocate joined and reduced relations");
 
     /* Iteration 1: three rows with key=1, multiplicities 2, 3, -1 */
     int64_t r1[] = { 1, 100 };
@@ -284,7 +344,8 @@ test_phase3c_reduce_output(void)
     test_rel_append_row_mult(reduced, reduce_out, 1, 0, 0, 1);
 
     ASSERT(reduced->nrows == 1, "reduced has 1 row");
-    ASSERT(reduced->data[1] == 4, "COUNT aggregates multiplicities (2+3-1=4)");
+    ASSERT(col_rel_get(reduced, 0, 1) == 4,
+        "COUNT aggregates multiplicities (2+3-1=4)");
 
     test_rel_free(joined);
     test_rel_free(reduced);
@@ -309,7 +370,7 @@ test_phase3c_delta_across_iterations(void)
     col_rel_t *delta = test_rel_alloc(1);
 
     ASSERT(iter0 != NULL && iter1 != NULL && delta != NULL,
-           "allocate iteration relations");
+        "allocate iteration relations");
 
     /* Iteration 0: fact with mult=2 */
     int64_t fact0[] = { 100 };
@@ -325,7 +386,7 @@ test_phase3c_delta_across_iterations(void)
 
     ASSERT(delta->nrows == 1, "delta has 1 row");
     ASSERT(delta->timestamps[0].multiplicity == 3,
-           "DELTA computes difference (5-2=3)");
+        "DELTA computes difference (5-2=3)");
 
     test_rel_free(iter0);
     test_rel_free(iter1);
@@ -350,7 +411,7 @@ main(void)
 
     printf("\n========================================\n");
     printf("Results: %d passed, %d failed (out of %d tests)\n", pass_count,
-           fail_count, test_count);
+        fail_count, test_count);
     printf("========================================\n");
 
     return fail_count == 0 ? 0 : 1;
