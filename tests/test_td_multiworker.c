@@ -532,6 +532,110 @@ test_tc_w1_fallback(void)
 }
 
 /* ======================================================================== */
+/* Determinism Tests                                                        */
+/* ======================================================================== */
+
+/*
+ * test_tc_determinism_w4:
+ * Run W=4 TC on 5-node chain 5 times; all runs must produce identical
+ * row counts, verifying deterministic behavior of the TDD path.
+ */
+static int
+test_tc_determinism_w4(void)
+{
+    TEST("W=4 TC determinism: 5 runs produce identical row counts");
+
+    const uint32_t RUNS = 5;
+    uint32_t counts[5];
+
+    for (uint32_t r = 0; r < RUNS; r++) {
+        wl_plan_t *plan = NULL;
+        wirelog_program_t *prog = NULL;
+        wl_col_session_t *sess = make_tc_session(4, &plan, &prog);
+        if (!sess) {
+            FAIL("session create");
+            return 1;
+        }
+
+        int64_t rows[] = { 1, 2, 2, 3, 3, 4, 4, 5 };
+        if (insert_edges(sess, rows, 4) != 0) {
+            cleanup_session(sess, plan, prog);
+            FAIL("insert");
+            return 1;
+        }
+
+        int rc = wl_session_step(&sess->base);
+        if (rc != 0) {
+            cleanup_session(sess, plan, prog);
+            FAIL("session step failed");
+            return 1;
+        }
+
+        counts[r] = count_rows(sess, "tc");
+        cleanup_session(sess, plan, prog);
+    }
+
+    for (uint32_t r = 1; r < RUNS; r++) {
+        if (counts[r] != counts[0]) {
+            FAIL("W=4 non-deterministic: row counts differ across runs");
+            return 1;
+        }
+    }
+    PASS();
+    return 0;
+}
+
+/*
+ * test_tc_determinism_w2:
+ * Run W=2 TC on 5-node chain 5 times; all runs must produce identical
+ * row counts.
+ */
+static int
+test_tc_determinism_w2(void)
+{
+    TEST("W=2 TC determinism: 5 runs produce identical row counts");
+
+    const uint32_t RUNS = 5;
+    uint32_t counts[5];
+
+    for (uint32_t r = 0; r < RUNS; r++) {
+        wl_plan_t *plan = NULL;
+        wirelog_program_t *prog = NULL;
+        wl_col_session_t *sess = make_tc_session(2, &plan, &prog);
+        if (!sess) {
+            FAIL("session create");
+            return 1;
+        }
+
+        int64_t rows[] = { 1, 2, 2, 3, 3, 4, 4, 5 };
+        if (insert_edges(sess, rows, 4) != 0) {
+            cleanup_session(sess, plan, prog);
+            FAIL("insert");
+            return 1;
+        }
+
+        int rc = wl_session_step(&sess->base);
+        if (rc != 0) {
+            cleanup_session(sess, plan, prog);
+            FAIL("session step failed");
+            return 1;
+        }
+
+        counts[r] = count_rows(sess, "tc");
+        cleanup_session(sess, plan, prog);
+    }
+
+    for (uint32_t r = 1; r < RUNS; r++) {
+        if (counts[r] != counts[0]) {
+            FAIL("W=2 non-deterministic: row counts differ across runs");
+            return 1;
+        }
+    }
+    PASS();
+    return 0;
+}
+
+/* ======================================================================== */
 /* Main                                                                     */
 /* ======================================================================== */
 
@@ -552,6 +656,10 @@ main(void)
     test_tc_empty_w4();
     test_tc_single_tuple_w4();
     test_tc_w1_fallback();
+
+    printf("\n-- Determinism --\n");
+    test_tc_determinism_w4();
+    test_tc_determinism_w2();
 
     printf("\n%d/%d tests passed", tests_passed, tests_run);
     if (tests_failed > 0)
