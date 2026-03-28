@@ -1112,6 +1112,12 @@ col_rel_radix_sort(col_rel_t *r, uint32_t start_row, uint32_t nrows)
     uint32_t count[256];
     uint32_t prefix[256];
 
+#ifdef WL_RADIX_BENCH
+    /* Phase 0: per-pass timing accumulators (Issue #363). */
+    uint64_t _tU = 0, _tC = 0, _tS = 0, _tA = 0, _t0 = 0;
+    uint32_t _nSk = 0, _nPs = 0;
+#endif
+
     /* LSD radix sort: column nc-1 (LSB) to column 0 (MSB),
      * byte 0 (LSB) to byte 7 (MSB) within each column.
      * Optimization (Issue #334): direct column pointer avoids accessor
@@ -1134,14 +1140,33 @@ col_rel_radix_sort(col_rel_t *r, uint32_t start_row, uint32_t nrows)
                     first_bv ^= 0x80u;
             }
             /* SIMD-accelerated uniform check (Issue #363) */
+#ifdef WL_RADIX_BENCH
+            _t0 = now_ns();
+#endif
             if (radix_uniform_check_fast(col_data, start_row, src, nrows,
-                shift, is_sign_byte, first_bv))
+                shift, is_sign_byte, first_bv)) {
+#ifdef WL_RADIX_BENCH
+                _tU += now_ns() - _t0;
+                _nSk++;
+#endif
                 continue; /* all values identical at this byte — skip */
+            }
+#ifdef WL_RADIX_BENCH
+            _tU += now_ns() - _t0;
+            _nPs++;
+            _t0 = now_ns();
+#endif
 
             /* Count pass + histogram: SIMD-accelerated (Issue #363) */
             radix_count_pass_fast(col_data, start_row, src, nrows,
                 shift, is_sign_byte, bv_cache, count);
+#ifdef WL_RADIX_BENCH
+            _tC += now_ns() - _t0;
+#endif
 
+#ifdef WL_RADIX_BENCH
+            _t0 = now_ns();
+#endif
             prefix[0] = 0;
             for (int i = 1; i < 256; i++)
                 prefix[i] = prefix[i - 1] + count[i - 1];
@@ -1150,19 +1175,38 @@ col_rel_radix_sort(col_rel_t *r, uint32_t start_row, uint32_t nrows)
              * dst[prefix[bv_cache[i]]] is a scattered write; prefetching 8
              * elements ahead hides L2 miss latency on the destination cache
              * line before it is written. bv_cache and src are sequential so
-             * the hardware prefetcher covers them automatically. */
+             * the hardware prefetcher covers them automatically.
+             *
+             * Prefetch notes (code review feedback):
+             * - Guard uses strict < not <= : bv_cache has exactly nrows
+             *   elements so bv_cache[nrows] is out of bounds; < is correct.
+             * - Address dst+prefix[bv_cache[i+8]] is approximate: prefix[]
+             *   slots have already been incremented by earlier elements in the
+             *   same bucket, so the prefetch may be up to 8 positions ahead of
+             *   the actual write target for skewed distributions. This is an
+             *   approximation, not a correctness bug; the cache line granularity
+             *   makes it effective in practice.
+             * - locality=1 (L2 temporal): dst is re-read sequentially in the
+             *   next radix pass; retaining it in L2 avoids an extra DRAM fetch
+             *   on ARM (locality=0/NTA would bypass L2 on Apple M-series). */
             for (uint32_t i = 0; i < nrows; i++) {
                 if (i + 8u < nrows)
-                    __builtin_prefetch(dst + prefix[bv_cache[i + 8u]], 1, 0);
+                    __builtin_prefetch(dst + prefix[bv_cache[i + 8u]], 1, 1);
                 dst[prefix[bv_cache[i]]++] = src[i];
             }
 
             uint32_t *t = src;
             src = dst;
             dst = t;
+#ifdef WL_RADIX_BENCH
+            _tS += now_ns() - _t0;
+#endif
         }
     }
 
+#ifdef WL_RADIX_BENCH
+    _t0 = now_ns();
+#endif
     /* Apply permutation per-column (Issue #334): contiguous access pattern.
      * Each column is gathered independently, which is cache-friendly for
      * column-major layout. */
@@ -1187,6 +1231,20 @@ col_rel_radix_sort(col_rel_t *r, uint32_t start_row, uint32_t nrows)
     free(perm_a);
     free(perm_b);
     free(bv_cache);
+#ifdef WL_RADIX_BENCH
+    _tA = now_ns() - _t0;
+    {
+        uint64_t _tot = _tU + _tC + _tS + _tA;
+        fprintf(stderr,
+            "[radix-bench] nrows=%u nc=%u pass=%u skip=%u "
+            "uniform=%.0f%% count=%.0f%% scatter=%.0f%% apply=%.0f%% "
+            "total_ms=%.3f\n",
+            nrows, nc, _nPs, _nSk,
+            100.0 * _tU / (_tot + 1), 100.0 * _tC / (_tot + 1),
+            100.0 * _tS / (_tot + 1), 100.0 * _tA / (_tot + 1),
+            (double)_tot * 1e-6);
+    }
+#endif
     return 0;
 }
 
