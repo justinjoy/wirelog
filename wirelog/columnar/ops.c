@@ -3607,10 +3607,15 @@ col_op_consolidate_incremental_delta(col_rel_t *rel, uint32_t old_nrows,
         }
     }
 
-    /* Initialize run tracking from legacy sorted_nrows if needed (#369) */
-    if (rel->run_count == 0 && old_nrows > 0) {
-        rel->run_count = 1;
-        rel->run_ends[0] = old_nrows;
+    /* Initialize or repair run tracking (#369, #376).
+     * After retraction/re-eval the relation may be cleared (nrows reduced)
+     * without resetting run_count/run_ends, leaving stale metadata.
+     * Normalize to a single run covering [0, old_nrows) when inconsistent. */
+    if (rel->run_count == 0
+        || rel->run_ends[rel->run_count - 1] != old_nrows) {
+        rel->run_count = (old_nrows > 0) ? 1 : 0;
+        if (old_nrows > 0)
+            rel->run_ends[0] = old_nrows;
     }
 
     /* Fast-path (Issue #239): if all delta rows sort after max of all runs,
@@ -3713,9 +3718,18 @@ col_op_consolidate_incremental_delta(col_rel_t *rel, uint32_t old_nrows,
                 rel->run_ends[rel->run_count] = rel->nrows;
                 rel->run_count++;
             } else {
+                /* Compact existing runs, preserving novel rows (#376).
+                 * Novel rows at [old_nrows..old_nrows+novel_count) are not
+                 * in any run yet.  compact_runs only merges run-bounded
+                 * data so novel rows are physically untouched.  Relocate
+                 * them adjacent to the compacted prefix afterwards. */
                 int rc = col_rel_compact_runs(rel);
                 if (rc != 0)
                     return rc;
+                uint32_t compacted = rel->nrows;
+                for (uint32_t j = 0; j < novel_count; j++)
+                    col_rel_row_move(rel, compacted + j, old_nrows + j);
+                rel->nrows = compacted + novel_count;
                 rel->run_ends[rel->run_count] = rel->nrows;
                 rel->run_count++;
             }
@@ -3760,17 +3774,23 @@ col_op_consolidate_incremental_delta(col_rel_t *rel, uint32_t old_nrows,
         : (int64_t *)malloc((size_t)nc * sizeof(int64_t));
 
     /* For fallback merge, we need a single sorted prefix.
-     * If multiple runs exist, compact first. */
+     * If multiple runs exist, compact first (#377 fix).
+     * compact_runs only merges run-bounded data; delta rows at
+     * [old_nrows..old_nrows+d_unique) are physically untouched.
+     * Relocate them adjacent to the compacted prefix afterwards. */
     if (rel->run_count > 1) {
+        uint32_t delta_phys = old_nrows; /* physical location of delta */
         int rc = col_rel_compact_runs(rel);
         if (rc != 0) {
             if (delta_row != _delta_row_buf)
                 free(delta_row);
             return rc;
         }
-        /* After compaction, old_nrows may have changed due to cross-run
-         * dedup.  Update so the 2-pointer merge uses the correct prefix. */
-        old_nrows = rel->nrows - d_unique;
+        uint32_t compacted = rel->nrows;
+        for (uint32_t j = 0; j < d_unique; j++)
+            col_rel_row_move(rel, compacted + j, delta_phys + j);
+        old_nrows = compacted;
+        rel->nrows = compacted + d_unique;
         max_rows = old_nrows + d_unique;
     }
 
