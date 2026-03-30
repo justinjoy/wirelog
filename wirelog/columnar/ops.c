@@ -1772,6 +1772,65 @@ keys_match_neon(const int64_t *lrow, const uint32_t *lk, const int64_t *rrow,
 #define keys_match_fast keys_match_scalar
 #endif
 
+/* --- Right-child filter helper ------------------------------------------- */
+
+/**
+ * Apply a serialized filter expression to a relation, returning a new
+ * pool-allocated relation containing only the passing rows.
+ * The returned relation is owned by pool and freed when the pool resets.
+ * Returns NULL on allocation failure.
+ */
+static col_rel_t *
+apply_right_filter(const wl_plan_expr_buffer_t *fexpr, col_rel_t *rel,
+    delta_pool_t *pool)
+{
+    const uint8_t *buf = fexpr->data;
+    uint32_t bsz = fexpr->size;
+
+    col_rel_t *out = col_rel_pool_new_like(pool, "$rfilter", rel);
+    if (!out)
+        return NULL;
+
+    /* Fast path: simple colA CMP CONST or colA CMP colB predicate */
+    simple_filter_cmp_t cmp;
+    if (filter_is_simple_cmp(buf, bsz, &cmp)) {
+        for (uint32_t r = 0; r < rel->nrows; r++) {
+            int64_t row_buf[COL_STACK_MAX];
+            col_rel_row_copy_out(rel, r, row_buf);
+            if (col_filter_cmp_row(row_buf, rel->ncols, &cmp)) {
+                if (col_rel_append_row(out, row_buf) != 0) {
+                    col_rel_destroy(out);
+                    return NULL;
+                }
+            }
+        }
+        return out;
+    }
+
+    /* Slow path: compile once, evaluate per row */
+    col_expr_compiled_t *ce = col_expr_compile(buf, bsz);
+    for (uint32_t r = 0; r < rel->nrows; r++) {
+        int64_t row_buf[COL_STACK_MAX];
+        col_rel_row_copy_out(rel, r, row_buf);
+        int pass;
+        if (ce) {
+            int64_t val = 0;
+            pass = (col_eval_expr_compiled(ce, row_buf, rel->ncols, &val) == 0)
+                       ? (val != 0 ? 1 : 0)
+                       : 1;
+        } else {
+            pass = col_eval_filter_row(buf, bsz, row_buf, rel->ncols);
+        }
+        if (pass && col_rel_append_row(out, row_buf) != 0) {
+            col_expr_compiled_free(ce);
+            col_rel_destroy(out);
+            return NULL;
+        }
+    }
+    col_expr_compiled_free(ce);
+    return out;
+}
+
 /* --- JOIN ---------------------------------------------------------------- */
 
 int
@@ -1846,6 +1905,20 @@ col_op_join(const wl_plan_op_t *op, eval_stack_t *stack, wl_col_session_t *sess)
             right = rdelta;
             used_right_delta = true;
         }
+    }
+
+    /* Apply constant filter on right child (from FILTER wrappers collected
+     * during plan generation).  Pool-allocated: freed with the pool. */
+    if (op->right_filter_expr.size > 0) {
+        col_rel_t *filtered
+            = apply_right_filter(&op->right_filter_expr, right,
+                sess->delta_pool);
+        if (!filtered) {
+            if (left_e.owned)
+                col_rel_destroy(left_e.rel);
+            return ENOMEM;
+        }
+        right = filtered;
     }
 
     /* Materialization cache: reuse previous join result when available.
@@ -2299,6 +2372,19 @@ col_op_antijoin(const wl_plan_op_t *op, eval_stack_t *stack,
     if (!right) {
         /* If right relation doesn't exist, antijoin keeps all left rows */
         return eval_stack_push(stack, left_e.rel, left_e.owned);
+    }
+
+    /* Apply constant filter on right child (pool-allocated: freed with pool) */
+    if (op->right_filter_expr.size > 0) {
+        col_rel_t *filtered
+            = apply_right_filter(&op->right_filter_expr, right,
+                sess->delta_pool);
+        if (!filtered) {
+            if (left_e.owned)
+                col_rel_destroy(left_e.rel);
+            return ENOMEM;
+        }
+        right = filtered;
     }
 
     col_rel_t *left = left_e.rel;
@@ -4517,6 +4603,19 @@ col_op_semijoin(const wl_plan_op_t *op, eval_stack_t *stack,
     col_rel_t *right = session_find_rel(sess, op->right_relation);
     if (!right)
         return eval_stack_push(stack, left_e.rel, left_e.owned);
+
+    /* Apply constant filter on right child (pool-allocated: freed with pool) */
+    if (op->right_filter_expr.size > 0) {
+        col_rel_t *filtered
+            = apply_right_filter(&op->right_filter_expr, right,
+                sess->delta_pool);
+        if (!filtered) {
+            if (left_e.owned)
+                col_rel_destroy(left_e.rel);
+            return ENOMEM;
+        }
+        right = filtered;
+    }
 
     col_rel_t *left = left_e.rel;
     uint32_t kc = op->key_count;
