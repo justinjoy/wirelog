@@ -621,16 +621,85 @@ resolve_keys_to_colN(char **keys, uint32_t count,
 }
 
 /**
- * Traverse FILTER wrappers to find the underlying SCAN node.
- * build_atom_scan wraps SCANs in FILTER nodes when an atom has constant
- * arguments.  Returns the base SCAN node, or the input node if it is
- * already a SCAN or a non-FILTER node.
+ * Like unwrap_filters(), but also collects FILTER predicates encountered
+ * during traversal and serializes them into out_buf.  Multiple FILTER
+ * predicates are combined using bitwise-AND (BAND), which is correct for
+ * boolean (0/1) comparison results.
+ *
+ * Used to capture constant-argument filters on the right child of
+ * JOIN/ANTIJOIN/SEMIJOIN operators.  out_buf->data is NULL and size 0
+ * when no FILTER predicates are present.
  */
 static const wirelog_ir_node_t *
-unwrap_filters(const wirelog_ir_node_t *node)
+unwrap_filters_collect(const wirelog_ir_node_t *node,
+    wl_plan_expr_buffer_t *out_buf)
 {
-    while (node && node->type == WIRELOG_IR_FILTER && node->child_count > 0)
+    /* Collect up to 32 filter_expr pointers while traversing FILTER chain */
+    const wl_ir_expr_t *filt_exprs[32];
+    uint32_t nfilts = 0;
+
+    while (node && node->type == WIRELOG_IR_FILTER && node->child_count > 0) {
+        if (node->filter_expr && nfilts < 32)
+            filt_exprs[nfilts++] = node->filter_expr;
         node = node->children[0];
+    }
+
+    out_buf->data = NULL;
+    out_buf->size = 0;
+
+    if (nfilts == 0)
+        return node;
+
+    /* Resolve column names from the base SCAN for variable resolution */
+    char **col_names = NULL;
+    uint32_t col_count = 0;
+    collect_output_columns(node, &col_names, &col_count);
+
+    expr_buf_t combined;
+    if (expr_buf_init(&combined) != 0)
+        goto cleanup;
+
+    bool ok = true;
+    for (uint32_t i = 0; i < nfilts && ok; i++) {
+        expr_buf_t tmp;
+        if (expr_buf_init(&tmp) != 0) {
+            ok = false;
+            break;
+        }
+        if (serialize_expr(&tmp, filt_exprs[i], col_names, col_count) != 0) {
+            free(tmp.data);
+            ok = false;
+            break;
+        }
+        if (i == 0) {
+            /* First predicate: replace empty combined with serialized expr */
+            free(combined.data);
+            combined = tmp;
+        } else {
+            /* Subsequent predicate: append bytes then BAND to form conjunction */
+            if (expr_buf_push_bytes(&combined, tmp.data, tmp.size) != 0
+                || expr_buf_push_u8(
+                    &combined, (uint8_t)WL_PLAN_EXPR_ARITH_BAND)
+                != 0) {
+                free(tmp.data);
+                ok = false;
+                break;
+            }
+            free(tmp.data);
+        }
+    }
+
+    if (ok) {
+        out_buf->data = combined.data;
+        out_buf->size = combined.size;
+    } else {
+        free(combined.data);
+    }
+
+cleanup:
+    for (uint32_t c = 0; c < col_count; c++)
+        free(col_names[c]);
+    free((void *)col_names);
     return node;
 }
 
@@ -762,7 +831,8 @@ translate_ir_node(const wirelog_ir_node_t *node, op_list_t *ops)
         op->op = WL_PLAN_OP_JOIN;
         if (node->child_count > 1 && node->children[1]) {
             const wirelog_ir_node_t *rn
-                = unwrap_filters(node->children[1]);
+                = unwrap_filters_collect(node->children[1],
+                    &op->right_filter_expr);
             op->right_relation = dup_str(rn ? rn->relation_name : NULL);
         }
         /* Resolve join key variable names to "colN" positional format */
@@ -786,13 +856,10 @@ translate_ir_node(const wirelog_ir_node_t *node, op_list_t *ops)
         if (!op)
             return -1;
         op->op = WL_PLAN_OP_ANTIJOIN;
-        /* NOTE: The right child's FILTER predicates (constants in negated
-         * atoms) are not pushed into the antijoin execution.  Correct when
-         * the constant filters a non-key column that is uniform (DOOP
-         * pattern), but loses precision otherwise.  See issue #380. */
         if (node->child_count > 1 && node->children[1]) {
             const wirelog_ir_node_t *rn
-                = unwrap_filters(node->children[1]);
+                = unwrap_filters_collect(node->children[1],
+                    &op->right_filter_expr);
             op->right_relation = dup_str(rn ? rn->relation_name : NULL);
         }
         op->left_keys = (const char *const *)resolve_keys_to_colN(
@@ -817,7 +884,8 @@ translate_ir_node(const wirelog_ir_node_t *node, op_list_t *ops)
         op->op = WL_PLAN_OP_SEMIJOIN;
         if (node->child_count > 1 && node->children[1]) {
             const wirelog_ir_node_t *rn
-                = unwrap_filters(node->children[1]);
+                = unwrap_filters_collect(node->children[1],
+                    &op->right_filter_expr);
             op->right_relation = dup_str(rn ? rn->relation_name : NULL);
         }
         op->left_keys = (const char *const *)resolve_keys_to_colN(
