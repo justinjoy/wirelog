@@ -3209,6 +3209,14 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
     bool self_join_mode = tdd_stratum_has_idb_self_join(sp);
     bool replicate_mode = self_join_mode
         || (coord->last_inserted_relation == NULL);
+    /* Issue #388: Optional fallback to single-worker for self-join strata.
+     * Replicate mode with W>1 causes W-fold delta amplification even with
+     * broadcast dedup. Single-worker avoids replication overhead entirely. */
+    if (replicate_mode) {
+        const char *env = getenv("WIRELOG_TDD_REPLICATE_W1");
+        if (env && env[0] == '1')
+            W = 1;
+    }
     if (replicate_mode)
         rc = tdd_replicate_workers(coord);
     else
