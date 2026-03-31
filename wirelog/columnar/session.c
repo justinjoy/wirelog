@@ -392,6 +392,47 @@ col_session_create(const wl_plan_t *plan, uint32_t num_workers,
     sess->plan = plan;
     sess->num_workers = num_workers > 0 ? num_workers : 1;
 
+    /*
+     * WL_MAX_WORKERS: Per-worker fixed allocation cap
+     *
+     * Rationale:
+     * - K-fusion k is bounded by max IDB body atoms per recursive rule.
+     *   For all known workloads (DOOP k=8-9, CSPA k=5), max k < 16.
+     * - TDD semi-naive evaluation with W>16 has diminishing returns vs
+     *   per-worker memory cost: 20MB per worker (8MB arena + 4MB pool +
+     *   8MB thread stack + arrangement clones).
+     * - W=16 on 256GB RAM: ~320MB infrastructure + data = sustainable
+     * - W=196: 3.9GB infrastructure alone = unsustainable
+     *
+     * Environment variable WIRELOG_MAX_WORKERS allows override [1, 256].
+     * Default 16 covers all known workloads with safety margin.
+     * Set WL_MEM_REPORT=1 for clamping diagnostics.
+     */
+#define WL_MAX_WORKERS_DEFAULT   16u
+#define WL_MAX_WORKERS_HARD_LIMIT 256u
+    {
+        uint32_t cap = WL_MAX_WORKERS_DEFAULT;
+        const char *env = getenv("WIRELOG_MAX_WORKERS");
+        if (env && env[0] != '\0') {
+            char *endp = NULL;
+            unsigned long val = strtoul(env, &endp, 10);
+            if (endp != env && *endp == '\0' && val > 0) {
+                cap = (val <= WL_MAX_WORKERS_HARD_LIMIT)
+                    ? (uint32_t)val
+                    : WL_MAX_WORKERS_HARD_LIMIT;
+            }
+        }
+        if (sess->num_workers > cap) {
+            if (getenv("WL_MEM_REPORT"))
+                fprintf(stderr,
+                    "[wirelog] clamping num_workers %u -> %u\n",
+                    sess->num_workers, cap);
+            sess->num_workers = cap;
+        }
+    }
+#undef WL_MAX_WORKERS_DEFAULT
+#undef WL_MAX_WORKERS_HARD_LIMIT
+
     /* Dynamic join output limit (Issue #221) */
     {
         const char *join_limit_env = getenv("WIRELOG_JOIN_OUTPUT_LIMIT");
