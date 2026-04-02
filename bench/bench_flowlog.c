@@ -2763,11 +2763,14 @@ output_json_row(const char *wl_name, int32_t edges, uint32_t workers,
     printf("  \"consolidation_slow_hits\": %" PRIu64 ",\n",
         g_last_consolidate_slow_hits);
     printf("  \"consolidation_fast_pct\": %.1f,\n", fast_pct);
-    /* Exchange barrier timing (Issue #413): serial fraction for Amdahl's Law */
+    /* Exchange barrier timing (Issue #413): fraction of wall time in serial
+     * coordinator phases (exchange scatter/gather + non-recursive merge).
+     * This is a lower bound on the true Amdahl serial fraction f — queue
+     * drain and convergence check are not included. */
     double exch_ms = (double)exchange_ns / 1e6;
-    double serial_frac = wall_ns > 0 ? (double)exchange_ns / wall_ns : 0.0;
+    double exch_frac = wall_ns > 0 ? (double)exchange_ns / wall_ns : 0.0;
     printf("  \"exchange_ms\": %.3f,\n", exch_ms);
-    printf("  \"serial_fraction\": %.4f,\n", serial_frac);
+    printf("  \"exchange_fraction\": %.4f,\n", exch_frac);
     printf("  \"profiling_from_last_run\": true\n");
     printf("}\n");
 }

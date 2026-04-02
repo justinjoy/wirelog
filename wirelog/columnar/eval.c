@@ -4451,9 +4451,15 @@ col_eval_stratum_tdd_nonrecursive(const wl_plan_stratum_t *sp,
     }
     free(ctxs);
 
-    /* Phase 6: CONSOLIDATE — merge worker IDB results to coordinator */
-    if (rc == 0)
+    /* Phase 6: CONSOLIDATE — merge worker IDB results to coordinator.
+     * This is a serial coordinator phase: accumulate into exchange_time_ns
+     * so serial_fraction / exchange_fraction accounts for non-recursive strata
+     * as well as recursive exchange barriers. */
+    if (rc == 0) {
+        uint64_t t0 = now_ns();
         rc = tdd_merge_worker_results(sp, coord);
+        coord->exchange_time_ns += now_ns() - t0;
+    }
 
     /* Dedup coordinator IDB (multiple workers evaluating the same rules on
      * different partitions may produce overlapping tuples). */
