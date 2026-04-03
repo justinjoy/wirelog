@@ -10,12 +10,13 @@
  *   capacity = max(256, next_pow2(num_workers * 2))
  *
  * This test validates:
- *   1. Capacity formula correctness across various worker counts
+ *   1. Capacity formula correctness across various worker counts (white-box)
  *   2. Minimum capacity enforcement (256 items minimum)
  *   3. Power-of-2 rounding for efficient modulo operations
- *   4. Ring full detection when capacity is exhausted
- *   5. Submit W work items successfully without overflow
- *   6. Edge cases: W=0 (invalid), overflow protection for W > 2^31/2
+ *   4. Submit W work items without overflow (black-box)
+ *   5. Overflow protection for W > 2^31/2
+ *   6. Boundary value testing: W ∈ {1, 127, 128, 129, 256, 257, 512, 1024}
+ *   7. Interaction between dynamic capacity and work submission
  */
 
 #include "workqueue.h"
@@ -120,163 +121,182 @@ test_create_destroy(void)
 }
 
 /* ================================================================
- * Test 2: Capacity formula — W=1 (minimum case)
+ * Test 2: White-box capacity — W=1 (minimum floor)
  * ================================================================ */
 
 static void
-test_capacity_w1(void)
+test_capacity_white_box_w1(void)
 {
-    TEST("capacity formula W=1");
+    TEST("white-box capacity W=1 (floor)");
 
-    /* W=1: min_cap = 2 * 1 = 2, rounded up to 256 */
     wl_work_queue_t *wq = wl_workqueue_create(1);
     ASSERT(wq != NULL, "create(1) failed");
 
     uint32_t expected = expected_capacity(1);
-    ASSERT(expected == 256, "expected capacity for W=1 is 256");
-
-    /* Should be able to submit at least 1 item */
-    int ret = wl_workqueue_submit(wq, dummy_work, NULL);
-    ASSERT(ret == 0, "submit(1) failed");
-
-    wl_workqueue_destroy(wq);
-    PASS();
-}
-
-/* ================================================================
- * Test 3: Capacity formula — W=2 (minimum pow2 case)
- * ================================================================ */
-
-static void
-test_capacity_w2(void)
-{
-    TEST("capacity formula W=2");
-
-    /* W=2: min_cap = 2 * 2 = 4, rounded up to 256 */
-    wl_work_queue_t *wq = wl_workqueue_create(2);
-    ASSERT(wq != NULL, "create(2) failed");
-
-    uint32_t expected = expected_capacity(2);
-    ASSERT(expected == 256, "expected capacity for W=2 is 256");
-
-    /* Should be able to submit 2 items */
-    for (int i = 0; i < 2; i++) {
-        int ret = wl_workqueue_submit(wq, dummy_work, NULL);
-        ASSERT(ret == 0, "submit(2) failed");
-    }
+    uint32_t actual = wl_workqueue_capacity(wq);
+    ASSERT(actual == expected, "capacity mismatch for W=1");
+    ASSERT(actual == 256, "capacity for W=1 should be 256");
+    ASSERT((actual & (actual - 1)) == 0, "capacity must be power of 2");
 
     wl_workqueue_destroy(wq);
     PASS();
 }
 
 /* ================================================================
- * Test 4: Capacity formula — W=128 (power-of-2 boundary)
+ * Test 3: White-box capacity — W=127 (just under floor)
  * ================================================================ */
 
 static void
-test_capacity_w128(void)
+test_capacity_white_box_w127(void)
 {
-    TEST("capacity formula W=128");
+    TEST("white-box capacity W=127 (under floor)");
 
-    /* W=128: min_cap = 2 * 128 = 256, capacity = 256 (no rounding) */
+    wl_work_queue_t *wq = wl_workqueue_create(127);
+    ASSERT(wq != NULL, "create(127) failed");
+
+    uint32_t expected = expected_capacity(127);
+    uint32_t actual = wl_workqueue_capacity(wq);
+    ASSERT(actual == expected, "capacity mismatch for W=127");
+    ASSERT(actual == 256, "capacity for W=127 should be 256 (floor)");
+
+    wl_workqueue_destroy(wq);
+    PASS();
+}
+
+/* ================================================================
+ * Test 4: White-box capacity — W=128 (exact floor boundary)
+ * ================================================================ */
+
+static void
+test_capacity_white_box_w128(void)
+{
+    TEST("white-box capacity W=128 (exact floor)");
+
     wl_work_queue_t *wq = wl_workqueue_create(128);
     ASSERT(wq != NULL, "create(128) failed");
 
     uint32_t expected = expected_capacity(128);
-    ASSERT(expected == 256, "expected capacity for W=128 is 256");
+    uint32_t actual = wl_workqueue_capacity(wq);
+    ASSERT(actual == expected, "capacity mismatch for W=128");
+    ASSERT(actual == 256, "capacity for W=128 should be 256");
 
     wl_workqueue_destroy(wq);
     PASS();
 }
 
 /* ================================================================
- * Test 5: Capacity formula — W=129 (requires rounding up)
+ * Test 5: White-box capacity — W=129 (first value above floor)
  * ================================================================ */
 
 static void
-test_capacity_w129(void)
+test_capacity_white_box_w129(void)
 {
-    TEST("capacity formula W=129");
+    TEST("white-box capacity W=129 (pow2 jump)");
 
-    /* W=129: min_cap = 2 * 129 = 258, rounded up to 512 */
     wl_work_queue_t *wq = wl_workqueue_create(129);
     ASSERT(wq != NULL, "create(129) failed");
 
     uint32_t expected = expected_capacity(129);
-    ASSERT(expected == 512, "expected capacity for W=129 is 512");
+    uint32_t actual = wl_workqueue_capacity(wq);
+    ASSERT(actual == expected, "capacity mismatch for W=129");
+    ASSERT(actual == 512, "capacity for W=129 should be 512 (next pow2)");
 
     wl_workqueue_destroy(wq);
     PASS();
 }
 
 /* ================================================================
- * Test 6: Capacity formula — W=256 (power-of-2 boundary)
+ * Test 6: White-box capacity — W=256 (power-of-2 boundary)
  * ================================================================ */
 
 static void
-test_capacity_w256(void)
+test_capacity_white_box_w256(void)
 {
-    TEST("capacity formula W=256");
+    TEST("white-box capacity W=256 (pow2)");
 
-    /* W=256: min_cap = 2 * 256 = 512, capacity = 512 (no rounding) */
     wl_work_queue_t *wq = wl_workqueue_create(256);
     ASSERT(wq != NULL, "create(256) failed");
 
     uint32_t expected = expected_capacity(256);
-    ASSERT(expected == 512, "expected capacity for W=256 is 512");
+    uint32_t actual = wl_workqueue_capacity(wq);
+    ASSERT(actual == expected, "capacity mismatch for W=256");
+    ASSERT(actual == 512, "capacity for W=256 should be 512");
 
     wl_workqueue_destroy(wq);
     PASS();
 }
 
 /* ================================================================
- * Test 7: Capacity formula — W=257 (requires rounding up)
+ * Test 7: White-box capacity — W=257 (requires rounding up)
  * ================================================================ */
 
 static void
-test_capacity_w257(void)
+test_capacity_white_box_w257(void)
 {
-    TEST("capacity formula W=257");
+    TEST("white-box capacity W=257 (rounding)");
 
-    /* W=257: min_cap = 2 * 257 = 514, rounded up to 1024 */
     wl_work_queue_t *wq = wl_workqueue_create(257);
     ASSERT(wq != NULL, "create(257) failed");
 
     uint32_t expected = expected_capacity(257);
-    ASSERT(expected == 1024, "expected capacity for W=257 is 1024");
+    uint32_t actual = wl_workqueue_capacity(wq);
+    ASSERT(actual == expected, "capacity mismatch for W=257");
+    ASSERT(actual == 1024, "capacity for W=257 should be 1024");
 
     wl_workqueue_destroy(wq);
     PASS();
 }
 
 /* ================================================================
- * Test 8: Capacity formula — W=512 (target for issue #401)
+ * Test 8: White-box capacity — W=512 (issue #401 target)
  * ================================================================ */
 
 static void
-test_capacity_w512(void)
+test_capacity_white_box_w512(void)
 {
-    TEST("capacity formula W=512");
+    TEST("white-box capacity W=512 (#401 target)");
 
-    /* W=512: min_cap = 2 * 512 = 1024, capacity = 1024 (no rounding) */
     wl_work_queue_t *wq = wl_workqueue_create(512);
     ASSERT(wq != NULL, "create(512) failed");
 
     uint32_t expected = expected_capacity(512);
-    ASSERT(expected == 1024, "expected capacity for W=512 is 1024");
+    uint32_t actual = wl_workqueue_capacity(wq);
+    ASSERT(actual == expected, "capacity mismatch for W=512");
+    ASSERT(actual == 1024, "capacity for W=512 should be 1024");
 
     wl_workqueue_destroy(wq);
     PASS();
 }
 
 /* ================================================================
- * Test 9: Submit W items without overflow
+ * Test 9: White-box capacity — W=1024 (large scale)
  * ================================================================ */
 
 static void
-test_submit_w_items(void)
+test_capacity_white_box_w1024(void)
 {
-    TEST("submit W items without overflow");
+    TEST("white-box capacity W=1024 (large scale)");
+
+    wl_work_queue_t *wq = wl_workqueue_create(1024);
+    ASSERT(wq != NULL, "create(1024) failed");
+
+    uint32_t expected = expected_capacity(1024);
+    uint32_t actual = wl_workqueue_capacity(wq);
+    ASSERT(actual == expected, "capacity mismatch for W=1024");
+    ASSERT(actual == 2048, "capacity for W=1024 should be 2048");
+
+    wl_workqueue_destroy(wq);
+    PASS();
+}
+
+/* ================================================================
+ * Test 10: Black-box validation — Submit W items without overflow
+ * ================================================================ */
+
+static void
+test_submit_batch_no_overflow(void)
+{
+    TEST("black-box: submit full batch without overflow");
 
     uint32_t num_workers = 8;
     wl_work_queue_t *wq = wl_workqueue_create(num_workers);
@@ -288,12 +308,47 @@ test_submit_w_items(void)
         ASSERT(ret == 0, "submit failed for item");
     }
 
+    /* Drain all items synchronously (avoids thread overhead) */
+    int ret = wl_workqueue_drain(wq);
+    ASSERT(ret == 0, "drain failed");
+
     wl_workqueue_destroy(wq);
     PASS();
 }
 
 /* ================================================================
- * Test 10: Overflow protection (W > UINT32_MAX / 2)
+ * Test 11: Large batch submission — stress test at capacity
+ * ================================================================ */
+
+static void
+test_large_batch_submission(void)
+{
+    TEST("large batch submission (near capacity)");
+
+    uint32_t num_workers = 16;
+    wl_work_queue_t *wq = wl_workqueue_create(num_workers);
+    ASSERT(wq != NULL, "create(16) failed");
+
+    uint32_t cap = wl_workqueue_capacity(wq);
+    ASSERT(cap >= 256, "capacity should be >= 256");
+
+    /* Submit a large batch (but less than capacity to avoid full) */
+    uint32_t batch_size = (cap / 2);
+    for (uint32_t i = 0; i < batch_size; i++) {
+        int ret = wl_workqueue_submit(wq, dummy_work, NULL);
+        ASSERT(ret == 0, "submit failed in large batch");
+    }
+
+    /* Drain and verify completion */
+    int ret = wl_workqueue_drain(wq);
+    ASSERT(ret == 0, "drain failed");
+
+    wl_workqueue_destroy(wq);
+    PASS();
+}
+
+/* ================================================================
+ * Test 12: Overflow protection (W > UINT32_MAX / 2)
  * ================================================================ */
 
 static void
@@ -301,9 +356,6 @@ test_overflow_protection(void)
 {
     TEST("overflow protection for W > UINT32_MAX/2");
 
-    /* Attempt to create workqueue with num_workers = UINT32_MAX
-     * workqueue.c checks: if (num_workers > UINT32_MAX / 2u) return NULL
-     */
     uint32_t huge_workers = UINT32_MAX;
     wl_work_queue_t *wq = wl_workqueue_create(huge_workers);
     ASSERT(wq == NULL,
@@ -313,45 +365,42 @@ test_overflow_protection(void)
 }
 
 /* ================================================================
- * Test 11: Ring buffer capacity scales with workers
+ * Test 13: Capacity always power of 2
  * ================================================================ */
 
 static void
-test_capacity_scaling(void)
+test_capacity_power_of_two(void)
 {
-    TEST("capacity scaling from W=1 to W=512");
+    TEST("all capacities are power of 2");
 
-    /* Verify the formula produces increasing capacities */
-    uint32_t prev_cap = 0;
-    for (uint32_t w = 1; w <= 512; w *= 2) {
-        uint32_t cap = expected_capacity(w);
-        ASSERT(cap >= prev_cap, "capacity should not decrease");
-        ASSERT((cap & (cap - 1)) == 0, "capacity must be power of 2");
-
+    uint32_t test_workers[] = {1, 2, 4, 8, 16, 32, 64, 128, 256, 512};
+    for (size_t i = 0; i < sizeof(test_workers) / sizeof(test_workers[0]);
+        i++) {
+        uint32_t w = test_workers[i];
         wl_work_queue_t *wq = wl_workqueue_create(w);
         ASSERT(wq != NULL, "create failed");
-        wl_workqueue_destroy(wq);
 
-        prev_cap = cap;
+        uint32_t cap = wl_workqueue_capacity(wq);
+        ASSERT((cap & (cap - 1)) == 0, "capacity must be power of 2");
+        ASSERT(cap >= 256, "capacity must be >= 256");
+
+        wl_workqueue_destroy(wq);
     }
 
     PASS();
 }
 
 /* ================================================================
- * Test 12: Capacity always >= 256
+ * Test 14: Capacity accessor NULL-safe
  * ================================================================ */
 
 static void
-test_minimum_capacity(void)
+test_capacity_accessor_null_safe(void)
 {
-    TEST("minimum capacity enforcement");
+    TEST("capacity accessor NULL-safe");
 
-    /* Even W=1 should have capacity >= 256 */
-    for (uint32_t w = 1; w <= 256; w++) {
-        uint32_t cap = expected_capacity(w);
-        ASSERT(cap >= 256, "capacity must be >= 256");
-    }
+    uint32_t cap = wl_workqueue_capacity(NULL);
+    ASSERT(cap == 0, "capacity(NULL) should return 0");
 
     PASS();
 }
@@ -371,17 +420,19 @@ main(void)
         "================================================================================\n\n");
 
     test_create_destroy();
-    test_capacity_w1();
-    test_capacity_w2();
-    test_capacity_w128();
-    test_capacity_w129();
-    test_capacity_w256();
-    test_capacity_w257();
-    test_capacity_w512();
-    test_submit_w_items();
+    test_capacity_white_box_w1();
+    test_capacity_white_box_w127();
+    test_capacity_white_box_w128();
+    test_capacity_white_box_w129();
+    test_capacity_white_box_w256();
+    test_capacity_white_box_w257();
+    test_capacity_white_box_w512();
+    test_capacity_white_box_w1024();
+    test_submit_batch_no_overflow();
+    test_large_batch_submission();
     test_overflow_protection();
-    test_capacity_scaling();
-    test_minimum_capacity();
+    test_capacity_power_of_two();
+    test_capacity_accessor_null_safe();
 
     printf(
         "\n================================================================================\n");
