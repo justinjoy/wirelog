@@ -147,13 +147,16 @@ col_eval_relation_plan(const wl_plan_relation_t *rplan, eval_stack_t *stack,
          * this switch will occur when the plan generator emits weighted opcodes
          * for Z-set multiplicity evaluation. For now, col_op_join and
          * col_op_reduce dispatch to their base (non-weighted) versions. */
-        /* Issue #361: Skip base-case EDB VARIABLEs in TDD workers at iter > 0.
+        /* Issue #361/#367: Skip base-case EDB VARIABLEs at iter > 0.
          * A base-case VARIABLE references a static EDB (no delta) and is NOT
          * followed by JOIN (it feeds CONCAT via MAP). The base-case tuples are
          * already in the IDB from iter 0, so re-loading them every sub-pass
-         * wastes O(N_base) work per sub-pass. Push empty instead. */
+         * wastes O(N_base) work per sub-pass. Push empty instead.
+         * Applies to both W=1 sequential evaluation and W>1 TDD workers.
+         * For CRDT (k=1, no FORCE_DELTA expansion), this eliminates redundant
+         * 104K-row consolidation sorting on every sub-pass (Issue #367). */
         if (op->op == WL_PLAN_OP_VARIABLE
-            && sess->tdd_subpass_active && sess->current_iteration > 0
+            && sess->current_iteration > 0
             && op->delta_mode == WL_DELTA_AUTO && op->relation_name) {
             /* Look ahead: base-case VARIABLE is followed by MAP (not JOIN). */
             bool next_is_join = (i + 1 < rplan->op_count
@@ -474,6 +477,15 @@ col_eval_stratum(const wl_plan_stratum_t *sp, wl_col_session_t *sess,
     if (!delta_rels)
         return ENOMEM;
 
+    /* Allocate snap once before the iteration loop (Issue #367): hoisting
+     * the allocation out of the outer loop eliminates 2 malloc/free calls
+     * per iteration (14K+ iterations for CRDT). */
+    uint32_t *snap = (uint32_t *)malloc(nrels * sizeof(uint32_t));
+    if (!snap) {
+        free(delta_rels);
+        return ENOMEM;
+    }
+
     /* Sort pre-existing data in each IDB relation before iterating.
      * Handles the EDB+IDB case: when base facts are pre-loaded into a
      * relation that also appears as an IDB in a recursive rule, the loaded
@@ -538,13 +550,9 @@ col_eval_stratum(const wl_plan_stratum_t *sp, wl_col_session_t *sess,
             = false;            /* net-zero/all-empty: retry next outer */
         bool converged = false; /* fixed point reached                */
 
-        /* Allocate snap once per outer stride; re-filled at the start of each
-         * sub-pass since nrows grows as new tuples are appended. */
-        uint32_t *snap = (uint32_t *)malloc(nrels * sizeof(uint32_t));
-        if (!snap) {
-            free(delta_rels);
-            return ENOMEM;
-        }
+        /* snap[] is filled at the start of each sub-pass (nrows grows as new
+         * tuples are appended).  The array is allocated once before this loop
+         * (Issue #367) to avoid per-iteration malloc/free overhead. */
 
         /* ------------------------------------------------------------------ */
         /* Inner sub-pass loop: EVAL_STRIDE semi-naive passes per outer iter.  */
@@ -894,11 +902,10 @@ stride_error:
             break; /* exit inner loop; outer_rc carries the error */
         } /* end inner sub-pass loop */
 
-        free(snap);
-
         if (outer_rc != 0) {
             /* Issue #282: Restore diff_operators_active on error path */
             sess->diff_operators_active = saved_diff_operators_active;
+            free(snap);
             free(delta_rels);
             return outer_rc;
         }
@@ -952,6 +959,7 @@ stride_error:
         const char *dname = sp->relations[ri].delta_name;
         session_remove_rel(sess, dname);
     }
+    free(snap);
     free(delta_rels);
     delta_pool_reset(sess->delta_pool);
     wl_arena_reset(sess->eval_arena);
