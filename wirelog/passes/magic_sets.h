@@ -45,6 +45,7 @@ struct wirelog_program;
  * @magic_rules_generated:  Magic demand propagation rules added.
  * @original_rules_modified: Original rules with magic guards inserted.
  * @skipped_all_free:       Adorned predicates skipped (all-free adornment).
+ * @arity_mismatch_skipped: Demands skipped due to adornment count/arity mismatch.
  */
 typedef struct {
     uint32_t demand_roots;
@@ -52,6 +53,7 @@ typedef struct {
     uint32_t magic_rules_generated;
     uint32_t original_rules_modified;
     uint32_t skipped_all_free;
+    uint32_t arity_mismatch_skipped;
 } wl_magic_sets_stats_t;
 
 /* ======================================================================== */
@@ -122,8 +124,8 @@ wl_magic_sets_apply(struct wirelog_program *prog, wl_magic_sets_stats_t *stats);
  */
 int
 wl_magic_sets_apply_with_demands(struct wirelog_program *prog,
-                                 const wl_magic_demand_t *demands,
-                                 uint32_t demand_count,
-                                 wl_magic_sets_stats_t *stats);
+    const wl_magic_demand_t *demands,
+    uint32_t demand_count,
+    wl_magic_sets_stats_t *stats);
 
 #endif /* WIRELOG_PASSES_MAGIC_SETS_H */
