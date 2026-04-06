@@ -1376,7 +1376,6 @@ parse_query_directive(wl_parser_t *parser)
     }
 
     query->int_value = (int64_t)bound_mask;
-    query->child_capacity = position; /* adornment count (children unused on QUERY nodes) */
     return query;
 }
 

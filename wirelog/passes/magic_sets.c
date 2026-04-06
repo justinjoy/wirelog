@@ -547,6 +547,7 @@ wl_magic_sets_apply_with_demands(struct wirelog_program *prog,
         stats->magic_rules_generated = 0;
         stats->original_rules_modified = 0;
         stats->skipped_all_free = 0;
+        stats->arity_mismatch_skipped = 0;
     }
 
     /* === Phase 1: Seed the worklist from explicit demands === */
@@ -582,7 +583,7 @@ wl_magic_sets_apply_with_demands(struct wirelog_program *prog,
                     "has %u column(s); demand skipped\n",
                     d->relation_name, arity, actual);
                 if (stats)
-                    stats->skipped_all_free++;
+                    stats->arity_mismatch_skipped++;
                 continue;
             }
         }
