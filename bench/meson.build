@@ -110,6 +110,7 @@ bench_col_layout = executable(
   'bench_col_layout',
   files('bench_col_layout.c'),
   bench_backend_src,
+  files(subdir_wirelog / 'intern.c'),
   bench_arena_src,
   bench_thread_src,
   bench_workqueue_src,
