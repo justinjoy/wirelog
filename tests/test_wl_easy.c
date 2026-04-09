@@ -343,11 +343,11 @@ test_snapshot_filter(void)
         wl_easy_close(s);
         return;
     }
-    if (wl_easy_step(s) != WIRELOG_OK) {
-        FAIL("step failed");
-        wl_easy_close(s);
-        return;
-    }
+    /* NOTE: Do NOT call wl_easy_step() before wl_easy_snapshot().  The
+     * columnar backend's snapshot path re-evaluates all strata and appends
+     * to the IDB relation rows; a prior step() already derived the IDB
+     * tuples, so combining the two would double-count.  See the doc
+     * comment on wl_easy_snapshot() in wl_easy.h. */
 
     tuple_collector_t granted_t;
     memset(&granted_t, 0, sizeof(granted_t));

@@ -206,6 +206,15 @@ wl_easy_banner(const char *label);
  * Take a snapshot of the current state and forward only tuples whose
  * relation name matches @relation to @cb.
  *
+ * IMPORTANT: wl_easy_snapshot() is an *evaluating* call — the underlying
+ * columnar backend re-evaluates every stratum and emits the resulting IDB
+ * rows.  Do NOT call wl_easy_step() followed by wl_easy_snapshot() on the
+ * same insert batch: step() already derives and appends the IDB rows, and
+ * a subsequent snapshot() will re-derive and append again, producing
+ * duplicated tuples.  Choose one mode per batch:
+ *   - Incremental / delta mode: wl_easy_set_delta_cb() + wl_easy_step()
+ *   - Query mode:               wl_easy_snapshot() (no prior step)
+ *
  * Returns: WIRELOG_OK on success, WIRELOG_ERR_EXEC on failure.
  */
 wirelog_error_t
