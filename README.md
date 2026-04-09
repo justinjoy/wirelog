@@ -425,13 +425,16 @@ single `wl_easy_open()` call so you can focus on Datalog, not boilerplate:
 
 int main(void) {
     wl_easy_session_t *s = NULL;
-    wl_easy_open(".decl edge(a:symbol,b:symbol)\n"
-                 ".decl path(a:symbol,b:symbol)\n"
-                 "path(X,Y) :- edge(X,Y).\n", &s);
-    wl_easy_set_delta_cb(s, wl_easy_print_delta, s);
+    if (wl_easy_open(".decl edge(a:symbol,b:symbol)\n"
+                     ".decl path(a:symbol,b:symbol)\n"
+                     "path(X,Y) :- edge(X,Y).\n", &s) != WIRELOG_OK)
+        return 1;
+    /* Real code should also check the return of wl_easy_set_delta_cb. */
+    (void)wl_easy_set_delta_cb(s, wl_easy_print_delta, s);
     wl_easy_insert_sym(s, "edge", "alice", "bob", NULL);
     wl_easy_step(s);
     wl_easy_close(s);
+    return 0;
 }
 ```
 
