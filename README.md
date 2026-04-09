@@ -414,3 +414,28 @@ git push origin feat/your-feature
 **Wirelog** — Precise incremental Datalog for embedded and enterprise environments.
 
 Built with performance, safety, and portability in mind.
+
+## Quick Start (wl_easy)
+
+The `wl_easy` facade wraps parse, optimize, plan, and session creation behind a
+single `wl_easy_open()` call so you can focus on Datalog, not boilerplate:
+
+```c
+#include "wirelog/wl_easy.h"
+
+int main(void) {
+    wl_easy_session_t *s = NULL;
+    wl_easy_open(".decl edge(a:symbol,b:symbol)\n"
+                 ".decl path(a:symbol,b:symbol)\n"
+                 "path(X,Y) :- edge(X,Y).\n", &s);
+    wl_easy_set_delta_cb(s, wl_easy_print_delta, s);
+    wl_easy_insert_sym(s, "edge", "alice", "bob", NULL);
+    wl_easy_step(s);
+    wl_easy_close(s);
+}
+```
+
+See `examples/08-delta-queries/delta_demo.c` for a fuller walkthrough and
+`wirelog/wl_easy.h` for the complete API.  Advanced use cases that need direct
+control over plans, backends, or worker counts can drop down to the
+`wl_session_*` primitives in `wirelog/session.h`.

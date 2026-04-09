@@ -41,6 +41,16 @@ struct wl_session {
 
 /* Wrapper functions that delegate to the backend vtable */
 
+/*
+ * NOTE: For most applications, prefer the high-level wl_easy facade in
+ * <wirelog/wl_easy.h>.  wl_easy wraps parse + optimize + plan + session
+ * creation behind a single wl_easy_open() call and provides convenience
+ * helpers (wl_easy_intern, wl_easy_insert_sym, wl_easy_print_delta, etc.)
+ * that remove boilerplate.  The wl_session_* primitives below remain the
+ * canonical low-level API for advanced use cases that need direct control
+ * over plans, backends, or worker counts.
+ */
+
 /**
  * wl_session_create:
  * @backend:      The compute backend to use for this session.
@@ -56,7 +66,7 @@ struct wl_session {
  */
 int
 wl_session_create(const wl_compute_backend_t *backend, const wl_plan_t *plan,
-                  uint32_t num_workers, wl_session_t **out);
+    uint32_t num_workers, wl_session_t **out);
 
 /**
  * wl_session_destroy:
@@ -84,7 +94,7 @@ wl_session_destroy(wl_session_t *session);
  */
 int
 wl_session_insert(wl_session_t *session, const char *relation,
-                  const int64_t *data, uint32_t num_rows, uint32_t num_cols);
+    const int64_t *data, uint32_t num_rows, uint32_t num_cols);
 
 /**
  * wl_session_remove:
@@ -103,7 +113,7 @@ wl_session_insert(wl_session_t *session, const char *relation,
  */
 int
 wl_session_remove(wl_session_t *session, const char *relation,
-                  const int64_t *data, uint32_t num_rows, uint32_t num_cols);
+    const int64_t *data, uint32_t num_rows, uint32_t num_cols);
 
 /**
  * wl_session_step:
@@ -130,7 +140,7 @@ wl_session_step(wl_session_t *session);
  */
 void
 wl_session_set_delta_cb(wl_session_t *session, wl_on_delta_fn callback,
-                        void *user_data);
+    void *user_data);
 
 /**
  * wl_session_snapshot:
@@ -147,7 +157,7 @@ wl_session_set_delta_cb(wl_session_t *session, wl_on_delta_fn callback,
  */
 int
 wl_session_snapshot(wl_session_t *session, wl_on_tuple_fn callback,
-                    void *user_data);
+    void *user_data);
 
 #ifdef __cplusplus
 }
