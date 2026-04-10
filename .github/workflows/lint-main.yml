@@ -7,7 +7,7 @@ name: Lint Main
 #
 # Jobs:
 #   - editorconfig-check  : whitespace/encoding/line-ending consistency
-#   - clang-format-check  : formatting against LLVM 18 style
+#   - uncrustify-check    : formatting against uncrustify.cfg
 #   - clang-tidy-check    : static analysis via LLVM 18 (Linux only, slow)
 #
 # All jobs have continue-on-error: true — issues are surfaced as annotations
