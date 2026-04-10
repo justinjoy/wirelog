@@ -1,6 +1,6 @@
 # wirelog
 
-Precise incremental Datalog engine in pure C11. Compiles Datalog programs into columnar execution plans and evaluates them using delta-seeded semi-naive iteration.
+Precise incremental Datalog engine in pure C11. Compiles Datalog programs into columnar execution plans and evaluates them using timely-differential dataflow evaluation.
 
 ## Quick Start
 
@@ -50,7 +50,7 @@ For fine-grained control over plans, backends, or worker counts, use the `wl_ses
 
 ## Features
 
-- **Incremental evaluation** -- delta-seeded semi-naive iteration propagates only new facts, not full re-derivation
+- **Incremental evaluation** -- timely-differential dataflow evaluation propagates only new facts, not full re-derivation
 - **Columnar backend** -- [nanoarrow](https://github.com/apache/arrow-nanoarrow) (minimal Apache Arrow C implementation) memory layout for cache-efficient execution
 - **SIMD acceleration** -- AVX2 (x86-64) and ARM NEON (ARM64) for hash, filter, and join operations
 - **Optimizer pipeline** -- Logic Fusion, Join-Project Planning, Semijoin Information Passing, Magic Sets
@@ -119,6 +119,7 @@ Platforms: Linux (GCC/Clang), macOS (Clang), Windows (MSVC).
 - [ARCHITECTURE.md](docs/ARCHITECTURE.md) -- system design, optimizer pipeline, execution model
 - [CONTRIBUTING.md](CONTRIBUTING.md) -- development workflow, CI/CD, PR requirements
 - [SECURITY.md](SECURITY.md) -- vulnerability disclosure
+- [CLA.md](CLA.md) -- Contributor License Agreement (required for dual licensing)
 - API: [`wirelog/wl_easy.h`](wirelog/wl_easy.h) (simple) | [`wirelog/session.h`](wirelog/session.h) (advanced)
 
 ## License
