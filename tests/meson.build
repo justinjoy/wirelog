@@ -2397,3 +2397,15 @@ test_io_adapter_exe = executable(
   install: false,
 )
 test('io_adapter', test_io_adapter_exe)
+
+# ============================================================================
+# I/O Context Accessor Tests (#452)
+# ============================================================================
+
+test_io_ctx_exe = executable(
+  'test_io_ctx',
+  files('test_io_ctx.c'),
+  include_directories: [wirelog_inc, wirelog_src_inc],
+  install: false,
+)
+test('io_ctx', test_io_ctx_exe)
