@@ -11,6 +11,8 @@
  * Part of #446 (I/O adapter umbrella).
  */
 
+#define TEST_REGISTRY_PRESENT
+
 #include <stdio.h>
 #include <string.h>
 
