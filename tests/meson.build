@@ -206,6 +206,7 @@ backend_src = files(
 
 io_src = files(
   '../wirelog/io/csv_reader.c',
+  '../wirelog/io/io_adapter.c',
 )
 
 arena_src = files(
@@ -2388,8 +2389,11 @@ test('baseline_tab_nodes',
 
 test_io_adapter_exe = executable(
   'test_io_adapter',
-  files('test_io_adapter.c'),
+  files('test_io_adapter.c', '../wirelog/io/io_adapter.c'),
+  thread_src,
   include_directories: [wirelog_inc, wirelog_src_inc],
+  c_args: ['-DWIRELOG_BUILDING'],
+  dependencies: [threads_dep],
   install: false,
 )
 test('io_adapter', test_io_adapter_exe)
