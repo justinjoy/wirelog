@@ -2413,3 +2413,15 @@ test_io_ctx_exe = executable(
   install: false,
 )
 test('io_ctx', test_io_ctx_exe)
+
+# ============================================================================
+# I/O Dispatch Tests (#457)
+# ============================================================================
+
+test_io_dispatch_exe = executable(
+  'test_io_dispatch',
+  files('test_io_dispatch.c'),
+  include_directories: [wirelog_inc, wirelog_src_inc],
+  install: false,
+)
+test('io_dispatch', test_io_dispatch_exe)
