@@ -77,7 +77,7 @@ wirelog_backend_src = files('columnar/relation.c', 'columnar/cache.c',
 #I / O Module
 #== == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == ==
 
-wirelog_io_src = files('io/csv_reader.c', 'io/io_adapter.c', 'io/io_ctx.c', )
+wirelog_io_src = files('io/csv_reader.c', 'io/io_adapter.c', 'io/io_ctx.c', 'io/csv_adapter.c')
 
 #== == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == ==
 #String Operations Module(Issue #143)
