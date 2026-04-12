@@ -80,15 +80,8 @@ static mutex_t s_mutex = { PTHREAD_MUTEX_INITIALIZER };
 #endif
 static bool s_initialized;
 
-/* Built-in CSV stub adapter */
-static const wl_io_adapter_t s_csv_builtin = {
-    .abi_version = WL_IO_ABI_VERSION,
-    .scheme = "csv",
-    .description = "Built-in CSV adapter (stub)",
-    .read = NULL,
-    .validate = NULL,
-    .user_data = NULL,
-};
+/* Built-in CSV adapter (implemented in csv_adapter.c) */
+extern const wl_io_adapter_t wl_csv_adapter;
 
 /* ======================================================================== */
 /* One-Shot Initialization                                                  */
@@ -111,7 +104,7 @@ ensure_builtins(void)
      * Windows) to guard the one-shot builtin registration. */
     mutex_lock(&s_mutex);
     if (!s_initialized) {
-        s_registry[0].adapter = &s_csv_builtin;
+        s_registry[0].adapter = &wl_csv_adapter;
         strncpy(s_registry[0].scheme, "csv", SCHEME_MAX_LEN - 1);
         s_registry[0].scheme[SCHEME_MAX_LEN - 1] = '\0';
         s_count = 1;
