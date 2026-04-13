@@ -71,10 +71,16 @@ static registry_entry_t s_registry[WL_IO_MAX_ADAPTERS];
 static uint32_t s_count;
 /* POSIX: statically initialized via PTHREAD_MUTEX_INITIALIZER.
  * Windows: CRITICAL_SECTION cannot be statically initialized, so we
- * use a volatile flag + InterlockedCompareExchange for one-shot init. */
+ * use a two-phase flag + InterlockedCompareExchange for one-shot init.
+ *
+ * Two-phase flag is required to avoid a race where one thread sets the
+ * flag to "done" via ICS and then starts mutex_init(), while a second
+ * thread sees "done" and calls mutex_lock() before mutex_init() returns.
+ * See Issue #459 for background. */
 #if defined(_WIN32) || defined(_WIN64)
 static mutex_t s_mutex;
-static volatile long s_mutex_ready;  /* 0=uninit, 1=ready */
+/* 0 = uninitialised, 1 = initialisation in progress, 2 = ready */
+static volatile long s_mutex_init;
 #else
 static mutex_t s_mutex = { PTHREAD_MUTEX_INITIALIZER };
 #endif
@@ -90,14 +96,21 @@ extern const wl_io_adapter_t wl_csv_adapter;
 static void
 ensure_builtins(void)
 {
-    /* On Windows, CRITICAL_SECTION requires explicit init. Use a volatile
-    * flag with InterlockedCompareExchange for the one-shot mutex_init. */
+    /* On Windows, CRITICAL_SECTION requires explicit init.
+     * Two-phase flag protocol (Issue #459):
+     *   0 -> 1: winning thread claims init (ICS); all others spin.
+     *   1 -> 2: winning thread sets "done" only after mutex_init returns.
+     * This prevents a competing thread from calling mutex_lock on a
+     * CRITICAL_SECTION that has not yet been initialised. */
 #if defined(_WIN32) || defined(_WIN64)
-    if (!s_mutex_ready) {
-        if (InterlockedCompareExchange(&s_mutex_ready, 1, 0) == 0)
+    if (InterlockedCompareExchange(&s_mutex_init, 2, 2) != 2) {
+        if (InterlockedCompareExchange(&s_mutex_init, 1, 0) == 0) {
             mutex_init(&s_mutex);
-        /* Spin until the initializer thread finishes mutex_init. The flag
-         * is set before mutex_init returns above, so the mutex is ready. */
+            InterlockedExchange(&s_mutex_init, 2);
+        }
+        /* Spin until the winning thread completes mutex_init. */
+        while (InterlockedCompareExchange(&s_mutex_init, 2, 2) != 2)
+            SwitchToThread();
     }
 #endif
     /* Use the mutex (statically initialized on POSIX, dynamically on
