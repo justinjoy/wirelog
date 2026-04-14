@@ -64,12 +64,9 @@ bench_workqueue_src = files(
   subdir_wirelog / 'workqueue.c',
 )
 
-# Select threading backend based on platform
-if host_machine.system() == 'windows'
-  bench_thread_src = files(subdir_wirelog / 'thread_msvc.c')
-else
-  bench_thread_src = files(subdir_wirelog / 'thread_posix.c')
-endif
+# Reuse the same threading backend selected by wirelog/meson.build
+# (C11 threads.h > POSIX pthreads > Windows MSVC).
+bench_thread_src = wirelog_thread_src
 
 # Skip bench_flowlog on Windows (uses POSIX getopt)
 if host_machine.system() != 'windows'
