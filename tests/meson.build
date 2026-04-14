@@ -50,11 +50,11 @@ io_src = files(
 )
 
 # Select threading backend based on platform
-if host_machine.system() == 'windows'
-  thread_src = files('../wirelog/thread_msvc.c',)
-else
-  thread_src = files('../wirelog/thread_posix.c',)
-endif
+# Reuse the same threading backend selected by wirelog/meson.build
+# (C11 threads.h > POSIX pthreads > Windows MSVC).
+# wirelog_thread_src is defined in wirelog/meson.build and propagated
+# to subdir builds via the parent scope.
+thread_src = wirelog_thread_src
 
 # ============================================================================
 # Test Executables
