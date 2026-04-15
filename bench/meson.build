@@ -115,7 +115,7 @@ bench_col_layout = executable(
   bench_thread_src,
   bench_workqueue_src,
   include_directories: [wirelog_inc, wirelog_src_inc],
-  dependencies: [nanoarrow_dep, threads_dep, xxhash_dep, mbedtls_dep],
+  dependencies: [nanoarrow_dep, threads_dep, xxhash_dep, mbedtls_dep, math_dep],
   install: false,
 )
 
