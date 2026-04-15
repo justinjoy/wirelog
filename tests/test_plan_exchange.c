@@ -393,6 +393,33 @@ test_plan_exchange_cleanup(void)
     PASS();
 }
 
+static void
+test_plan_op_abi_values(void)
+{
+    TEST("exec_plan op enum ABI values (Issue #495)");
+
+    /* Universal operators (0-8) */
+    ASSERT(WL_PLAN_OP_VARIABLE == 0, "VARIABLE should be 0");
+    ASSERT(WL_PLAN_OP_MAP == 1, "MAP should be 1");
+    ASSERT(WL_PLAN_OP_FILTER == 2, "FILTER should be 2");
+    ASSERT(WL_PLAN_OP_JOIN == 3, "JOIN should be 3");
+    ASSERT(WL_PLAN_OP_ANTIJOIN == 4, "ANTIJOIN should be 4");
+    ASSERT(WL_PLAN_OP_REDUCE == 5, "REDUCE should be 5");
+    ASSERT(WL_PLAN_OP_CONCAT == 6, "CONCAT should be 6");
+    ASSERT(WL_PLAN_OP_CONSOLIDATE == 7, "CONSOLIDATE should be 7");
+    ASSERT(WL_PLAN_OP_SEMIJOIN == 8, "SEMIJOIN should be 8");
+
+    /* Backend-specific boundary */
+    ASSERT(WL_PLAN_OP__BACKEND_START == 9, "__BACKEND_START should be 9");
+
+    /* Columnar backend operators (9-11) */
+    ASSERT(WL_PLAN_OP_K_FUSION == 9, "K_FUSION should be 9");
+    ASSERT(WL_PLAN_OP_LFTJ == 10, "LFTJ should be 10");
+    ASSERT(WL_PLAN_OP_EXCHANGE == 11, "EXCHANGE should be 11");
+
+    PASS();
+}
+
 /* ----------------------------------------------------------------
  * Main
  * ---------------------------------------------------------------- */
@@ -402,6 +429,7 @@ main(void)
 {
     printf("=== Plan Exchange Insertion Tests (#319) ===\n");
 
+    test_plan_op_abi_values();
     test_plan_tc_exchange_conservative();
     test_plan_no_exchange_nonrecursive();
     test_plan_exchange_key_metadata();
