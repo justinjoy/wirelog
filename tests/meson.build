@@ -193,6 +193,16 @@ test_csv_exe = executable(
 
 test('csv', test_csv_exe)
 
+# Issue #508: bench_argv shim unit tests. Header-only, portable by
+# construction; runs on every platform including MSVC.
+test_bench_argv_exe = executable(
+  'test_bench_argv',
+  files('test_bench_argv.c'),
+  include_directories: [wirelog_inc, wirelog_src_inc],
+)
+test('bench_argv', test_bench_argv_exe,
+     suite: 'bench')
+
 # Issue #287: logger env parser tests (pure function; no env mutation).
 test_log_parse_exe = executable(
   'test_log_parse',

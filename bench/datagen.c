@@ -12,24 +12,7 @@
  *           [--edges M] [--seed S] [--weighted] [--output path.csv]
  */
 
-#ifndef _MSC_VER
-#include <getopt.h>
-#else
-extern int
-getopt(int argc, char *const argv[], const char *optstring);
-extern int optind;
-extern char *optarg;
-
-/* Stub struct option for MSVC compatibility (getopt_long not used) */
-struct option {
-    const char *name;
-    int has_arg;
-    int *flag;
-    int val;
-};
-#define no_argument 0
-#define required_argument 1
-#endif
+#include "bench_argv.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -139,43 +122,39 @@ main(int argc, char **argv)
     const char *output = NULL;
     const char *type_str = NULL;
 
-    static struct option long_opts[] = {
-        { "nodes", required_argument, NULL, 'n' },
-        { "edges", required_argument, NULL, 'e' },
-        { "type", required_argument, NULL, 't' },
-        { "seed", required_argument, NULL, 's' },
-        { "weighted", no_argument, NULL, 'w' },
-        { "output", required_argument, NULL, 'o' },
-        { "help", no_argument, NULL, 'h' },
-        { NULL, 0, NULL, 0 },
+    static bench_argv_long_t long_opts[] = {
+        { "nodes", required_argument, 'n' },
+        { "edges", required_argument, 'e' },
+        { "type", required_argument, 't' },
+        { "seed", required_argument, 's' },
+        { "weighted", no_argument, 'w' },
+        { "output", required_argument, 'o' },
+        { "help", no_argument, 'h' },
+        { NULL, 0, 0 },
     };
 
+    bench_argv_state_t args = BENCH_ARGV_INIT;
     int opt;
-#ifndef _MSC_VER
-    while ((opt = getopt_long(argc, argv, "n:e:t:s:wo:h", long_opts, NULL))
-           != -1) {
-#else
-    /* MSVC: getopt_long not available; use simple getopt fallback */
-    while ((opt = getopt(argc, argv, "n:e:t:s:wo:h")) != -1) {
-#endif
+    while ((opt = bench_argv_next(argc, argv, "n:e:t:s:wo:h", long_opts,
+        &args)) != -1) {
         switch (opt) {
         case 'n':
-            nodes = (int32_t)strtol(optarg, NULL, 10);
+            nodes = (int32_t)strtol(args.optarg, NULL, 10);
             break;
         case 'e':
-            edges = (int32_t)strtol(optarg, NULL, 10);
+            edges = (int32_t)strtol(args.optarg, NULL, 10);
             break;
         case 't':
-            type_str = optarg;
+            type_str = args.optarg;
             break;
         case 's':
-            seed = (uint32_t)strtoul(optarg, NULL, 10);
+            seed = (uint32_t)strtoul(args.optarg, NULL, 10);
             break;
         case 'w':
             weighted = 1;
             break;
         case 'o':
-            output = optarg;
+            output = args.optarg;
             break;
         case 'h':
         default:

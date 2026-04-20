@@ -18,13 +18,15 @@
  * Compiler attribute shims
  * ================================================================ */
 
-/* Portable noinline for bench/perf-gate call sites.
- * MSVC C mode does not parse __attribute__((...)), so keep the two
- * spellings behind a single macro used at call sites. */
+/* Portable attribute shims for bench call sites. MSVC C mode does not
+ * parse __attribute__((...)), so keep the two spellings behind a single
+ * macro used at call sites. */
 #if defined(_MSC_VER) && !defined(__clang__)
 #  define BENCH_NOINLINE __declspec(noinline)
+#  define BENCH_UNUSED   /* MSVC has no attribute equivalent; no warning */
 #else
 #  define BENCH_NOINLINE __attribute__((noinline))
+#  define BENCH_UNUSED   __attribute__((unused))
 #endif
 
 /* ================================================================

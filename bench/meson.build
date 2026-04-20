@@ -70,42 +70,41 @@ bench_workqueue_src = files(
 # (C11 threads.h > POSIX pthreads > Windows MSVC).
 bench_thread_src = wirelog_thread_src
 
-# Skip bench_flowlog on Windows (uses POSIX getopt)
-if host_machine.system() != 'windows'
-  bench_flowlog = executable(
-    'bench_flowlog',
-    files('bench_flowlog.c'),
-    bench_parser_src,
-    bench_ir_src,
-    bench_optimizer_src,
-    bench_backend_src,
-    bench_io_src,
-    bench_arena_src,
-    bench_thread_src,
-    bench_workqueue_src,
-    include_directories: [wirelog_inc, wirelog_src_inc],
-    dependencies: [nanoarrow_dep, threads_dep, xxhash_dep, mbedtls_dep, math_dep],
-    c_args: ['-DWL_RADIX_BENCH'],
-    install: false,
-  )
+# Argv parsing routes through bench/bench_argv.h, so bench_flowlog and
+# bench_flowlog_seq build under MSVC too (issue #508 Phase 1).
+bench_flowlog = executable(
+  'bench_flowlog',
+  files('bench_flowlog.c'),
+  bench_parser_src,
+  bench_ir_src,
+  bench_optimizer_src,
+  bench_backend_src,
+  bench_io_src,
+  bench_arena_src,
+  bench_thread_src,
+  bench_workqueue_src,
+  include_directories: [wirelog_inc, wirelog_src_inc],
+  dependencies: [nanoarrow_dep, threads_dep, xxhash_dep, mbedtls_dep, math_dep],
+  c_args: ['-DWL_RADIX_BENCH'],
+  install: false,
+)
 
-  bench_flowlog_seq = executable(
-    'bench_flowlog_seq',
-    files('bench_flowlog.c'),
-    bench_parser_src,
-    bench_ir_src,
-    bench_optimizer_src,
-    bench_backend_src,
-    bench_io_src,
-    bench_arena_src,
-    bench_thread_src,
-    bench_workqueue_src,
-    include_directories: [wirelog_inc, wirelog_src_inc],
-    dependencies: [nanoarrow_dep, threads_dep, xxhash_dep, mbedtls_dep, math_dep],
-    c_args: ['-DENABLE_K_FUSION=0', '-DWITH_K_FUSION=0'],
-    install: false,
-  )
-endif
+bench_flowlog_seq = executable(
+  'bench_flowlog_seq',
+  files('bench_flowlog.c'),
+  bench_parser_src,
+  bench_ir_src,
+  bench_optimizer_src,
+  bench_backend_src,
+  bench_io_src,
+  bench_arena_src,
+  bench_thread_src,
+  bench_workqueue_src,
+  include_directories: [wirelog_inc, wirelog_src_inc],
+  dependencies: [nanoarrow_dep, threads_dep, xxhash_dep, mbedtls_dep, math_dep],
+  c_args: ['-DENABLE_K_FUSION=0', '-DWITH_K_FUSION=0'],
+  install: false,
+)
 
 # Column-major migration baseline benchmark (Issue #327)
 bench_col_layout = executable(
@@ -121,11 +120,8 @@ bench_col_layout = executable(
   install: false,
 )
 
-# Skip datagen on Windows (uses POSIX getopt_long)
-if host_machine.system() != 'windows'
-  datagen = executable(
-    'datagen',
-    files('datagen.c'),
-    install: false,
-  )
-endif
+datagen = executable(
+  'datagen',
+  files('datagen.c'),
+  install: false,
+)

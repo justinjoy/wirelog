@@ -76,29 +76,8 @@ output_json_row(const char *wl_name, int32_t edges, uint32_t workers,
     uint64_t kfusion_merge_ns, uint64_t kfusion_cleanup_ns,
     uint64_t exchange_ns);
 
-#ifndef _MSC_VER
-/* getopt.h and getopt_long are POSIX-only; not available on Windows MSVC */
-#include <getopt.h>
-#else
-/* Windows MSVC: getopt/getopt_long not available */
-extern int
-getopt(int argc, char *const argv[], const char *optstring);
-extern int optind;
-extern char *optarg;
-
-/* Stub struct option for MSVC compatibility (getopt_long not used) */
-struct option {
-    const char *name;
-    int has_arg;
-    int *flag;
-    int val;
-};
-#define no_argument 0
-#define required_argument 1
-
-/* MSVC: strtok_r not available, use thread-local strtok fallback */
-#define strtok_r(str, delim, saveptr) strtok((str), (delim))
-#endif
+#include "bench_argv.h"
+#include "bench_util.h"
 
 #include <inttypes.h>
 #include <stdint.h>
@@ -920,10 +899,7 @@ run_cspa_incremental_workload(const char *data_dir, uint32_t workers,
      * Facts are loaded via col_session_insert_incremental.
      * NOTE: Currently unused (incremental measurement disabled).
      * Kept for reference: Phase 4+ delta-only evaluation. */
-    static const char *cspa_incr_source
-#ifndef _MSC_VER
-    __attribute__((unused))
-#endif
+    static const char *cspa_incr_source BENCH_UNUSED
         = ".decl assign(x: int32, y: int32)\n"
         ".decl dereference(x: int32, y: int32)\n"
         ".decl valueFlow(x: int32, y: int32)\n"
@@ -2842,81 +2818,75 @@ main(int argc, char **argv)
     uint32_t workers = 1;
     int repeat = 3;
 
-    static struct option long_opts[] = {
-        { "workload", required_argument, NULL, 'w' },
-        { "data", required_argument, NULL, 'd' },
-        { "data-weighted", required_argument, NULL, 'W' },
-        { "data-andersen", required_argument, NULL, 'A' },
-        { "data-dyck", required_argument, NULL, 'D' },
-        { "data-cspa", required_argument, NULL, 'C' },
-        { "data-csda", required_argument, NULL, 'S' },
-        { "data-galen", required_argument, NULL, 'G' },
-        { "data-polonius", required_argument, NULL, 'P' },
-        { "data-ddisasm", required_argument, NULL, 'I' },
-        { "data-crdt", required_argument, NULL, 'R' },
-        { "data-doop", required_argument, NULL, 'O' },
-        { "workers", required_argument, NULL, 'j' },
-        { "repeat", required_argument, NULL, 'r' },
-        { "format", required_argument, NULL, 'F' },
-        { "help", no_argument, NULL, 'h' },
-        { NULL, 0, NULL, 0 },
+    static bench_argv_long_t long_opts[] = {
+        { "workload", required_argument, 'w' },
+        { "data", required_argument, 'd' },
+        { "data-weighted", required_argument, 'W' },
+        { "data-andersen", required_argument, 'A' },
+        { "data-dyck", required_argument, 'D' },
+        { "data-cspa", required_argument, 'C' },
+        { "data-csda", required_argument, 'S' },
+        { "data-galen", required_argument, 'G' },
+        { "data-polonius", required_argument, 'P' },
+        { "data-ddisasm", required_argument, 'I' },
+        { "data-crdt", required_argument, 'R' },
+        { "data-doop", required_argument, 'O' },
+        { "workers", required_argument, 'j' },
+        { "repeat", required_argument, 'r' },
+        { "format", required_argument, 'F' },
+        { "help", no_argument, 'h' },
+        { NULL, 0, 0 },
     };
 
+    bench_argv_state_t args = BENCH_ARGV_INIT;
     int opt;
-#ifndef _MSC_VER
-    while ((opt = getopt_long(argc, argv, "w:d:W:A:D:C:S:G:P:I:R:O:j:r:F:h",
-        long_opts, NULL))
-        != -1) {
-#else
-    /* MSVC: getopt_long not available; use simple getopt fallback */
-    while ((opt = getopt(argc, argv, "w:d:W:A:D:C:S:G:P:I:R:O:j:r:F:h"))
-        != -1) {
-#endif
+    while ((opt = bench_argv_next(argc, argv,
+        "w:d:W:A:D:C:S:G:P:I:R:O:j:r:F:h", long_opts, &args)) != -1) {
         switch (opt) {
         case 'w':
-            workload = optarg;
+            workload = args.optarg;
             break;
         case 'd':
-            data_path = optarg;
+            data_path = args.optarg;
             break;
         case 'W':
-            data_weighted_path = optarg;
+            data_weighted_path = args.optarg;
             break;
         case 'A':
-            data_andersen_path = optarg;
+            data_andersen_path = args.optarg;
             break;
         case 'D':
-            data_dyck_path = optarg;
+            data_dyck_path = args.optarg;
             break;
         case 'C':
-            data_cspa_path = optarg;
+            data_cspa_path = args.optarg;
             break;
         case 'S':
-            data_csda_path = optarg;
+            data_csda_path = args.optarg;
             break;
         case 'G':
-            data_galen_path = optarg;
+            data_galen_path = args.optarg;
             break;
         case 'P':
-            data_polonius_path = optarg;
+            data_polonius_path = args.optarg;
             break;
         case 'I':
-            data_ddisasm_path = optarg;
+            data_ddisasm_path = args.optarg;
             break;
         case 'R':
-            data_crdt_path = optarg;
+            data_crdt_path = args.optarg;
             break;
         case 'O':
-            data_doop_path = optarg;
+            data_doop_path = args.optarg;
             break;
         case 'j':
-            workers = (uint32_t)strtoul(optarg, NULL, 10);
+            workers = (uint32_t)strtoul(args.optarg, NULL, 10);
             break;
         case 'r':
-            repeat = (int)strtol(optarg, NULL, 10);
+            repeat = (int)strtol(args.optarg, NULL, 10);
             break;
         case 'F':
-            g_format_json = (strcmp(optarg, "json") == 0);
+            g_format_json = (strcmp(args.optarg, "json") == 0);
             break;
         case 'h':
         default:
