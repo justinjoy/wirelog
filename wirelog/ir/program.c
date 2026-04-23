@@ -336,6 +336,11 @@ collect_decl(struct wirelog_program *prog,
             return -1;
     }
 
+    /* Issue #535: Reset graph-column fields for re-entry safety (second .decl
+     * for the same relation gets a clean slate for graph-column tracking). */
+    rel->has_graph_column = false;
+    rel->graph_column_index = 0;
+
     /* Extract typed params as columns */
     uint32_t col_count = 0;
     for (uint32_t i = 0; i < decl_node->child_count; i++) {
@@ -366,6 +371,19 @@ collect_decl(struct wirelog_program *prog,
                 rel->columns[idx].compound_functor_id = meta.functor_id;
                 rel->columns[idx].compound_arity = meta.arity;
                 rel->columns[idx].compound_inline_col_offset = 0;
+
+                /* Issue #535: RDF named-graph support */
+                if (strcmp(param->name, "__graph_id") == 0) {
+                    if (rel->has_graph_column) {
+                        WL_LOG(WL_LOG_SEC_PARSER, WL_LOG_WARN,
+                            "duplicate __graph_id column in relation '%s'"
+                            " (keeping first at index %u)",
+                            rel->name, rel->graph_column_index);
+                    } else {
+                        rel->has_graph_column = true;
+                        rel->graph_column_index = idx;
+                    }
+                }
 
                 idx++;
             }

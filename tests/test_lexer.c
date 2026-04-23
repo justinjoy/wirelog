@@ -25,80 +25,81 @@ static int tests_passed = 0;
 static int tests_failed = 0;
 
 #define TEST(name)                      \
-    do {                                \
-        tests_run++;                    \
-        printf("  [TEST] %-50s", name); \
-        fflush(stdout);                 \
-    } while (0)
+        do {                                \
+            tests_run++;                    \
+            printf("  [TEST] %-50s", name); \
+            fflush(stdout);                 \
+        } while (0)
 
 #define PASS()             \
-    do {                   \
-        tests_passed++;    \
-        printf(" PASS\n"); \
-    } while (0)
+        do {                   \
+            tests_passed++;    \
+            printf(" PASS\n"); \
+        } while (0)
 
 #define FAIL(msg)                   \
-    do {                            \
-        tests_failed++;             \
-        printf(" FAIL: %s\n", msg); \
-    } while (0)
+        do {                            \
+            tests_failed++;             \
+            printf(" FAIL: %s\n", msg); \
+        } while (0)
 
 #define ASSERT_TOK(lexer, expected_type)                                      \
-    do {                                                                      \
-        wl_parser_lexer_token_t tok = wl_parser_lexer_next_token(&(lexer));   \
-        if (tok.type != (expected_type)) {                                    \
-            char buf[256];                                                    \
-            snprintf(                                                         \
-                buf, sizeof(buf), "expected %s, got %s (line %u, col %u)",    \
-                wl_parser_lexer_token_type_str(expected_type),                \
-                wl_parser_lexer_token_type_str(tok.type), tok.line, tok.col); \
-            FAIL(buf);                                                        \
-            return;                                                           \
-        }                                                                     \
-    } while (0)
+        do {                                                                      \
+            wl_parser_lexer_token_t tok = wl_parser_lexer_next_token(&(lexer));   \
+            if (tok.type != (expected_type)) {                                    \
+                char buf[256];                                                    \
+                snprintf(                                                         \
+                    buf, sizeof(buf), "expected %s, got %s (line %u, col %u)",    \
+                    wl_parser_lexer_token_type_str(expected_type),                \
+                    wl_parser_lexer_token_type_str(tok.type), tok.line, \
+                    tok.col); \
+                FAIL(buf);                                                        \
+                return;                                                           \
+            }                                                                     \
+        } while (0)
 
 #define ASSERT_TOK_VAL(lexer, expected_type, expected_val)                  \
-    do {                                                                    \
-        wl_parser_lexer_token_t tok = wl_parser_lexer_next_token(&(lexer)); \
-        if (tok.type != (expected_type)) {                                  \
-            char buf[256];                                                  \
-            snprintf(buf, sizeof(buf), "expected %s, got %s",               \
-                     wl_parser_lexer_token_type_str(expected_type),         \
-                     wl_parser_lexer_token_type_str(tok.type));             \
-            FAIL(buf);                                                      \
-            return;                                                         \
-        }                                                                   \
-        if (tok.int_value != (expected_val)) {                              \
-            char buf[256];                                                  \
-            snprintf(buf, sizeof(buf), "expected value %lld, got %lld",     \
-                     (long long)(expected_val), (long long)tok.int_value);  \
-            FAIL(buf);                                                      \
-            return;                                                         \
-        }                                                                   \
-    } while (0)
+        do {                                                                    \
+            wl_parser_lexer_token_t tok = wl_parser_lexer_next_token(&(lexer)); \
+            if (tok.type != (expected_type)) {                                  \
+                char buf[256];                                                  \
+                snprintf(buf, sizeof(buf), "expected %s, got %s",               \
+                    wl_parser_lexer_token_type_str(expected_type),         \
+                    wl_parser_lexer_token_type_str(tok.type));             \
+                FAIL(buf);                                                      \
+                return;                                                         \
+            }                                                                   \
+            if (tok.int_value != (expected_val)) {                              \
+                char buf[256];                                                  \
+                snprintf(buf, sizeof(buf), "expected value %lld, got %lld",     \
+                    (long long)(expected_val), (long long)tok.int_value);  \
+                FAIL(buf);                                                      \
+                return;                                                         \
+            }                                                                   \
+        } while (0)
 
 #define ASSERT_TOK_STR(lexer, expected_type, expected_str)                  \
-    do {                                                                    \
-        wl_parser_lexer_token_t tok = wl_parser_lexer_next_token(&(lexer)); \
-        if (tok.type != (expected_type)) {                                  \
-            char buf[256];                                                  \
-            snprintf(buf, sizeof(buf), "expected %s, got %s",               \
-                     wl_parser_lexer_token_type_str(expected_type),         \
-                     wl_parser_lexer_token_type_str(tok.type));             \
-            FAIL(buf);                                                      \
-            return;                                                         \
-        }                                                                   \
-        char *s = wl_parser_lexer_token_to_string(&tok);                    \
-        if (strcmp(s, expected_str) != 0) {                                 \
-            char buf[256];                                                  \
-            snprintf(buf, sizeof(buf), "expected \"%s\", got \"%s\"",       \
-                     expected_str, s);                                      \
-            free(s);                                                        \
-            FAIL(buf);                                                      \
-            return;                                                         \
-        }                                                                   \
-        free(s);                                                            \
-    } while (0)
+        do {                                                                    \
+            wl_parser_lexer_token_t tok = wl_parser_lexer_next_token(&(lexer)); \
+            if (tok.type != (expected_type)) {                                  \
+                char buf[256];                                                  \
+                snprintf(buf, sizeof(buf), "expected %s, got %s",               \
+                    wl_parser_lexer_token_type_str(expected_type),         \
+                    wl_parser_lexer_token_type_str(tok.type));             \
+                FAIL(buf);                                                      \
+                return;                                                         \
+            }                                                                   \
+            char *s = wl_parser_lexer_token_to_string(&tok);                    \
+            if (strcmp(s, expected_str) != 0) {                                 \
+                char buf[256];                                                  \
+                snprintf(buf, sizeof(buf), "expected \"%s\", got \"%s\"",       \
+                    expected_str, s);                                      \
+                free(s);                                                        \
+                FAIL(buf);                                                      \
+                return;                                                         \
+            }                                                                   \
+            free(s);                                                            \
+        } while (0)
 
 /* ======================================================================== */
 /* Lexer: Basic Token Tests                                                 */
@@ -530,7 +531,7 @@ test_line_tracking(void)
     if (t1.line != 1 || t2.line != 2 || t3.line != 3) {
         char buf[128];
         snprintf(buf, sizeof(buf), "lines: %u,%u,%u expected 1,2,3", t1.line,
-                 t2.line, t3.line);
+            t2.line, t3.line);
         FAIL(buf);
         return;
     }
@@ -816,6 +817,43 @@ test_unknown_character(void)
     wl_parser_lexer_token_t tok = wl_parser_lexer_next_token(&lex);
     if (tok.type != WL_PARSER_LEXER_TOK_ERROR) {
         FAIL("expected WL_PARSER_LEXER_TOK_ERROR for unknown char");
+        return;
+    }
+    PASS();
+}
+
+static void
+test_double_underscore_identifier(void)
+{
+    TEST("__graph_id lexes as IDENT");
+    wl_parser_lexer_t lex;
+    wl_parser_lexer_init(&lex, "__graph_id");
+    wl_parser_lexer_token_t tok = wl_parser_lexer_next_token(&lex);
+    if (tok.type != WL_PARSER_LEXER_TOK_IDENT) {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "expected IDENT, got %s",
+            wl_parser_lexer_token_type_str(tok.type));
+        FAIL(buf);
+        return;
+    }
+    if (tok.length != 10) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "expected length 10, got %u", tok.length);
+        FAIL(buf);
+        return;
+    }
+    PASS();
+}
+
+static void
+test_lone_double_underscore_is_not_ident(void)
+{
+    TEST("lone __ is NOT a valid identifier (treated as wildcard/error)");
+    wl_parser_lexer_t lex;
+    wl_parser_lexer_init(&lex, "__");
+    wl_parser_lexer_token_t tok = wl_parser_lexer_next_token(&lex);
+    if (tok.type == WL_PARSER_LEXER_TOK_IDENT) {
+        FAIL("__ should not produce IDENT token");
         return;
     }
     PASS();

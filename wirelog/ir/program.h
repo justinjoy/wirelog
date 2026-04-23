@@ -44,6 +44,9 @@ typedef struct {
     int64_t *fact_data;
     uint32_t fact_count;
     uint32_t fact_capacity;
+    /* Issue #535: RDF named-graph support */
+    bool has_graph_column;
+    uint32_t graph_column_index;  /* valid only when has_graph_column == true */
 } wl_ir_relation_info_t;
 
 /* ======================================================================== */
