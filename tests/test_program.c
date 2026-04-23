@@ -2649,6 +2649,134 @@ test_string_fact_interning(void)
     PASS();
 }
 
+/* ======================================================================== */
+/* Issue #535: RDF Named-Graph column detection                             */
+/* ======================================================================== */
+
+static void
+test_rdf_graph_column_flag_set(void)
+{
+    TEST("__graph_id column sets has_graph_column + graph_column_index");
+
+    struct wirelog_program *prog = make_program(
+        ".decl fact(a: int64, b: int64, __graph_id: int64)\n");
+
+    if (!prog) {
+        FAIL("program is NULL");
+        return;
+    }
+
+    if (prog->relation_count != 1) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "expected 1 relation, got %u",
+            prog->relation_count);
+        wl_ir_program_free(prog);
+        FAIL(buf);
+        return;
+    }
+
+    if (!prog->relations[0].has_graph_column) {
+        wl_ir_program_free(prog);
+        FAIL("has_graph_column should be true");
+        return;
+    }
+
+    if (prog->relations[0].graph_column_index != 2) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "expected graph_column_index=2, got %u",
+            prog->relations[0].graph_column_index);
+        wl_ir_program_free(prog);
+        FAIL(buf);
+        return;
+    }
+
+    if (prog->relations[0].column_count != 3) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "expected 3 columns, got %u",
+            prog->relations[0].column_count);
+        wl_ir_program_free(prog);
+        FAIL(buf);
+        return;
+    }
+
+    wl_ir_program_free(prog);
+    PASS();
+}
+
+static void
+test_rdf_graph_column_flag_absent(void)
+{
+    TEST("relation without __graph_id has has_graph_column == false");
+
+    struct wirelog_program *prog = make_program(
+        ".decl fact(a: int64, b: int64)\n");
+
+    if (!prog) {
+        FAIL("program is NULL");
+        return;
+    }
+
+    if (prog->relation_count != 1) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "expected 1 relation, got %u",
+            prog->relation_count);
+        wl_ir_program_free(prog);
+        FAIL(buf);
+        return;
+    }
+
+    if (prog->relations[0].has_graph_column) {
+        wl_ir_program_free(prog);
+        FAIL("has_graph_column should be false when __graph_id absent");
+        return;
+    }
+
+    wl_ir_program_free(prog);
+    PASS();
+}
+
+static void
+test_rdf_graph_column_at_index_zero(void)
+{
+    TEST(
+        "__graph_id at column 0 sets index=0 (not confused with default zero)");
+
+    struct wirelog_program *prog = make_program(
+        ".decl edge(__graph_id: int64, src: int64, dst: int64)\n");
+
+    if (!prog) {
+        FAIL("program is NULL");
+        return;
+    }
+
+    if (prog->relation_count != 1) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "expected 1 relation, got %u",
+            prog->relation_count);
+        wl_ir_program_free(prog);
+        FAIL(buf);
+        return;
+    }
+
+    if (!prog->relations[0].has_graph_column) {
+        wl_ir_program_free(prog);
+        FAIL("has_graph_column should be true");
+        return;
+    }
+
+    if (prog->relations[0].graph_column_index != 0) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "expected graph_column_index=0, got %u",
+            prog->relations[0].graph_column_index);
+        wl_ir_program_free(prog);
+        FAIL(buf);
+        return;
+    }
+
+    wl_ir_program_free(prog);
+    PASS();
+}
+
 int
 main(void)
 {
@@ -2705,6 +2833,11 @@ main(void)
     test_compound_invalid_kind_skipped();
     test_compound_inline_zero_arity_skipped();
     test_compound_no_relations_safe();
+
+    /* Issue #535: RDF named-graph column detection */
+    test_rdf_graph_column_flag_set();
+    test_rdf_graph_column_flag_absent();
+    test_rdf_graph_column_at_index_zero();
 
     /* UNION merge */
     test_union_merge_tc();

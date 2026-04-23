@@ -363,13 +363,19 @@ scan_token(wl_parser_lexer_t *lexer)
         return scan_identifier(lexer);
     }
 
-    /* Underscore: could be wildcard or identifier start */
+    /* Underscore: could be wildcard or identifier start.
+     * Accepted forms: _alpha..., __alpha..., __underscore_chain..._alpha...
+     * Rejected: standalone _, __, ___ (no alpha anywhere after underscores). */
     if (c == '_') {
-        if (!is_at_end(lexer) && isalpha((unsigned char)peek(lexer))) {
-            /* _alpha... => identifier */
+        if (!is_at_end(lexer)
+            && (isalpha((unsigned char)peek(lexer))
+            || (peek(lexer) == '_'
+            && (isalpha((unsigned char)peek_next(lexer))
+            || peek_next(lexer) == '_')))) {
+            /* _alpha... or __<alpha-or-_>... => scan as identifier */
             return scan_identifier(lexer);
         }
-        /* Standalone underscore => wildcard */
+        /* Standalone _ / __ / ___ with no alpha continuation => wildcard */
         return make_token(lexer, WL_PARSER_LEXER_TOK_UNDERSCORE);
     }
 
