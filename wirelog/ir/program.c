@@ -916,6 +916,53 @@ build_atom_scan(const wl_parser_ast_node_t *atom,
 
     wirelog_ir_node_t *result = scan;
 
+    /* Phase 2B: Compound column IR lowering (Issue #531) */
+    if (prog && atom->name) {
+        /* Find the relation in the program schema */
+        wl_ir_relation_info_t *rel_info = NULL;
+        for (uint32_t i = 0; i < prog->relation_count; i++) {
+            if (prog->relations[i].name
+                && strcmp(prog->relations[i].name, atom->name) == 0) {
+                rel_info = &prog->relations[i];
+                break;
+            }
+        }
+
+        if (rel_info && rel_info->columns) {
+            /* Check each atom argument for compound terms */
+            for (uint32_t i = 0; i < arg_count && i < rel_info->column_count;
+                i++) {
+                const wl_parser_ast_node_t *arg = atom->children[i];
+                const wirelog_column_t *col = &rel_info->columns[i];
+
+                /* Detect compound term arguments */
+                if (arg->type == WL_PARSER_AST_NODE_COMPOUND_TERM
+                    && col->compound_kind != WIRELOG_COMPOUND_KIND_NONE) {
+                    /* Create COMPOUND IR node based on kind */
+                    wirelog_ir_node_type_t compound_type
+                        = col->compound_kind == WIRELOG_COMPOUND_KIND_INLINE
+                        ? WIRELOG_IR_COMPOUND_INLINE
+                        : WIRELOG_IR_COMPOUND_SIDE;
+                    wirelog_ir_node_t *comp
+                        = wl_ir_node_create(compound_type);
+                    if (comp) {
+                        /* Populate compound metadata from column and argument */
+                        comp->compound_inline.functor_id
+                            = col->compound_functor_id;
+                        comp->compound_inline.arity = col->compound_arity;
+                        comp->compound_inline.inline_col_offset
+                            = col->compound_inline_col_offset;
+
+                        /* Attach SCAN as child so compound can access relation
+                         */
+                        wl_ir_node_add_child(comp, result);
+                        result = comp;
+                    }
+                }
+            }
+        }
+    }
+
     /* Step 1a: Intra-atom FILTER for duplicate variables */
     for (uint32_t i = 0; i < arg_count; i++) {
         if (!var_names[i])
