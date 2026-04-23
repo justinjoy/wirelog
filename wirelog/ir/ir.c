@@ -291,6 +291,10 @@ ir_node_type_str(wirelog_ir_node_type_t type)
         return "UNION";
     case WIRELOG_IR_SEMIJOIN:
         return "SEMIJOIN";
+    case WIRELOG_IR_COMPOUND_INLINE:
+        return "COMPOUND_INLINE";
+    case WIRELOG_IR_COMPOUND_SIDE:
+        return "COMPOUND_SIDE";
     }
     return "UNKNOWN";
 }

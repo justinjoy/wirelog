@@ -144,13 +144,29 @@ typedef enum {
 } wirelog_column_type_t;
 
 /**
+ * wirelog_compound_kind_t:
+ *
+ * Compound column kind (Issue #531: IR Lowering)
+ */
+typedef enum {
+    WIRELOG_COMPOUND_KIND_NONE = 0,   /* Regular column, not compound */
+    WIRELOG_COMPOUND_KIND_INLINE = 1, /* f/N inline compound */
+    WIRELOG_COMPOUND_KIND_SIDE = 2,   /* f/N side-relation compound (default) */
+} wirelog_compound_kind_t;
+
+/**
  * wirelog_column_t:
  *
- * Column metadata
+ * Column metadata. Supports both regular and compound columns.
+ * Compound metadata fields are populated for compound_kind != NONE.
  */
 typedef struct {
     const char *name;
     wirelog_column_type_t type;
+    wirelog_compound_kind_t compound_kind;      /* NONE if not compound */
+    uint32_t compound_functor_id;               /* functor ID (intern'd) if compound */
+    uint32_t compound_arity;                    /* functor arity if compound */
+    uint32_t compound_inline_col_offset;        /* physical column offset if inline */
 } wirelog_column_t;
 
 /**

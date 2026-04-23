@@ -42,15 +42,17 @@ typedef struct wirelog_ir_node wirelog_ir_node_t;
  * Intermediate representation operator node types
  */
 typedef enum {
-    WIRELOG_IR_SCAN,      /* Scan base relation */
-    WIRELOG_IR_PROJECT,   /* Column projection */
-    WIRELOG_IR_FILTER,    /* Predicate filter */
-    WIRELOG_IR_JOIN,      /* Join operator */
-    WIRELOG_IR_FLATMAP,   /* Fused join+map+filter */
-    WIRELOG_IR_AGGREGATE, /* Aggregation */
-    WIRELOG_IR_ANTIJOIN,  /* Negation (antijoin) */
-    WIRELOG_IR_UNION,     /* Union (append) */
-    WIRELOG_IR_SEMIJOIN,  /* Semijoin (SIP pre-filter) */
+    WIRELOG_IR_SCAN,               /* Scan base relation */
+    WIRELOG_IR_PROJECT,            /* Column projection */
+    WIRELOG_IR_FILTER,             /* Predicate filter */
+    WIRELOG_IR_JOIN,               /* Join operator */
+    WIRELOG_IR_FLATMAP,            /* Fused join+map+filter */
+    WIRELOG_IR_AGGREGATE,          /* Aggregation */
+    WIRELOG_IR_ANTIJOIN,           /* Negation (antijoin) */
+    WIRELOG_IR_UNION,              /* Union (append) */
+    WIRELOG_IR_SEMIJOIN,           /* Semijoin (SIP pre-filter) */
+    WIRELOG_IR_COMPOUND_INLINE,    /* Inline compound: f/N inline (Issue #531) */
+    WIRELOG_IR_COMPOUND_SIDE,      /* Side-relation compound: f/N side (Issue #531) */
 } wirelog_ir_node_type_t;
 
 /* ======================================================================== */

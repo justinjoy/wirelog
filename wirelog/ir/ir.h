@@ -84,6 +84,19 @@ struct wirelog_ir_node {
     uint32_t *group_by_indices; /* AGGREGATE: grouping column indices */
     uint32_t group_by_count;    /* AGGREGATE: number of grouping columns */
 
+    /* Compound column IR (Issue #531) */
+    struct {
+        uint32_t functor_id;              /* COMPOUND_INLINE: which functor (intern'd) */
+        uint32_t arity;                   /* COMPOUND_INLINE: arity of compound */
+        wl_ir_expr_t **args;              /* COMPOUND_INLINE: lowered argument expressions */
+        uint32_t arg_count;               /* COMPOUND_INLINE: == arity */
+        uint32_t inline_col_offset;       /* COMPOUND_INLINE: physical column offset */
+    } compound_inline;
+
+    struct {
+        wl_ir_expr_t *handle_expr;        /* COMPOUND_SIDE: IR for handle resolution */
+    } compound_side;
+
     /* Tree structure */
     wirelog_ir_node_t **children;
     uint32_t child_count;
