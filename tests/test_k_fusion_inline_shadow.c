@@ -38,9 +38,9 @@
 #include "../wirelog/columnar/diff_arrangement.h"
 #include "../wirelog/columnar/internal.h"
 #include "../wirelog/wirelog-types.h"
+#include "../wirelog/thread.h"
 
 #include <errno.h>
-#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -185,7 +185,7 @@ test_k_fusion_inline_shadow(void)
     col_rel_t *rel = NULL;
     col_diff_arrangement_t *master = NULL;
     col_diff_arrangement_t *copies[K_WORKERS] = { NULL };
-    pthread_t threads[K_WORKERS];
+    thread_t threads[K_WORKERS];
     shadow_worker_t workers[K_WORKERS] = { 0 };
     bool thread_created[K_WORKERS] = { false };
 
@@ -222,15 +222,15 @@ test_k_fusion_inline_shadow(void)
         workers[w].nrows = SHADOW_NROWS;
         workers[w].worker_id = (uint32_t)(w + 1);
         workers[w].errors = 0;
-        int trc = pthread_create(&threads[w], NULL, shadow_worker_main,
+        int trc = thread_create(&threads[w], shadow_worker_main,
                 &workers[w]);
-        ASSERT(trc == 0, "pthread_create failed");
+        ASSERT(trc == 0, "thread_create failed");
         thread_created[w] = true;
     }
 
     for (int w = 0; w < K_WORKERS; w++) {
         if (thread_created[w]) {
-            pthread_join(threads[w], NULL);
+            thread_join(&threads[w]);
             thread_created[w] = false; /* avoid double-join in cleanup */
         }
     }
@@ -251,7 +251,7 @@ cleanup:
      * jumps here before the happy-path join loop runs). */
     for (int w = 0; w < K_WORKERS; w++) {
         if (thread_created[w])
-            pthread_join(threads[w], NULL);
+            thread_join(&threads[w]);
     }
     for (int w = 0; w < K_WORKERS; w++)
         col_diff_arrangement_destroy(copies[w]);

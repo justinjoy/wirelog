@@ -4790,6 +4790,19 @@ wl_col_rel_inline_locate(const col_rel_t *rel, uint32_t logical_col,
 
     uint32_t offset = 0u;
     for (uint32_t i = 0; ; i++) {
+        /* Guard: all logical columns have been consumed without finding
+         * logical_col.  Checking offset >= ncols BEFORE indexing
+         * compound_arity_map prevents an out-of-bounds read when
+         * logical_col is >= logical_ncols (e.g. the caller passes 99
+         * for a 4-column schema).  The array has exactly logical_ncols
+         * entries, and after the last entry offset == ncols. */
+        if (offset >= rel->ncols) {
+            WL_LOG(WL_LOG_SEC_COMPOUND, WL_LOG_WARN,
+                "event=locate error=logical_col_oor rel=%s "
+                "logical_col=%u physical_ncols=%u",
+                rel->name ? rel->name : "(anon)", logical_col, rel->ncols);
+            return EINVAL;
+        }
         uint32_t width = rel->compound_arity_map[i];
         if (width == 0u) {
             WL_LOG(WL_LOG_SEC_COMPOUND, WL_LOG_ERROR,
