@@ -465,7 +465,9 @@ collect_output_columns(const wirelog_ir_node_t *node, char ***out_names,
     }
 
     switch (node->type) {
-    case WIRELOG_IR_SCAN: {
+    case WIRELOG_IR_SCAN:
+    case WIRELOG_IR_COMPOUND_INLINE:
+    case WIRELOG_IR_COMPOUND_SIDE: {
         uint32_t nc = node->column_count;
         char **names = (char **)calloc(nc ? nc : 1, sizeof(char *));
         if (!names)
@@ -767,7 +769,9 @@ translate_ir_node(const wirelog_ir_node_t *node, op_list_t *ops)
         return -1;
 
     switch (node->type) {
-    case WIRELOG_IR_SCAN: {
+    case WIRELOG_IR_SCAN:
+    case WIRELOG_IR_COMPOUND_INLINE:
+    case WIRELOG_IR_COMPOUND_SIDE: {
         wl_plan_op_t *op = op_list_push(ops);
         if (!op)
             return -1;
