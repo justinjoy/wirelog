@@ -198,6 +198,8 @@ collect_scans_r(const wirelog_ir_node_t *node, ms_atom_t *atoms,
 
     switch (node->type) {
     case WIRELOG_IR_SCAN:
+    case WIRELOG_IR_COMPOUND_INLINE:
+    case WIRELOG_IR_COMPOUND_SIDE:
         atoms[*count].rel_name = node->relation_name;
         atoms[*count].col_names = (const char **)node->column_names;
         atoms[*count].col_count = node->column_count;
