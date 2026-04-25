@@ -426,6 +426,103 @@ cleanup:
 }
 
 /* ======================================================================== */
+/* Group D + Group F: merge buffer + run tracking (Issue #553 Commit 4)     */
+/* ======================================================================== */
+
+static void
+test_merge_buffer_round_trip(void)
+{
+    TEST("Group D: merge_columns is independently allocated");
+    col_rel_t *src = build_populated("merge_src", 2u);
+    col_rel_t *dst = NULL;
+    ASSERT(src != NULL, "build_populated failed");
+
+    /* Manually attach a merge buffer; in production the consolidation
+     * path provisions this lazily, but we install it explicitly to make
+     * the test independent of consolidation triggers. */
+    const uint32_t merge_cap = 8u;
+    src->merge_columns = col_columns_alloc(src->ncols, merge_cap);
+    ASSERT(src->merge_columns != NULL, "col_columns_alloc merge failed");
+    src->merge_buf_cap = merge_cap;
+    for (uint32_t c = 0; c < src->ncols; c++) {
+        for (uint32_t i = 0; i < merge_cap; i++) {
+            src->merge_columns[c][i] = (int64_t)((c + 1u) * 1000 + i);
+        }
+    }
+    src->sorted_nrows = src->nrows;
+    src->base_nrows = src->nrows;
+
+    int rc = col_rel_deep_copy(src, &dst, NULL);
+    ASSERT(rc == 0 && dst != NULL, "deep-copy failed");
+    ASSERT(dst->merge_buf_cap == merge_cap, "merge_buf_cap not copied");
+    ASSERT(dst->merge_columns != NULL, "dst merge_columns not allocated");
+    ASSERT(dst->merge_columns != src->merge_columns,
+        "merge_columns array aliased");
+    for (uint32_t c = 0; c < src->ncols; c++) {
+        ASSERT(dst->merge_columns[c] != src->merge_columns[c],
+            "per-column merge buffer aliased");
+        for (uint32_t i = 0; i < merge_cap; i++) {
+            ASSERT(dst->merge_columns[c][i] == src->merge_columns[c][i],
+                "merge content mismatch");
+        }
+    }
+    ASSERT(dst->sorted_nrows == src->sorted_nrows,
+        "sorted_nrows not preserved");
+    ASSERT(dst->base_nrows == src->base_nrows, "base_nrows not preserved");
+
+    /* Mutate src merge buffer; dst stays independent. */
+    src->merge_columns[0][0] = (int64_t)-12345;
+    ASSERT(dst->merge_columns[0][0] == (int64_t)1000,
+        "dst merge buffer aliased through src");
+
+    PASS();
+cleanup:
+    col_rel_destroy(src);
+    col_rel_destroy(dst);
+}
+
+static void
+test_run_tracking_round_trip(void)
+{
+    TEST("Group F: run_count + run_ends round-trip");
+    col_rel_t *src = build_populated("run_src", 5u);
+    col_rel_t *dst = NULL;
+    ASSERT(src != NULL, "build_populated failed");
+
+    /* Synthesize tiered-run state -- the consolidation path normally
+     * fills run_count + run_ends; we set them directly so this test is
+     * independent of the consolidation triggers. */
+    src->run_count = 3u;
+    src->run_ends[0] = 1u;
+    src->run_ends[1] = 3u;
+    src->run_ends[2] = 5u;
+    /* Remaining COL_MAX_RUNS-3 entries left zeroed by build_populated -> calloc. */
+
+    int rc = col_rel_deep_copy(src, &dst, NULL);
+    ASSERT(rc == 0 && dst != NULL, "deep-copy failed");
+    ASSERT(dst->run_count == 3u, "run_count not copied");
+    ASSERT(dst->run_ends[0] == 1u, "run_ends[0] not copied");
+    ASSERT(dst->run_ends[1] == 3u, "run_ends[1] not copied");
+    ASSERT(dst->run_ends[2] == 5u, "run_ends[2] not copied");
+    /* Confirm trailing entries are still the zeroed default; if memcpy
+     * walked the wrong size we would see corrupted bytes. */
+    for (uint32_t i = 3; i < COL_MAX_RUNS; i++) {
+        ASSERT(dst->run_ends[i] == 0u,
+            "trailing run_ends entry corrupted");
+    }
+
+    /* Mutate src; dst's run_ends array (an inline fixed-size buffer) is
+     * untouched because it was bit-copied. */
+    src->run_ends[1] = 99u;
+    ASSERT(dst->run_ends[1] == 3u, "dst run_ends aliased through src");
+
+    PASS();
+cleanup:
+    col_rel_destroy(src);
+    col_rel_destroy(dst);
+}
+
+/* ======================================================================== */
 /* Main                                                                     */
 /* ======================================================================== */
 
@@ -445,6 +542,8 @@ main(void)
     test_destroy_source_copy_still_valid();
     test_timestamps_round_trip();
     test_timestamps_null_when_src_null();
+    test_merge_buffer_round_trip();
+    test_run_tracking_round_trip();
 
     printf("\nResults: %d/%d passed, %d failed\n",
         tests_passed, tests_run, tests_failed);
