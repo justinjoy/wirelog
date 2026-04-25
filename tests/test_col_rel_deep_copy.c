@@ -849,6 +849,64 @@ cleanup:
 }
 
 /* ======================================================================== */
+/* Wide-column stress (Issue #556)                                          */
+/* ======================================================================== */
+
+static void
+test_wide_column_relation_deep_copies(void)
+{
+    /* 10 columns x 100 rows exercises the deep_copy path on a relation
+     * substantially wider than the 1-3 column shapes covered elsewhere.
+     * The fixture's deterministic content pattern lets us recompute
+     * expected values for every cell, so the equality check is exact. */
+    TEST("wide-column relation (10 cols x 100 rows) deep-copies cleanly");
+    const uint32_t fx_nrows = 100u;
+    const uint32_t fx_ncols = 10u;
+    col_rel_t *src = deep_copy_fixture_make_relation("wide_src", fx_nrows,
+            fx_ncols);
+    col_rel_t *dst = NULL;
+    ASSERT(src != NULL, "fixture make_relation failed");
+    ASSERT(src->nrows == fx_nrows, "fixture nrows wrong");
+    ASSERT(src->ncols == fx_ncols, "fixture ncols wrong");
+
+    int rc = col_rel_deep_copy(src, &dst, NULL);
+    ASSERT(rc == 0 && dst != NULL, "deep-copy failed");
+
+    /* Framework assertions: design invariants + observable equality. */
+    ASSERT(deep_copy_fixture_assert_design_invariants(dst) == 1,
+        "dst design invariants violated");
+    ASSERT(deep_copy_fixture_assert_relations_equal(src, dst) == 1,
+        "src and dst observable content not equal");
+
+    /* All 10 column buffers must be independently allocated. */
+    for (uint32_t c = 0; c < fx_ncols; c++) {
+        ASSERT(dst->columns[c] != src->columns[c],
+            "per-column buffer aliased");
+    }
+
+    /* Mutate dst[7][50]; src must be unchanged. */
+    int64_t expected_src_7_50 = (int64_t)(50u * fx_ncols + 7u);
+    col_rel_set(dst, 50u, 7u, (int64_t)-7777);
+    ASSERT(col_rel_get(src, 50u, 7u) == expected_src_7_50,
+        "src[7][50] perturbed by dst mutation");
+    ASSERT(col_rel_get(dst, 50u, 7u) == (int64_t)-7777,
+        "dst[7][50] mutation not visible");
+
+    /* Mutate src[3][25]; dst must be unchanged. */
+    int64_t expected_dst_3_25 = (int64_t)(25u * fx_ncols + 3u);
+    col_rel_set(src, 25u, 3u, (int64_t)-3333);
+    ASSERT(col_rel_get(dst, 25u, 3u) == expected_dst_3_25,
+        "dst[3][25] perturbed by src mutation");
+    ASSERT(col_rel_get(src, 25u, 3u) == (int64_t)-3333,
+        "src[3][25] mutation not visible");
+
+    PASS();
+cleanup:
+    col_rel_destroy(src);
+    col_rel_destroy(dst);
+}
+
+/* ======================================================================== */
 /* Main                                                                     */
 /* ======================================================================== */
 
@@ -876,6 +934,7 @@ main(void)
     test_compound_arity_map_corrupt_input_degrades();
     test_deep_copy_mem_ledger_null();
     test_large_relation_buffers();
+    test_wide_column_relation_deep_copies();
 
     printf("\nResults: %d/%d passed, %d failed\n",
         tests_passed, tests_run, tests_failed);
