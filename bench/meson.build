@@ -60,6 +60,7 @@ bench_io_src = files(
 
 bench_arena_src = files(
   subdir_wirelog / 'arena/arena.c',
+  subdir_wirelog / 'arena/compound_arena.c',
 )
 
 bench_workqueue_src = files(

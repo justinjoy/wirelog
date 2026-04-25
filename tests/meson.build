@@ -383,6 +383,7 @@ backend_src = files(
 
 arena_src = files(
   '../wirelog/arena/arena.c',
+  '../wirelog/arena/compound_arena.c',
 )
 
 workqueue_src = files(
@@ -1812,6 +1813,28 @@ test_session_exe = executable(
 test('session', test_session_exe)
 
 # ============================================================================
+# Session Compound Arena Lifecycle (Issue #559) - Phase 0 gateway
+# ============================================================================
+
+test_session_compound_arena_lifecycle_exe = executable(
+  'test_session_compound_arena_lifecycle',
+  files('test_session_compound_arena_lifecycle.c'),
+  parser_src,
+  ir_src,
+  optimizer_src,
+  backend_src,
+  io_src,
+  arena_src,
+  thread_src,
+  workqueue_src,
+  include_directories: [wirelog_inc, wirelog_src_inc],
+  dependencies: [nanoarrow_dep, threads_dep, xxhash_dep, mbedtls_dep, math_dep],
+)
+
+test('session_compound_arena_lifecycle',
+     test_session_compound_arena_lifecycle_exe)
+
+# ============================================================================
 # Recursive Aggregation Plan Tests - DISABLED in Phase 2C
 # ============================================================================
 #
@@ -2451,7 +2474,6 @@ test_e2e_asan_side_relation_nested_exe = executable(
   backend_src,
   intern_src,
   arena_src,
-  files('../wirelog/arena/compound_arena.c'),
   thread_src,
   workqueue_src,
   include_directories: [wirelog_inc, wirelog_src_inc],

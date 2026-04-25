@@ -27,6 +27,7 @@
 #include "util/lockfree_queue.h"
 #include "workqueue.h"
 #include "arena/arena.h"
+#include "arena/compound_arena.h"
 #include "wirelog-types.h"
 
 #include "nanoarrow/nanoarrow.h"
@@ -948,6 +949,15 @@ typedef struct wl_col_session_t {
      * always uses the broadcast delta (which may be >= local partition size).
      * False everywhere else, including retraction paths. */
     bool tdd_subpass_active;
+    /* Side-relation compound arena (Issue #559): heap-allocated session-local
+     * compound-term arena.  Owned by the coordinator; created in
+     * col_session_create and freed in col_session_destroy.  Worker sessions
+     * NULL this pointer in col_worker_session_create so the bitwise copy of
+     * the coordinator never participates in worker cleanup; the arena is
+     * single-threaded and frozen across K-Fusion (see compound_arena.h).
+     * The session_seed passed at create time is a placeholder constant; the
+     * remap-aware seed will land in the rotation work tracked by #586+. */
+    wl_compound_arena_t *compound_arena;
     /* Filtered relation cache (Issue #386): caches apply_right_filter results
      * keyed by (relation_name, filter_expr hash + full content). Prevents
      * redundant O(N) filter scans on each fixpoint iteration when
