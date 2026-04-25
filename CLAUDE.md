@@ -48,13 +48,15 @@ See `docs/ARCHITECTURE.md` for design details and `AGENTS.md` for agent-specific
 
 `WL_LOG` is the canonical structured-logger surface. Syntax
 `WL_LOG=SECTION:LEVEL[,...]`; sections include `JOIN`, `CONSOLIDATION`,
-`ARRANGEMENT`, `EVAL`, `SESSION`, `IO`, `PARSER`, `PLUGIN`, `GENERAL`;
-levels are `0..5` (NONE/ERROR/WARN/INFO/DEBUG/TRACE). `*` is a
-wildcard; later entries override earlier ones. Examples:
+`ARRANGEMENT`, `EVAL`, `SESSION`, `IO`, `PARSER`, `PLUGIN`, `COMPOUND`,
+`ARENA`, `GENERAL`; levels are `0..5` (NONE/ERROR/WARN/INFO/DEBUG/TRACE).
+`*` is a wildcard; later entries override earlier ones. Examples:
 
 ```
 WL_LOG=JOIN:4 ./app
 WL_LOG=*:2,JOIN:5 WL_LOG_FILE=/tmp/wl.log ./app
+WL_LOG=ARENA:4 ./app           # DEBUG-level arena allocator events
+WL_LOG=*:2,ARENA:5 ./app       # WARN baseline + TRACE for arena only
 ```
 
 Release builds should pass `-Dwirelog_log_max_level=error` so the
