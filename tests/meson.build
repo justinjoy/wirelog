@@ -2251,7 +2251,7 @@ test('col_rel_compound_schema', test_col_rel_compound_schema_exe)
 
 test_col_rel_deep_copy_exe = executable(
   'test_col_rel_deep_copy',
-  files('test_col_rel_deep_copy.c'),
+  files('test_col_rel_deep_copy.c', 'col_rel_deep_copy_fixture.c'),
   backend_src,
   intern_src,
   arena_src,
