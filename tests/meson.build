@@ -2300,6 +2300,24 @@ test_compound_logging_exe = executable(
 test('compound_logging', test_compound_logging_exe, suite: 'log')
 
 # ============================================================================
+# Arena observability (Issue #558)
+# ============================================================================
+
+test_arena_observability_exe = executable(
+  'test_arena_observability',
+  files('test_arena_observability.c'),
+  arena_src,
+  files('../wirelog/arena/compound_arena.c'),
+  files(
+    '../wirelog/util/log.c',
+    '../wirelog/util/log_emit.c',
+  ),
+  include_directories: [wirelog_inc, wirelog_src_inc],
+)
+
+test('arena_observability', test_arena_observability_exe, suite: 'log')
+
+# ============================================================================
 # Inline-tier integration battery (Issue #532 Task 5)
 # ============================================================================
 

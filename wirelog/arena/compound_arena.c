@@ -14,6 +14,8 @@
 
 #include "compound_arena.h"
 
+#include "wirelog/util/log.h"
+
 #include <stdlib.h>
 #include <string.h>
 
@@ -177,8 +179,12 @@ wl_compound_arena_alloc(wl_compound_arena_t *arena, uint32_t size)
     gen->used = offset + aligned;
 
     arena->live_handles++;
-    return wl_compound_handle_pack(arena->session_seed, arena->current_epoch,
-               offset);
+    uint64_t handle = wl_compound_handle_pack(arena->session_seed,
+            arena->current_epoch, offset);
+    WL_LOG(WL_LOG_SEC_ARENA, WL_LOG_TRACE,
+        "handle_alloc(epoch=%u, offset=%u, packed=0x%lx)",
+        arena->current_epoch, offset, (unsigned long)handle);
+    return handle;
 }
 
 /* Internal: locate the entry slot for a handle.  Returns the entry index or
@@ -305,11 +311,20 @@ wl_compound_arena_gc_epoch_boundary(wl_compound_arena_t *arena)
     /* Reset generation for reuse. */
     gen->used = 0;
     gen->entry_count = 0;
+    uint32_t closed_epoch = arena->current_epoch;
     /* Advance epoch if room; otherwise the arena saturates and alloc will
      * refuse further allocations (callers rotate arenas). */
     if (arena->current_epoch + 1 < arena->max_epochs)
         arena->current_epoch++;
     else
         arena->current_epoch = arena->max_epochs; /* sentinel: saturated */
+    WL_LOG(WL_LOG_SEC_ARENA, WL_LOG_INFO,
+        "gc_epoch_boundary(epoch=%u, freed_handles=%u, remaining=%lu)",
+        closed_epoch, reclaimed, (unsigned long)arena->live_handles);
+    if (arena->current_epoch + 5u >= arena->max_epochs) {
+        WL_LOG(WL_LOG_SEC_ARENA, WL_LOG_WARN,
+            "epoch nearing saturation (current=%u, max=%u)",
+            arena->current_epoch, arena->max_epochs);
+    }
     return reclaimed;
 }

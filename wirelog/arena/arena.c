@@ -8,6 +8,8 @@
 
 #include "arena.h"
 
+#include "wirelog/util/log.h"
+
 #include <stdlib.h>
 #include <string.h>
 
@@ -16,7 +18,7 @@
 
 /* Round @n up to the next multiple of WL_ARENA_ALIGN. */
 #define WL_ARENA_ALIGN_UP(n) \
-    (((n) + (WL_ARENA_ALIGN - 1)) & ~(size_t)(WL_ARENA_ALIGN - 1))
+        (((n) + (WL_ARENA_ALIGN - 1)) & ~(size_t)(WL_ARENA_ALIGN - 1))
 
 wl_arena_t *
 wl_arena_create(size_t capacity)
@@ -51,6 +53,9 @@ wl_arena_alloc(wl_arena_t *arena, size_t size)
 
     void *ptr = (char *)arena->base + arena->used;
     arena->used += aligned;
+    WL_LOG(WL_LOG_SEC_ARENA, WL_LOG_DEBUG,
+        "alloc(size=%zu, new_offset=%zu, capacity=%zu)",
+        size, arena->used, arena->capacity);
     return ptr;
 }
 
@@ -59,6 +64,9 @@ wl_arena_reset(wl_arena_t *arena)
 {
     if (!arena)
         return;
+    WL_LOG(WL_LOG_SEC_ARENA, WL_LOG_INFO,
+        "reset(used=%zu -> 0, capacity=%zu)",
+        arena->used, arena->capacity);
     arena->used = 0;
 }
 
@@ -67,6 +75,11 @@ wl_arena_free(wl_arena_t *arena)
 {
     if (!arena)
         return;
+    if (arena->used > 0) {
+        WL_LOG(WL_LOG_SEC_ARENA, WL_LOG_WARN,
+            "free() with %zu bytes still allocated",
+            arena->used);
+    }
     free(arena->base);
     free(arena);
 }
