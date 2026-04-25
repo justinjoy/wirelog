@@ -1025,6 +1025,18 @@ col_rel_pool_new_auto(delta_pool_t *pool, wl_arena_t *arena,
  *   - Group J: dedup_*, col_shared, row_scratch always reset; any cache
  *     state will be rebuilt lazily on demand.
  *
+ * Memory-ledger policy (Issue #554, design rule R-1):
+ *   The deep copy is treated as a TRANSIENT relation.  dst->mem_ledger
+ *   is unconditionally set to NULL regardless of whether src is wired
+ *   up to a ledger.  Rationale: a deep copy is a short-lived workspace
+ *   relation (K-Fusion fork point, retraction backup, debug snapshot)
+ *   whose buffer growth and free events must NOT charge against the
+ *   originating session's RELATION subsystem budget.  If a deep copy
+ *   is later promoted into a long-lived role, the caller may wire up
+ *   dst->mem_ledger explicitly post-copy and the ledger will pick up
+ *   subsequent realloc/free events from there on.  Source ledger
+ *   counters are likewise never touched by this function.
+ *
  * @param src    Relation to clone.  Must be non-NULL.  May carry inline
  *               compound metadata, sharing flags, retraction backup,
  *               etc.; the function reads through src->columns even when
@@ -1086,6 +1098,13 @@ col_rel_deep_copy(const col_rel_t *src, col_rel_t **out, wl_arena_t *arena)
      * Group I (pool_owned, arena_owned, mem_ledger): always reset.  The
      * copy is heap-allocated and never participates in pool/arena/ledger
      * accounting -- callers that need those must wire them up explicitly.
+     *
+     * mem_ledger policy (Issue #554, R-1):
+     *   The deep copy is a TRANSIENT relation: dst->mem_ledger stays NULL
+     *   so its buffer realloc/free events never charge the source
+     *   session's RELATION subsystem budget.  Source ledger counters are
+     *   never touched by this function (we only read src's columns and
+     *   metadata; no allocations are reported to src->mem_ledger).
      *
      * Group J (dedup_slots/cap/count, col_shared, row_scratch): always
      * reset.  The dedup hash table and row scratch are caches that will
