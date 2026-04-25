@@ -714,6 +714,83 @@ cleanup:
 }
 
 /* ======================================================================== */
+/* mem_ledger=NULL transient-copy policy (Issue #554, R-1)                  */
+/* ======================================================================== */
+
+static void
+test_deep_copy_mem_ledger_null(void)
+{
+    /* Issue #554 finalises the policy that deep copies are TRANSIENT
+     * relations: dst->mem_ledger is unconditionally NULL even when src
+     * is wired up to a real ledger.  This test installs a real ledger
+     * on src, snapshots its counters, deep-copies, and verifies:
+     *   1. dst->mem_ledger == NULL (R-1 contract).
+     *   2. src->mem_ledger counters are unchanged by the copy itself
+     *      (deep_copy must not report allocs to src's ledger). */
+    TEST("Issue #554: deep copy is transient -> dst->mem_ledger == NULL");
+    col_rel_t *src = build_populated("ledger_src", 4u);
+    col_rel_t *dst = NULL;
+    ASSERT(src != NULL, "build_populated failed");
+
+    wl_mem_ledger_t ledger;
+    wl_mem_ledger_init(&ledger, 0u /* unlimited */);
+    /* Stamp a baseline allocation that mimics what the surrounding
+     * pipeline would have charged for src's data buffer.  We can then
+     * observe whether deep_copy perturbs the ledger. */
+    const uint64_t baseline_bytes = 1024u;
+    wl_mem_ledger_alloc(&ledger, WL_MEM_SUBSYS_RELATION, baseline_bytes);
+    src->mem_ledger = &ledger;
+
+    /* Snapshot counters before the deep copy. */
+    uint64_t before_total = atomic_load_explicit(&ledger.current_bytes,
+            memory_order_relaxed);
+    uint64_t before_relation = atomic_load_explicit(
+        &ledger.subsys_bytes[WL_MEM_SUBSYS_RELATION], memory_order_relaxed);
+    uint64_t before_peak = atomic_load_explicit(&ledger.peak_bytes,
+            memory_order_relaxed);
+    ASSERT(before_total == baseline_bytes, "ledger baseline total wrong");
+    ASSERT(before_relation == baseline_bytes,
+        "ledger baseline relation wrong");
+
+    int rc = col_rel_deep_copy(src, &dst, NULL);
+    ASSERT(rc == 0 && dst != NULL, "deep-copy failed");
+
+    /* Acceptance criterion 1: dst is transient -> ledger NULL. */
+    ASSERT(dst->mem_ledger == NULL,
+        "transient copy must have mem_ledger == NULL (R-1)");
+
+    /* Acceptance criterion 2: source ledger counters unchanged. */
+    uint64_t after_total = atomic_load_explicit(&ledger.current_bytes,
+            memory_order_relaxed);
+    uint64_t after_relation = atomic_load_explicit(
+        &ledger.subsys_bytes[WL_MEM_SUBSYS_RELATION], memory_order_relaxed);
+    uint64_t after_peak = atomic_load_explicit(&ledger.peak_bytes,
+            memory_order_relaxed);
+    ASSERT(after_total == before_total,
+        "deep_copy perturbed src->mem_ledger total");
+    ASSERT(after_relation == before_relation,
+        "deep_copy perturbed src->mem_ledger RELATION subsys");
+    ASSERT(after_peak == before_peak,
+        "deep_copy perturbed src->mem_ledger peak");
+
+    /* Source still references the ledger; src->mem_ledger is read-only
+     * input from deep_copy's perspective. */
+    ASSERT(src->mem_ledger == &ledger, "src->mem_ledger lost");
+
+    /* Detach the ledger before destroy so col_rel_free_contents does
+     * not double-account against our local stack ledger when it
+     * unwinds the columns buffer. */
+    src->mem_ledger = NULL;
+
+    PASS();
+cleanup:
+    if (src)
+        src->mem_ledger = NULL;
+    col_rel_destroy(src);
+    col_rel_destroy(dst);
+}
+
+/* ======================================================================== */
 /* Large-buffer integration (Issue #553 Commit 7)                           */
 /* ======================================================================== */
 
@@ -793,6 +870,7 @@ main(void)
     test_retract_backup_copy_when_present();
     test_compound_arity_map_round_trip_inline();
     test_compound_arity_map_corrupt_input_degrades();
+    test_deep_copy_mem_ledger_null();
     test_large_relation_buffers();
 
     printf("\nResults: %d/%d passed, %d failed\n",
