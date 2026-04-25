@@ -685,6 +685,21 @@ col_session_create(const wl_plan_t *plan, uint32_t num_workers,
         sess->arr_cache_limit_bytes = arr_limit;
     }
 
+    /* Issue #559: Side-relation compound arena.  Phase 0 gateway field.
+     * Allocated after the simpler malloc/calloc paths so the dedicated
+     * `oom:` label is the only cleanup site that has to free it.
+     * session_seed=0x53455353u ('SESS') is a placeholder; the remap-aware
+     * seed will be plumbed in when handle rotation lands (#586+).
+     * default_gen_cap=4096 mirrors the smoke-test usage in
+     * tests/test_compound_arena.c; max_epochs=0 selects the library
+     * default (WL_COMPOUND_EPOCH_MAX + 1). */
+    sess->compound_arena = wl_compound_arena_create(0x53455353u, 4096u, 0u);
+    if (!sess->compound_arena)
+        goto oom;
+    WL_LOG(WL_LOG_SEC_SESSION, WL_LOG_INFO,
+        "event=compound_arena_init seed=0x%08x default_gen_cap=%u",
+        0x53455353u, 4096u);
+
     /* Pre-register EDB relations (ncols determined at first insert) */
     for (uint32_t i = 0; i < plan->edb_count; i++) {
         col_rel_t *r = NULL;
@@ -777,6 +792,7 @@ oom:
     free(sess->rels);
     wl_workqueue_destroy(sess->wq);       /* NULL-safe */
     delta_pool_destroy(sess->delta_pool); /* NULL-safe */
+    wl_compound_arena_free(sess->compound_arena); /* NULL-safe (Issue #559) */
     free(sess);
     return ENOMEM;
 }
@@ -863,6 +879,13 @@ col_session_destroy(wl_session_t *session)
             col_rel_destroy(sess->filt_cache[i].filtered);
     }
     free(sess->filt_cache);
+    /* Issue #559: free side-relation compound arena (NULL-safe). */
+    WL_LOG(WL_LOG_SEC_SESSION, WL_LOG_INFO,
+        "event=compound_arena_destroy live_handles=%llu",
+        sess->compound_arena
+            ? (unsigned long long)sess->compound_arena->live_handles
+            : 0ULL);
+    wl_compound_arena_free(sess->compound_arena);
     free(sess);
 }
 
@@ -920,6 +943,9 @@ col_worker_session_create(wl_col_session_t *coordinator,
     out_worker->filt_cache = NULL;
     out_worker->filt_cache_count = 0;
     out_worker->filt_cache_cap = 0;
+    /* Issue #559: compound arena is coordinator-owned; workers must not
+     * inherit the bitwise-copied pointer or they would double-free. */
+    out_worker->compound_arena = NULL;
     memset(&out_worker->mat_cache, 0, sizeof(col_mat_cache_t));
     /* Exchange buffers are owned by coordinator; worker inherits borrowed ptr */
     out_worker->exchange_bufs = NULL;
