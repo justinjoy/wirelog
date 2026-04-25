@@ -1112,6 +1112,39 @@ col_rel_deep_copy(const col_rel_t *src, col_rel_t **out, wl_arena_t *arena)
     }
 
     /*
+     * Group D: persistent merge buffer.  When src has a merge buffer
+     * sized to merge_buf_cap rows, allocate the same shape for dst and
+     * memcpy merge_buf_cap entries per column.  The buffer is reused
+     * across consolidation iterations, so any in-flight content is
+     * preserved.  merge_buf_cap is copied unconditionally; sorted_nrows
+     * and base_nrows were already taken in the scalar bookkeeping pass.
+     */
+    dst->merge_buf_cap = src->merge_buf_cap;
+    if (src->merge_columns && src->ncols > 0u && src->merge_buf_cap > 0u) {
+        dst->merge_columns = col_columns_alloc(src->ncols, src->merge_buf_cap);
+        if (!dst->merge_columns) {
+            col_rel_free_contents(dst);
+            free(dst);
+            return ENOMEM;
+        }
+        for (uint32_t c = 0; c < src->ncols; c++) {
+            if (src->merge_columns[c]) {
+                memcpy(dst->merge_columns[c], src->merge_columns[c],
+                    (size_t)src->merge_buf_cap * sizeof(int64_t));
+            }
+        }
+    }
+
+    /*
+     * Group F: tiered run-tracking metadata (Issue #369).  Both fields
+     * are fixed-size POD: a scalar count plus a COL_MAX_RUNS-element
+     * array of run end offsets.  Direct copy (the retract-backup mirror
+     * lands in Group E).
+     */
+    dst->run_count = src->run_count;
+    memcpy(dst->run_ends, src->run_ends, sizeof(src->run_ends));
+
+    /*
      * Group C: timestamps array.  Sized to capacity (not nrows) so that
      * append_row paths after the copy do not need to grow the timestamps
      * buffer in lockstep with the columns buffer.  Skipped when src has
