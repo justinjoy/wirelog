@@ -135,9 +135,13 @@ free_session(wl_session_t *sess, wl_plan_t *plan, wirelog_program_t *prog)
 static void
 test_side_relation_name_format(void)
 {
-    TEST("side-relation name format");
+    /* `small` is a reserved alias on the MSVC SDK (basetsd.h) and expands
+     * to a built-in type, so `char small[8]` parses as `char char[8]` and
+     * trips C2632 on the Windows builders.  Use a non-colliding name. */
     char buf[64];
+    char tiny_buf[8];
     int rc = wl_compound_side_name("metadata", 4, buf, sizeof(buf));
+    TEST("side-relation name format");
     if (rc != 0) {
         tests_failed++;
         printf(" ... FAIL: name format returned error\n");
@@ -149,8 +153,7 @@ test_side_relation_name_format(void)
         return;
     }
     /* Too-small buffer must fail. */
-    char small[8];
-    if (wl_compound_side_name("metadata", 4, small, sizeof(small)) == 0) {
+    if (wl_compound_side_name("metadata", 4, tiny_buf, sizeof(tiny_buf)) == 0) {
         tests_failed++;
         printf(" ... FAIL: small buffer should have errored\n");
         return;
