@@ -80,7 +80,10 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           pip install meson ninja
-          choco install pkgconfiglite uncrustify -y
+          # pkgconfiglite ships from a SourceForge mirror without a
+          # checksum; chocolatey's default policy now blocks empty
+          # checksums for non-secure sources, so opt in explicitly.
+          choco install pkgconfiglite uncrustify -y --allow-empty-checksums
 
       - name: Configure (Linux / macOS)
         if: runner.os != 'Windows'
