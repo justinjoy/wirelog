@@ -2569,6 +2569,27 @@ test_worker_session_exe = executable(
 test('worker_session', test_worker_session_exe)
 
 # ============================================================================
+# Worker Arena Borrow (Issue #579 / R-5)
+# ============================================================================
+
+test_worker_arena_borrow_exe = executable(
+  'test_worker_arena_borrow',
+  files('test_worker_arena_borrow.c'),
+  backend_src,
+  parser_src,
+  ir_src,
+  optimizer_src,
+  arena_src,
+  io_src,
+  thread_src,
+  workqueue_src,
+  include_directories: [wirelog_inc, wirelog_src_inc],
+  dependencies: [nanoarrow_dep, threads_dep, xxhash_dep, mbedtls_dep, math_dep],
+)
+
+test('worker_arena_borrow', test_worker_arena_borrow_exe)
+
+# ============================================================================
 # Exchange Operator (Issue #316)
 # ============================================================================
 
