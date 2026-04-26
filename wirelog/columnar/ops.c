@@ -4834,6 +4834,19 @@ col_op_k_fusion(const wl_plan_op_t *op, eval_stack_t *stack,
 
     int rc = 0;
 
+    /* Issue #560: Advance the compound-arena epoch frontier before
+     * spawning K-Fusion workers so each worker's view of the arena
+     * starts at a freshly-retired generation.  This bounds the set
+     * of compound handles workers can observe and lets the
+     * epoch-frontier GC reclaim handles whose multiplicity already
+     * dropped to zero in the parent.  Each link is NULL-guarded so
+     * sessions without a compound arena or rotation strategy still
+     * spawn workers unchanged. */
+    if (sess->compound_arena && sess->rotation_ops
+        && sess->rotation_ops->gc_epoch_boundary) {
+        sess->rotation_ops->gc_epoch_boundary(sess);
+    }
+
     /* Issue #196: Workers start with zeroed mat_cache (no shared entries).
      * All worker cache entries are worker-owned; cleanup frees all of them
      * starting from index 0, so no base_count snapshot is needed. */
