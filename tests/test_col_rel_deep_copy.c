@@ -718,6 +718,99 @@ cleanup:
     col_rel_destroy(dst);
 }
 
+static void
+test_deep_copy_remap_metadata_preserved(void)
+{
+    /* Issue #587: pin the deep_copy/remap-consumer integration contract.
+     * The existing Group G round-trip (test_compound_arity_map_round_trip_
+     * inline) and Group I/J zero-state helper
+     * (deep_copy_fixture_assert_design_invariants) already prove the
+     * underlying behaviour, but #587's acceptance bullets call for three
+     * named assertions in one place so a future remap caller (#588 +
+     * #550 Option C) can rely on the contract without grep-archaeology:
+     *
+     *   1. compound_arity_map deep-copied (non-NULL, non-aliased,
+     *      value-equal, mutation-isolated -- Group G)
+     *   2. dedup_slots / dedup_cap / dedup_count reset to {NULL,0,0} on
+     *      dst by name -- Group J zero-state contract (relation.c around
+     *      the deep-copy clean-state block)
+     *   3. compound_arity_map enumerates handle-bearing logical columns
+     *      the way a remap consumer (handle_remap.h API caller) would
+     *      walk it.  No actual wl_handle_remap_* call is needed -- this
+     *      pins the *identification* path that #588 will exercise. */
+    TEST("#587: deep_copy preserves remap-consumable metadata");
+    col_rel_t *src = build_populated("remap_meta_src", 0u);
+    col_rel_t *dst = NULL;
+    ASSERT(src != NULL, "build_populated failed");
+
+    /* Logical schema (scalar, INLINE/2) -> physical width 1+2 == 3, which
+     * matches build_populated's ncols=3 so the helper at relation.c does
+     * not bail to NONE-kind.  This is the same shape as the existing
+     * test_compound_arity_map_round_trip_inline but #587 asserts the
+     * dedup_slots zero-state and the remap-walk pattern below in the
+     * same case. */
+    src->compound_kind = WIRELOG_COMPOUND_KIND_INLINE;
+    src->compound_count = 1u;
+    src->inline_physical_offset = 1u;
+    src->compound_arity_map = (uint32_t *)calloc(2u, sizeof(uint32_t));
+    ASSERT(src->compound_arity_map != NULL, "calloc arity_map failed");
+    src->compound_arity_map[0] = 1u; /* scalar logical column */
+    src->compound_arity_map[1] = 2u; /* INLINE compound, arity 2  */
+
+    int rc = col_rel_deep_copy(src, &dst, NULL);
+    ASSERT(rc == 0 && dst != NULL, "deep-copy failed");
+
+    /* (1) compound_arity_map deep-copied --------------------------- */
+    ASSERT(dst->compound_kind == WIRELOG_COMPOUND_KIND_INLINE,
+        "compound_kind not preserved");
+    ASSERT(dst->compound_count == 1u, "compound_count not preserved");
+    ASSERT(dst->inline_physical_offset == 1u,
+        "inline_physical_offset not preserved");
+    ASSERT(dst->compound_arity_map != NULL,
+        "dst compound_arity_map NULL");
+    ASSERT(dst->compound_arity_map != src->compound_arity_map,
+        "compound_arity_map aliased between src and dst");
+    ASSERT(dst->compound_arity_map[0] == 1u,
+        "arity_map[0] (scalar) not preserved");
+    ASSERT(dst->compound_arity_map[1] == 2u,
+        "arity_map[1] (compound/2) not preserved");
+
+    /* (2) dedup_slots / cap / count zero-state by name ------------- */
+    ASSERT(dst->dedup_slots == NULL,
+        "dst dedup_slots must be NULL after deep-copy (caller rebuilds)");
+    ASSERT(dst->dedup_cap == 0u,
+        "dst dedup_cap must be 0 after deep-copy");
+    ASSERT(dst->dedup_count == 0u,
+        "dst dedup_count must be 0 after deep-copy");
+
+    /* (3) Remap-consumer enumeration: walk dst->compound_arity_map and
+     *     collect logical columns whose width > 1, the way a future
+     *     handle_remap caller will identify handle-bearing columns.
+     *     This proves the *identification* path is intact end-to-end
+     *     on the deep-copied relation, without coupling the test to
+     *     handle_remap.{h,c} (which #588 will exercise). */
+    uint32_t handle_logical_cols[2] = { 0u, 0u };
+    uint32_t handle_count = 0u;
+    for (uint32_t i = 0; i < 2u; i++) {
+        if (dst->compound_arity_map[i] > 1u)
+            handle_logical_cols[handle_count++] = i;
+    }
+    ASSERT(handle_count == 1u,
+        "remap-consumer walk should find exactly one width>1 column");
+    ASSERT(handle_logical_cols[0] == 1u,
+        "remap-consumer walk should locate the arity-2 column at index 1");
+
+    /* Mutation isolation (sanity-check the deep copy was real). */
+    src->compound_arity_map[1] = 99u;
+    ASSERT(dst->compound_arity_map[1] == 2u,
+        "dst arity_map aliased through src");
+
+    PASS();
+cleanup:
+    col_rel_destroy(src);
+    col_rel_destroy(dst);
+}
+
 /* ======================================================================== */
 /* mem_ledger=NULL transient-copy policy (Issue #554, R-1)                  */
 /* ======================================================================== */
@@ -1097,6 +1190,7 @@ main(void)
     test_retract_backup_copy_when_present();
     test_compound_arity_map_round_trip_inline();
     test_compound_arity_map_corrupt_input_degrades();
+    test_deep_copy_remap_metadata_preserved();
     test_deep_copy_mem_ledger_null();
     test_large_relation_buffers();
     test_wide_column_relation_deep_copies();
