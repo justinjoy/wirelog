@@ -2666,6 +2666,53 @@ test('stress_harness_nested_asan', test_stress_harness_exe,
      env: {'WL_STRESS_R': '50',
            'WL_STRESS_WORKLOAD': 'nested-asan'})
 
+# Rotation-vtable workload (#596): drives the #600 rotation strategy
+# vtable (sess->rotation_ops->rotate_eval_arena and ->gc_epoch_boundary)
+# under W/R stress.  Both strategy variants (WIRELOG_ROTATION=standard
+# and =mvcc) must be exercised because #596's contract is the dispatch
+# path, not the strategy semantics; PR-tier registers both at small R
+# to keep cost down, nightly/release tiers scale R for soak coverage.
+# Single-mutator -- W is accepted but ignored by the workload.
+test('stress_harness_rotation_pr', test_stress_harness_exe,
+     timeout: 60,
+     env: {'WL_STRESS_W': '2', 'WL_STRESS_R': '50',
+           'WL_STRESS_WORKLOAD': 'rotation-vtable',
+           'WIRELOG_ROTATION': 'standard'})
+
+test('stress_harness_rotation_pr_mvcc', test_stress_harness_exe,
+     timeout: 60,
+     env: {'WL_STRESS_W': '2', 'WL_STRESS_R': '50',
+           'WL_STRESS_WORKLOAD': 'rotation-vtable',
+           'WIRELOG_ROTATION': 'mvcc'})
+
+test('stress_harness_rotation_nightly', test_stress_harness_exe,
+     suite: 'stress-nightly',
+     timeout: 240,
+     env: {'WL_STRESS_W': '4', 'WL_STRESS_R': '500',
+           'WL_STRESS_WORKLOAD': 'rotation-vtable',
+           'WIRELOG_ROTATION': 'standard'})
+
+test('stress_harness_rotation_nightly_mvcc', test_stress_harness_exe,
+     suite: 'stress-nightly',
+     timeout: 240,
+     env: {'WL_STRESS_W': '4', 'WL_STRESS_R': '500',
+           'WL_STRESS_WORKLOAD': 'rotation-vtable',
+           'WIRELOG_ROTATION': 'mvcc'})
+
+test('stress_harness_rotation_release', test_stress_harness_exe,
+     suite: 'stress-release',
+     timeout: 600,
+     env: {'WL_STRESS_W': '8', 'WL_STRESS_R': '1000',
+           'WL_STRESS_WORKLOAD': 'rotation-vtable',
+           'WIRELOG_ROTATION': 'standard'})
+
+test('stress_harness_rotation_release_mvcc', test_stress_harness_exe,
+     suite: 'stress-release',
+     timeout: 600,
+     env: {'WL_STRESS_W': '8', 'WL_STRESS_R': '1000',
+           'WL_STRESS_WORKLOAD': 'rotation-vtable',
+           'WIRELOG_ROTATION': 'mvcc'})
+
 # ============================================================================
 # Compound arena lifecycle observability (Issue #583)
 # WL_LOG=COMPOUND:5 must emit alloc/freeze/unfreeze tags.
