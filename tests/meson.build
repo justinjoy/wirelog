@@ -2771,6 +2771,29 @@ test('stress_harness_daemon_release_mvcc', test_stress_harness_exe,
            'WIRELOG_ROTATION': 'mvcc'})
 
 # ============================================================================
+# Per-rotation RSS-bounded + ledger-stability gates (Issue #598)
+# ============================================================================
+# Residual scope on top of #597's daemon-soak end-of-run gate:
+#   - per-rotation VmRSS sampling (not monotonic VmHWM peak)
+#   - cumulative cap with no 4 MB floor (10% or 1 MB, whichever larger)
+#   - ledger.current_bytes stability across each rotation
+# Strict per-rotation delta gate is opt-in via WL_RSS_BOUNDED_STRICT=1.
+
+test_rss_bounded_exe = executable(
+  'test_rss_bounded',
+  files('test_rss_bounded.c'),
+  backend_src,
+  intern_src,
+  arena_src,
+  thread_src,
+  workqueue_src,
+  include_directories: [wirelog_inc, wirelog_src_inc],
+  dependencies: [nanoarrow_dep, threads_dep, xxhash_dep, mbedtls_dep, math_dep],
+)
+
+test('rss_bounded_pr', test_rss_bounded_exe, timeout: 60)
+
+# ============================================================================
 # Compound arena lifecycle observability (Issue #583)
 # WL_LOG=COMPOUND:5 must emit alloc/freeze/unfreeze tags.
 # ============================================================================
