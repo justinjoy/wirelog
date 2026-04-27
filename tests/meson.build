@@ -2531,6 +2531,25 @@ test_handle_remap_apply_exe = executable(
 test('handle_remap_apply', test_handle_remap_apply_exe, timeout: 60)
 
 # ============================================================================
+# Side-relation handle remap pass (Issue #590)
+# 100 side-relations x 2-level nested acceptance harness.
+# ============================================================================
+
+test_handle_remap_side_apply_exe = executable(
+  'test_handle_remap_side_apply',
+  files('test_handle_remap_side_apply.c'),
+  backend_src,
+  intern_src,
+  arena_src,
+  thread_src,
+  workqueue_src,
+  include_directories: [wirelog_inc, wirelog_src_inc],
+  dependencies: [nanoarrow_dep, threads_dep, xxhash_dep, mbedtls_dep, math_dep],
+)
+
+test('handle_remap_side_apply', test_handle_remap_side_apply_exe, timeout: 60)
+
+# ============================================================================
 # Compound arena lifecycle observability (Issue #583)
 # WL_LOG=COMPOUND:5 must emit alloc/freeze/unfreeze tags.
 # ============================================================================
