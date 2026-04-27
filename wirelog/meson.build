@@ -105,6 +105,7 @@ wirelog_backend_src = files('columnar/relation.c', 'columnar/cache.c',
                            'columnar/compound_side.c',
                            'columnar/handle_remap.c',
                            'columnar/handle_remap_apply.c',
+                           'columnar/handle_remap_apply_side.c',
                            'util/lockfree_queue.c', )
 
 #== == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == ==
