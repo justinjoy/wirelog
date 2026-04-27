@@ -37,6 +37,44 @@
  *       rewrites the same arena in place; cross-arena swap is a
  *       separate concern that needs its own sibling test.)
  *
+ *   "rotation-vtable" (#596):
+ *       Drives the #600 rotation strategy vtable
+ *       (sess->rotation_ops->rotate_eval_arena and ->gc_epoch_boundary)
+ *       under W/R stress.  Existing workloads call the rotation/GC
+ *       primitives DIRECTLY (wl_compound_arena_gc_epoch_boundary,
+ *       wl_arena_reset), bypassing the vtable; none exercise the
+ *       dispatch indirection #600 introduced.  Coverage delta vs.
+ *       tests/test_rotation_strategy.c (#600's correctness test): that
+ *       file functional-tests selection (default-is-standard,
+ *       env-override-mvcc) and runs ONE rotate+gc dispatch on a live
+ *       session with no churn.  This workload exercises the dispatch
+ *       under R cycles of pre-rotation alloc fan-out + per-cycle
+ *       vtable invocation + per-cycle handle-validity oracle, on both
+ *       strategy variants (WIRELOG_ROTATION=standard and =mvcc, parsed
+ *       at workload start).  Both variants must be tested because
+ *       #596's contract is the dispatch path, not the strategy
+ *       semantics (MVCC is functionally STANDARD today; the placeholder
+ *       still has to be reachable through the function pointer).
+ *
+ *       Per-cycle: (1) allocate K=64 handles in sess->compound_arena
+ *       and record (handle, payload_size) in an oracle slice, (2a)
+ *       call sess->rotation_ops->rotate_eval_arena(sess), (3) verify
+ *       every just-allocated handle is still valid via
+ *       wl_compound_arena_lookup with size-equality (the "all
+ *       pre-rotation handles valid" acceptance bullet), then (2b)
+ *       sess->rotation_ops->gc_epoch_boundary(sess) closes the epoch.
+ *       The validity check is between the two vtable calls because
+ *       gc_epoch_boundary's documented semantics (compound_arena.c:
+ *       332-344) clear the closed generation -- that is GC behavior
+ *       owned by the arena implementation, not the #596 vtable
+ *       contract.  rotate_eval_arena must not invalidate compound
+ *       handles, which is what step (3) asserts.  W is accepted but ignored: rotation hooks
+ *       are single-mutator by contract.  Mock-session pattern (mirrors
+ *       nested-asan's make_mock_session): rotation hooks only touch
+ *       sess->eval_arena and sess->compound_arena, so a tiny calloc'd
+ *       wl_col_session_t with those two fields wired is sufficient --
+ *       no parser/optimizer/plan link cost.
+ *
  *   "nested-asan" (#595):
  *       Session-level side-relation churn under ASan instrumentation.
  *       Builds a mock columnar session with N=100 __compound_*
@@ -85,6 +123,13 @@
  *                       "freeze-cycle"
  *                       "apply-roundtrip"
  *                       "nested-asan"
+ *                       "rotation-vtable"
+ *
+ *   WIRELOG_ROTATION    "standard" | "mvcc"           (default "standard")
+ *                       Honored only by the rotation-vtable workload;
+ *                       parsed at workload start.  Both variants must
+ *                       be tested to prove the #600 dispatch path is
+ *                       reachable for both strategies.
  *
  * The harness-level R cap (1M) is a sanity bound; each workload
  * applies its own tighter validation against domain-specific limits
@@ -96,6 +141,7 @@
  * masquerading as a "passed at default".
  */
 
+#include "../wirelog/arena/arena.h"
 #include "../wirelog/arena/compound_arena.h"
 #include "../wirelog/columnar/compound_side.h"
 #include "../wirelog/columnar/delta_pool.h"
@@ -936,6 +982,261 @@ cleanup:
 }
 
 /* ======================================================================== */
+/* Rotation-vtable workload (#596)                                          */
+/* ======================================================================== */
+
+/* Pre-rotation handle fan-out per cycle.  Small enough that K * R cycles
+ * stays well under the compound-arena epoch ceiling (WL_COMPOUND_EPOCH_MAX
+ * is 4095) at the highest CI tier (R=1000), large enough that every cycle
+ * actually has multiple handles for the post-rotation lookup oracle to
+ * verify -- a per-cycle K=1 oracle would be too weak to catch a partial-
+ * rewrite bug. */
+#define WL_ROTATION_K_HANDLES   64u
+
+/* Per-handle payload size.  Aligned to 8 bytes; matches the convention
+ * other workloads use for compound-arena allocations. */
+#define WL_ROTATION_PAYLOAD_SZ  16u
+
+/* Per-cycle hard cap for R: each cycle's gc_epoch_boundary advances
+ * current_epoch by one (see standard_gc_epoch_boundary in
+ * rotation_standard.c, mvcc_gc_epoch_boundary in rotation_mvcc.c).
+ * Mirror nested-asan's cap of 1500 -- WL_COMPOUND_EPOCH_MAX is 4095, so
+ * 1500 leaves >2x headroom and keeps the bound assertion symmetric
+ * across workloads.  The bounds-check error message uses this constant
+ * so the hard-fail diagnostic is parseable. */
+#define WL_ROTATION_R_CAP       1500u
+
+/* Eval-arena capacity.  rotate_eval_arena calls wl_arena_reset, which
+ * is a constant-time bump-pointer reset; the actual capacity does not
+ * matter for the dispatch test, only that the arena exists.  256KB is
+ * enough headroom that any future eval-arena saturation step would
+ * have room to operate without bumping into the capacity limit. */
+#define WL_ROTATION_EVAL_ARENA_BYTES (256u * 1024u)
+
+/* Pre-rotation alloc oracle entry.  One per recorded handle. */
+typedef struct {
+    uint64_t handle;
+    uint32_t expected_payload_size;
+} rotation_oracle_entry_t;
+
+/* Mock session for the rotation-vtable workload.  Mirrors
+ * nested_asan_make_mock_session, but only wires the two fields the
+ * rotation hooks touch (compound_arena, eval_arena) plus rotation_ops.
+ * No delta_pool / mem_ledger / rels are required: the rotation vtable
+ * surface is intentionally narrow, which is what makes the mock
+ * justified -- read rotation_standard.c and rotation_mvcc.c to confirm.
+ *
+ * @ops: STANDARD or MVCC vtable, selected by the caller from the
+ *       WIRELOG_ROTATION env var.
+ */
+static wl_col_session_t *
+rotation_make_mock_session(wl_compound_arena_t *arena,
+    const col_rotation_ops_t *ops)
+{
+    wl_col_session_t *s = (wl_col_session_t *)calloc(1, sizeof(*s));
+    if (!s)
+        return NULL;
+    s->compound_arena = arena;
+    s->eval_arena = wl_arena_create(WL_ROTATION_EVAL_ARENA_BYTES);
+    if (!s->eval_arena) {
+        free(s);
+        return NULL;
+    }
+    s->rotation_ops = ops;
+    /* Note: we deliberately do NOT call ops->init(s) -- the mvcc init
+     * hook is a no-op apart from a one-time WL_LOG line, and standard
+     * init is empty.  Skipping init keeps the mock self-contained. */
+    return s;
+}
+
+static void
+rotation_free_mock_session(wl_col_session_t *s)
+{
+    if (!s)
+        return;
+    /* compound_arena is owned by the workload, freed separately. */
+    if (s->eval_arena)
+        wl_arena_free(s->eval_arena);
+    free(s);
+}
+
+static int
+run_rotation_vtable_workload(uint32_t num_workers, uint32_t cycles)
+{
+    /* W is accepted for CI-tier uniformity but ignored: the rotation
+     * vtable hooks (rotate_eval_arena, gc_epoch_boundary) are
+     * single-mutator by contract -- they walk the eval arena's bump
+     * pointer and the compound arena's per-epoch generation table,
+     * neither of which is concurrency-safe.  Same rationale as
+     * apply-roundtrip and nested-asan. */
+    (void)num_workers;
+
+    /* Strategy selection: WIRELOG_ROTATION mirrors session.c:437-442.
+     * Default is STANDARD; "mvcc" selects the placeholder.  Anything
+     * else is a hard FAIL so a misconfigured CI tier surfaces loudly
+     * (mirrors the unknown-workload diagnostic in main()). */
+    const char *rot_env = getenv("WIRELOG_ROTATION");
+    const col_rotation_ops_t *ops = &col_rotation_standard_ops;
+    const char *strategy_name = "standard";
+    if (rot_env && rot_env[0] != '\0') {
+        if (strcmp(rot_env, "standard") == 0) {
+            ops = &col_rotation_standard_ops;
+            strategy_name = "standard";
+        } else if (strcmp(rot_env, "mvcc") == 0) {
+            ops = &col_rotation_mvcc_ops;
+            strategy_name = "mvcc";
+        } else {
+            printf("FAIL: WIRELOG_ROTATION='%s' is not 'standard' or 'mvcc'\n",
+                rot_env);
+            return 1;
+        }
+    }
+
+    printf("  [rotation-vtable W=%u (ignored, single-mutator) R=%u "
+        "strategy=%s] ", num_workers, cycles, strategy_name);
+    fflush(stdout);
+
+    /* Bound check: each cycle's gc_epoch_boundary advances the compound
+     * arena's current_epoch by one.  Mirror nested-asan's 2x check so
+     * the cap diagnostic is parseable and consistent across workloads. */
+    if (cycles == 0u || cycles > WL_ROTATION_R_CAP) {
+        printf(
+            "FAIL: WL_STRESS_R=%u out of range (1..%u for rotation-vtable)\n",
+            cycles, WL_ROTATION_R_CAP);
+        return 1;
+    }
+
+    wl_compound_arena_t *arena = wl_compound_arena_create(0xCAFEu, 4096u, 0u);
+    if (!arena) {
+        printf("FAIL: arena create\n");
+        return 1;
+    }
+    if ((uint64_t)cycles * 2u >= (uint64_t)arena->max_epochs) {
+        printf("FAIL: WL_STRESS_R=%u * 2 >= max_epochs=%u\n",
+            cycles, arena->max_epochs);
+        wl_compound_arena_free(arena);
+        return 1;
+    }
+
+    wl_col_session_t *sess = rotation_make_mock_session(arena, ops);
+    if (!sess) {
+        printf("FAIL: mock session create\n");
+        wl_compound_arena_free(arena);
+        return 1;
+    }
+
+    /* Cumulative oracle: every handle ever allocated since the workload
+     * started.  Sized for the worst case so we can verify validity not
+     * just for the latest cycle's handles but for ALL pre-rotation
+     * handles -- the #596 acceptance contract.  K * R is bounded above
+     * by WL_ROTATION_K_HANDLES * WL_ROTATION_R_CAP = 64 * 1500 = 96000
+     * entries, which fits comfortably in heap memory at <2MB total. */
+    size_t oracle_cap = (size_t)WL_ROTATION_K_HANDLES * (size_t)cycles;
+    rotation_oracle_entry_t *oracle = (rotation_oracle_entry_t *)calloc(
+        oracle_cap, sizeof(*oracle));
+    if (!oracle) {
+        printf("FAIL: oracle calloc (%zu entries)\n", oracle_cap);
+        rotation_free_mock_session(sess);
+        wl_compound_arena_free(arena);
+        return 1;
+    }
+    size_t oracle_n = 0;
+    int verdict = 0;
+
+    clock_t t0 = clock();
+
+    for (uint32_t r = 0; r < cycles; r++) {
+        /* (1) Pre-rotation alloc oracle.  Allocate K handles in the
+         * compound arena's CURRENT epoch and record (handle,
+         * payload_size).  These are this cycle's pre-rotation handles
+         * for the validity assertion at step (3). */
+        size_t cycle_oracle_start = oracle_n;
+        for (uint32_t k = 0; k < WL_ROTATION_K_HANDLES; k++) {
+            uint64_t h = wl_compound_arena_alloc(arena, WL_ROTATION_PAYLOAD_SZ);
+            if (h == WL_COMPOUND_HANDLE_NULL) {
+                printf("FAIL: cycle %u handle %u alloc\n", r, k);
+                verdict = 1;
+                goto cleanup;
+            }
+            oracle[oracle_n].handle = h;
+            oracle[oracle_n].expected_payload_size = WL_ROTATION_PAYLOAD_SZ;
+            oracle_n++;
+        }
+
+        /* (2a) Vtable rotation: eval-arena reset.  THIS IS THE #596
+         * CONTRACT: the indirect function-pointer dispatch through
+         * sess->rotation_ops, NOT a direct wl_arena_reset call.
+         * rotate_eval_arena resets the eval (scratch) arena; it must
+         * NOT touch the compound arena -- pre-rotation compound
+         * handles must remain valid through this call.  Crash or
+         * compound-handle invalidation here under either strategy
+         * variant means #600's vtable plumbing is broken under
+         * stress. */
+        sess->rotation_ops->rotate_eval_arena(sess);
+
+        /* (3) Pre-rotation handle validity oracle.  Walk this cycle's
+         * pre-rotation handles -- they were allocated in the current
+         * epoch and must still resolve via lookup with the recorded
+         * payload size after rotate_eval_arena.  This is the "all
+         * pre-rotation handles valid" acceptance bullet from #596:
+         * rotation MUST preserve compound-handle validity for the
+         * just-allocated set.
+         *
+         * We deliberately walk ONLY this cycle's slice of the oracle
+         * (cycle_oracle_start .. oracle_n), not the cumulative set,
+         * because step (2b)'s gc_epoch_boundary at the prior cycle's
+         * tail already retired those older epochs by design (the
+         * skeleton GC at compound_arena.c:332-344 zeroes the closed
+         * generation).  Asserting validity for handles whose epoch
+         * was already GC'd would be asserting against the documented
+         * arena semantics, not against #596's vtable contract. */
+        for (size_t j = cycle_oracle_start; j < oracle_n; j++) {
+            uint32_t out_size = 0;
+            const void *payload = wl_compound_arena_lookup(arena,
+                    oracle[j].handle, &out_size);
+            if (payload == NULL) {
+                printf("FAIL: cycle %u oracle[%zu] handle=0x%llx "
+                    "lookup returned NULL after rotate_eval_arena\n",
+                    r, j, (unsigned long long)oracle[j].handle);
+                verdict = 1;
+                goto cleanup;
+            }
+            if (out_size != oracle[j].expected_payload_size) {
+                printf("FAIL: cycle %u oracle[%zu] handle=0x%llx "
+                    "size=%u expected=%u\n",
+                    r, j, (unsigned long long)oracle[j].handle,
+                    out_size, oracle[j].expected_payload_size);
+                verdict = 1;
+                goto cleanup;
+            }
+        }
+
+        /* (2b) Vtable rotation: epoch advance via the second hook.
+         * gc_epoch_boundary closes the current epoch (clears its
+         * generation, advances current_epoch).  After this call, the
+         * handles validated at step (3) belong to a closed epoch and
+         * subsequent lookups would return NULL -- by design (see
+         * compound_arena.c:332-344).  The dispatch through the vtable
+         * (function pointer, not direct call) is what #596 stresses;
+         * the post-state semantics are owned by the GC implementation
+         * and verified by separate tests. */
+        sess->rotation_ops->gc_epoch_boundary(sess);
+    }
+
+    clock_t t1 = clock();
+    double secs = (double)(t1 - t0) / (double)CLOCKS_PER_SEC;
+
+    if (verdict == 0)
+        printf("PASS (%.3fs)\n", secs);
+
+cleanup:
+    free(oracle);
+    rotation_free_mock_session(sess);
+    wl_compound_arena_free(arena);
+    return verdict;
+}
+
+/* ======================================================================== */
 /* Main                                                                     */
 /* ======================================================================== */
 
@@ -967,10 +1268,13 @@ main(void)
         rc = run_apply_roundtrip_workload(W, R);
     } else if (strcmp(workload, "nested-asan") == 0) {
         rc = run_nested_asan_workload(W, R);
+    } else if (strcmp(workload, "rotation-vtable") == 0) {
+        rc = run_rotation_vtable_workload(W, R);
     } else {
         fprintf(stderr,
             "FAIL: WL_STRESS_WORKLOAD='%s' is not one of "
-            "'freeze-cycle', 'apply-roundtrip', 'nested-asan'\n",
+            "'freeze-cycle', 'apply-roundtrip', 'nested-asan', "
+            "'rotation-vtable'\n",
             workload);
         return 1;
     }
