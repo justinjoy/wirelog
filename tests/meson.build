@@ -2572,6 +2572,30 @@ test_post_remap_invalidate_exe = executable(
 test('post_remap_invalidate', test_post_remap_invalidate_exe, timeout: 60)
 
 # ============================================================================
+# Worker borrow + W=2 + TSan (Issue #592)
+# Pins the R-5 borrow path under explicit two-thread workqueue concurrency,
+# closing a gap that #581 (single-threaded) and #582/#584 (standalone arena
+# at W=4/W=8/W=2) only cover via race-surface-equivalence reasoning.
+# ============================================================================
+
+test_worker_borrow_w2_tsan_exe = executable(
+  'test_worker_borrow_w2_tsan',
+  files('test_worker_borrow_w2_tsan.c'),
+  parser_src,
+  ir_src,
+  optimizer_src,
+  backend_src,
+  io_src,
+  arena_src,
+  thread_src,
+  workqueue_src,
+  include_directories: [wirelog_inc, wirelog_src_inc],
+  dependencies: [nanoarrow_dep, threads_dep, xxhash_dep, mbedtls_dep, math_dep],
+)
+
+test('worker_borrow_w2_tsan', test_worker_borrow_w2_tsan_exe, timeout: 60)
+
+# ============================================================================
 # Compound arena lifecycle observability (Issue #583)
 # WL_LOG=COMPOUND:5 must emit alloc/freeze/unfreeze tags.
 # ============================================================================
