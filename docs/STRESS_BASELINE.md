@@ -7,19 +7,27 @@ baseline protocol the repo uses to triage intermittent failures.
 
 ## CI tier topology
 
-The same `test_stress_harness` binary is registered six times in
+The same `test_stress_harness` binary is registered thirteen times in
 `tests/meson.build` with different `env:` blocks and meson `suite:`
 tags so a single configurable harness backs three CI tiers
-without duplicating code.
+without duplicating code.  (Twelve in the table below plus
+`stress_harness_nested_asan` under the `asan` suite -- omitted from
+this table because it ships separately from the W/R/strategy axes.)
 
 | Test name | Suite | Workload | W | R | Where it runs |
 |---|---|---|---|---|---|
 | `stress_harness_w2` | (default) | freeze-cycle | 2 | 200 | every PR (`ci-pr.yml` -> `meson test`) |
 | `stress_harness_apply_roundtrip_pr` | (default) | apply-roundtrip | 2 | 500 | every PR |
+| `stress_harness_rotation_pr` | (default) | rotation-vtable (standard) | 2 | 50 | every PR |
+| `stress_harness_rotation_pr_mvcc` | (default) | rotation-vtable (mvcc) | 2 | 50 | every PR |
 | `stress_harness_w4` | `stress-nightly` | freeze-cycle | 4 | 500 | nightly (`perf-nightly.yml`, 04:00 UTC) |
 | `stress_harness_apply_roundtrip_nightly` | `stress-nightly` | apply-roundtrip | 4 | 5000 | nightly |
+| `stress_harness_rotation_nightly` | `stress-nightly` | rotation-vtable (standard) | 4 | 500 | nightly |
+| `stress_harness_rotation_nightly_mvcc` | `stress-nightly` | rotation-vtable (mvcc) | 4 | 500 | nightly |
 | `stress_harness_w8` | `stress-release` | freeze-cycle | 8 | 1000 | release-tier (manual, see below) |
 | `stress_harness_apply_roundtrip_release` | `stress-release` | apply-roundtrip | 8 | 50000 | release-tier (manual) |
+| `stress_harness_rotation_release` | `stress-release` | rotation-vtable (standard) | 8 | 1000 | release-tier (manual) |
+| `stress_harness_rotation_release_mvcc` | `stress-release` | rotation-vtable (mvcc) | 8 | 1000 | release-tier (manual) |
 
 The PR tier runs in the default suite, picked up by every
 `meson test -C build` invocation in `ci-pr.yml`/`ci-main.yml`. The
@@ -62,6 +70,77 @@ other's prefix. The W parameter stays in the harness signature for
 CI-tier wiring uniformity. `R` is row count, only bounded by
 available memory; release-tier exercises 50000 rows.
 
+### `rotation-vtable`
+
+Drives the #600 rotation strategy vtable
+(`sess->rotation_ops->rotate_eval_arena` and
+`sess->rotation_ops->gc_epoch_boundary`) under W/R stress. The
+freeze-cycle and apply-roundtrip workloads call rotation/GC
+primitives DIRECTLY (`wl_arena_reset`,
+`wl_compound_arena_gc_epoch_boundary`); none exercise the indirect
+function-pointer dispatch #600 introduced. This workload closes that
+gap.
+
+Per cycle:
+
+1. allocate `K=64` handles in the compound arena's current epoch
+   (oracle slice),
+2. call `sess->rotation_ops->rotate_eval_arena(sess)` (vtable hook 1),
+3. assert all `K` handles still resolve via
+   `wl_compound_arena_lookup` with size-equality (the "all
+   pre-rotation handles valid" acceptance bullet),
+4. call `sess->rotation_ops->gc_epoch_boundary(sess)` (vtable hook 2);
+   this closes the current epoch and the just-validated handles
+   become unreachable -- by design (`compound_arena.c:332-344`).
+
+The validity check sits between the two vtable calls because
+`gc_epoch_boundary` clears the closed generation; that is GC behavior
+owned by the arena, not the #596 vtable contract. Step (3) asserts
+that `rotate_eval_arena` does not invalidate compound handles.
+
+`W` is accepted but ignored (single-mutator: rotation hooks walk the
+eval arena's bump pointer and the compound arena's per-epoch
+generation table, neither concurrency-safe). The harness uses a
+mock session (mirrors `nested-asan`'s `make_mock_session`) -- the
+rotation hooks only touch `sess->eval_arena` and
+`sess->compound_arena`, so a `calloc`'d `wl_col_session_t` with those
+two fields plus `rotation_ops` is sufficient. No
+parser/optimizer/plan link cost.
+
+#### Strategy axis: `WIRELOG_ROTATION`
+
+The rotation-vtable workload is the only one that honors the
+`WIRELOG_ROTATION` environment variable, parsed at workload start
+(unknown values hard-FAIL):
+
+- `WIRELOG_ROTATION=standard` (default): selects
+  `col_rotation_standard_ops`. Behavior matches the pre-#600 direct
+  calls.
+- `WIRELOG_ROTATION=mvcc`: selects `col_rotation_mvcc_ops`. The MVCC
+  vtable is a placeholder today (per `rotation_mvcc.c`); behavior is
+  identical to `standard` until the real MVCC implementation lands.
+
+Both variants are registered at every CI tier because #596's contract
+is the dispatch path itself, not the strategy semantics: the MVCC
+placeholder must remain reachable through the function pointer under
+stress. Coverage delta vs `tests/test_rotation_strategy.c` (#600's
+correctness test): that file functional-tests selection
+(default-is-standard, env-override-mvcc) and runs ONE rotate+gc
+dispatch on a live session with no churn. The rotation-vtable
+workload exercises the dispatch under R cycles of pre-rotation alloc
+fan-out and per-handle post-rotate validity oracle.
+
+`R` cap is 1500 (mirrors `WL_NESTED_ASAN_R_CAP`); higher values
+hard-FAIL with a parseable diagnostic to keep epoch headroom under
+the compound arena's 4096-epoch ceiling.
+
+#### Baseline pass rate
+
+100/100 PR-tier rotation-vtable runs pass on the baseline machine
+(`stress_harness_rotation_pr` + `stress_harness_rotation_pr_mvcc`
+combined). Healthy floor: any single CI failure is a real regression,
+not a flake.
+
 ## Running release-tier locally
 
 There is no `release.yml` workflow yet (deferred follow-up). To
@@ -76,11 +155,13 @@ TSAN_OPTIONS='halt_on_error=1' \
     --print-errorlogs --num-processes 1
 ```
 
-Both `stress_harness_w8` (freeze-cycle, 1000 cycles) and
+All four release-tier entries must pass:
+`stress_harness_w8` (freeze-cycle, 1000 cycles),
 `stress_harness_apply_roundtrip_release` (apply-roundtrip, 50000
-rows) must pass. Wall time is sub-minute on a typical x86_64
-laptop under TSan; the test() entries set `timeout: 300` as
-headroom.
+rows), and the two `stress_harness_rotation_release{,_mvcc}` entries
+(rotation-vtable, 1000 cycles each, both strategy variants). Wall
+time is sub-minute per entry on a typical x86_64 laptop under TSan;
+the test() entries set `timeout: 300-600` as headroom.
 
 ## Flake baseline protocol
 
