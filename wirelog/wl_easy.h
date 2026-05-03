@@ -30,6 +30,7 @@ extern "C" {
 #include "wirelog/wirelog.h"
 #include "wirelog/wirelog-types.h"
 
+#include <stdbool.h>
 #include <stdint.h>
 
 /**
@@ -51,6 +52,73 @@ extern "C" {
  *   derived state (rows, callback user_data, intern ids) between them.
  */
 typedef struct wl_easy_session wl_easy_session_t;
+
+/**
+ * wl_easy_open_opts_t:
+ *
+ * Optional configuration for wl_easy_open_opts().  All fields are
+ * optional; pass NULL for all defaults (equivalent to wl_easy_open).
+ *
+ * The struct is ABI-versioned via @size.  Callers MUST initialize it
+ * with the WL_EASY_OPEN_OPTS_INIT macro (or assign
+ * `.size = sizeof(wl_easy_open_opts_t)` explicitly) so future field
+ * additions remain ABI-safe.  Library validates `size` on entry and
+ * returns WIRELOG_ERR_EXEC if it is smaller than the runtime
+ * sizeof(wl_easy_open_opts_t) compiled into libwirelog.
+ *
+ * @size:         sizeof(wl_easy_open_opts_t) at the caller's compile
+ *                time.  REQUIRED.  Use WL_EASY_OPEN_OPTS_INIT.
+ * @num_workers:  Number of worker threads for the underlying session.
+ *                0 (the default) is permanently mapped to 1; do not
+ *                rely on a different default in future releases.
+ * @eager_build:  If true, force plan + session build before
+ *                wl_easy_open_opts() returns, so parse/plan/session
+ *                errors surface synchronously.  If false (default),
+ *                the build is deferred until the first
+ *                insert/remove/step/set_delta_cb/snapshot call
+ *                (legacy wl_easy_open behavior).
+ * @_reserved:    Reserved for future use; must be NULL.  Non-NULL
+ *                returns WIRELOG_ERR_EXEC.
+ *
+ * Lifetime: opts is read once during wl_easy_open_opts() and may be
+ * freed by the caller immediately after the call returns.
+ */
+typedef struct {
+    uint32_t size;
+    uint32_t num_workers;
+    bool eager_build;
+    const void *_reserved;
+} wl_easy_open_opts_t;
+
+#define WL_EASY_OPEN_OPTS_INIT \
+        { .size = sizeof(wl_easy_open_opts_t), \
+          .num_workers = 0, \
+          .eager_build = false, \
+          ._reserved = NULL }
+
+/**
+ * wl_easy_open_opts:
+ * @dl_src: Datalog source text (must not be NULL).
+ * @opts:   Optional configuration (may be NULL → defaults).  If
+ *          non-NULL, must have @size set to
+ *          sizeof(wl_easy_open_opts_t) (use WL_EASY_OPEN_OPTS_INIT).
+ * @out:    (out) Receives the new session handle on success.
+ *
+ * Same contract as wl_easy_open() but with optional configuration.
+ * wl_easy_open(dl, out) is equivalent to
+ * wl_easy_open_opts(dl, NULL, out).
+ *
+ * Error codes (in addition to wl_easy_open's):
+ *   WIRELOG_ERR_EXEC      - opts->size too small / opts->_reserved non-NULL
+ *   WIRELOG_ERR_INVALID_IR - eager_build set and plan generation failed
+ *   WIRELOG_ERR_MEMORY    - eager_build set and session allocation failed
+ *
+ * Returns: WIRELOG_OK on success; *out set to NULL on any error.
+ */
+wirelog_error_t
+wl_easy_open_opts(const char *dl_src,
+    const wl_easy_open_opts_t *opts,
+    wl_easy_session_t **out);
 
 /**
  * wl_easy_open:
