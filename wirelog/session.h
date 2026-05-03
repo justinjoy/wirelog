@@ -42,13 +42,12 @@ struct wl_session {
 /* Wrapper functions that delegate to the backend vtable */
 
 /*
- * NOTE: For most applications, prefer the high-level wl_easy facade in
- * <wirelog/wl_easy.h>.  wl_easy wraps parse + optimize + plan + session
- * creation behind a single wl_easy_open() call and provides convenience
- * helpers (wl_easy_intern, wl_easy_insert_sym, wl_easy_print_delta, etc.)
- * that remove boilerplate.  The wl_session_* primitives below remain the
- * canonical low-level API for advanced use cases that need direct control
- * over plans, backends, or worker counts.
+ * NOTE: This header is INTERNAL — it is not part of the installed
+ * public surface (see install_headers in the top-level meson.build).
+ * Public users must use <wirelog/wl_easy.h> (or, equivalently, the
+ * umbrella <wirelog/wirelog.h>).  The wl_session_* primitives below
+ * back the wl_easy_* facade and are exercised by in-tree tests; they
+ * are not promised to external consumers and may change without notice.
  */
 
 /**
