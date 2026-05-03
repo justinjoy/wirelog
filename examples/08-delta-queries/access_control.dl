@@ -2,7 +2,7 @@
  * access_control.dl - Access Control Rules for Example 08
  *
  * Demonstrates the delta-callback API: as can(user, permission) tuples are
- * inserted via wl_session_insert(), the engine derives granted() tuples
+ * inserted via wl_easy_insert_sym(), the engine derives granted() tuples
  * incrementally and fires the delta callback for each newly derived fact.
  *
  * Note: This file is a reference for the Datalog logic embedded in

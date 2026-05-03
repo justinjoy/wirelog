@@ -3,9 +3,8 @@
 ## Overview
 
 This example demonstrates incremental retraction in wirelog using
-`wl_easy_remove_sym` (which wraps `wl_session_remove`).  When a base fact
-is retracted, the engine propagates `-1` deltas to any derived relations
-that depended on it.  The scope here is non-recursive: a single join rule
+`wl_easy_remove_sym`.  When a base fact is retracted, the engine
+propagates `-1` deltas to any derived relations that depended on it.  The scope here is non-recursive: a single join rule
 derives `mutual(A, B)` from `friend(A, B), friend(B, A)`, and removing one
 side of the friendship pair produces exactly two `-1` deltas on `mutual`,
 one for each derived tuple that is no longer supported.
@@ -75,4 +74,4 @@ Done.
 - `examples/08-delta-queries/` -- the preceding example that introduces
   delta callbacks with `wl_easy_print_delta`.
 - `tests/test_delta_retraction.c` -- engine-level retraction tests (issue
-  #158) that exercise the same `wl_session_remove` contract used here.
+  #158) that exercise the same `wl_easy_remove_sym` contract used here.
