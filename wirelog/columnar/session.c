@@ -473,6 +473,8 @@ col_session_create(const wl_plan_t *plan, uint32_t num_workers,
     sess->plan = plan;
     sess->intern = plan->intern;
     sess->num_workers = num_workers > 0 ? num_workers : 1;
+    WL_LOG(WL_LOG_SEC_SESSION, WL_LOG_INFO, "session created num_workers=%u",
+        sess->num_workers);
 
     /*
      * WL_MAX_WORKERS: Per-worker and W² exchange buffer cost cap

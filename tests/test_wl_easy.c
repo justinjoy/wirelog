@@ -6,8 +6,12 @@
  * For commercial licenses, contact: inquiry@cleverplant.com
  */
 
-#include "../wirelog/wl_easy.h"
+#define _POSIX_C_SOURCE 200809L
 
+#include "../wirelog/wl_easy.h"
+#include "../wirelog/util/log.h"
+
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -113,6 +117,123 @@ collect_tuple(const char *relation, const int64_t *row, uint32_t ncols,
         c->rows[idx][i] = row[i];
 }
 
+static bool
+drive_access_control_trace(wl_easy_session_t *s)
+{
+    int64_t alice = wl_easy_intern(s, "alice");
+    int64_t read = wl_easy_intern(s, "read");
+    if (alice < 0 || read < 0)
+        return false;
+
+    delta_collector_t deltas;
+    memset(&deltas, 0, sizeof(deltas));
+    if (wl_easy_set_delta_cb(s, collect_delta, &deltas) != WIRELOG_OK)
+        return false;
+
+    int64_t row[2] = { alice, read };
+    if (wl_easy_insert(s, "can", row, 2) != WIRELOG_OK)
+        return false;
+    if (wl_easy_step(s) != WIRELOG_OK)
+        return false;
+
+    bool found_delta = false;
+    for (int i = 0; i < deltas.count; i++) {
+        if (strcmp(deltas.relations[i], "granted") == 0
+            && deltas.ncols[i] == 2 && deltas.rows[i][0] == alice
+            && deltas.rows[i][1] == read && deltas.diffs[i] == 1) {
+            found_delta = true;
+            break;
+        }
+    }
+    if (!found_delta)
+        return false;
+
+    tuple_collector_t granted_t;
+    memset(&granted_t, 0, sizeof(granted_t));
+    if (wl_easy_snapshot(s, "granted", collect_tuple, &granted_t)
+        != WIRELOG_OK)
+        return false;
+
+    for (int i = 0; i < granted_t.count; i++) {
+        if (strcmp(granted_t.relations[i], "granted") == 0
+            && granted_t.ncols[i] == 2 && granted_t.rows[i][0] == alice
+            && granted_t.rows[i][1] == read)
+            return true;
+    }
+    return false;
+}
+
+static bool
+file_contains_substring(const char *path, const char *needle)
+{
+    FILE *f = fopen(path, "r");
+    if (!f)
+        return false;
+
+    char buf[4096];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    buf[n] = '\0';
+    return strstr(buf, needle) != NULL;
+}
+
+#ifndef _WIN32
+static bool
+capture_num_workers_log(const wl_easy_open_opts_t *opts, uint32_t expected)
+{
+    char path[128];
+    snprintf(path, sizeof(path), "/tmp/wl-easy-num-test-%ld-%u.log",
+        (long)getpid(), expected);
+    unlink(path);
+
+    char needle[32];
+    snprintf(needle, sizeof(needle), "num_workers=%u", expected);
+
+    setenv("WL_LOG", "SESSION:4", 1);
+    wl_log_init();
+
+    int saved_stderr = dup(STDERR_FILENO);
+    if (saved_stderr < 0) {
+        unsetenv("WL_LOG");
+        return false;
+    }
+
+    int log_fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (log_fd < 0) {
+        close(saved_stderr);
+        unsetenv("WL_LOG");
+        return false;
+    }
+    if (dup2(log_fd, STDERR_FILENO) < 0) {
+        close(log_fd);
+        close(saved_stderr);
+        unsetenv("WL_LOG");
+        return false;
+    }
+    close(log_fd);
+
+    wl_easy_session_t *s = NULL;
+    wirelog_error_t open_rc = wl_easy_open_opts(ACCESS_CONTROL_SRC, opts, &s);
+    wirelog_error_t build_rc = WIRELOG_ERR_EXEC;
+    if (open_rc == WIRELOG_OK && s)
+        build_rc = wl_easy_set_delta_cb(s, NULL, NULL);
+
+    fflush(stderr);
+    bool restored = dup2(saved_stderr, STDERR_FILENO) >= 0;
+    close(saved_stderr);
+
+    bool found = file_contains_substring(path, needle);
+    unsetenv("WL_LOG");
+    wl_log_init();
+    if (s)
+        wl_easy_close(s);
+    unlink(path);
+
+    return restored && open_rc == WIRELOG_OK && build_rc == WIRELOG_OK
+           && found;
+}
+#endif
+
 /* ======================================================================== */
 /* Tests                                                                    */
 /* ======================================================================== */
@@ -152,6 +273,174 @@ test_open_parse_error(void)
         return;
     }
     PASS();
+}
+
+static void
+test_open_opts_null_equiv_to_open(void)
+{
+    TEST("open_opts NULL opts equivalent to open");
+
+    wl_easy_session_t *s = NULL;
+    if (wl_easy_open_opts(ACCESS_CONTROL_SRC, NULL, &s) != WIRELOG_OK || !s) {
+        FAIL("open_opts failed");
+        return;
+    }
+    if (!drive_access_control_trace(s)) {
+        FAIL("access-control trace failed");
+        wl_easy_close(s);
+        return;
+    }
+    wl_easy_close(s);
+    PASS();
+}
+
+static void
+test_open_opts_zero_size_rejected(void)
+{
+    TEST("open_opts rejects zero size");
+
+    wl_easy_open_opts_t opts = { 0 };
+    wl_easy_session_t *s = (wl_easy_session_t *)0xdeadbeef;
+    wirelog_error_t rc = wl_easy_open_opts(ACCESS_CONTROL_SRC, &opts, &s);
+    if (rc != WIRELOG_ERR_EXEC) {
+        FAIL("expected WIRELOG_ERR_EXEC");
+        return;
+    }
+    if (s != NULL) {
+        FAIL("*out should be NULL on error");
+        return;
+    }
+    PASS();
+}
+
+static void
+test_open_opts_reserved_rejected(void)
+{
+    TEST("open_opts rejects reserved field before parsing");
+
+    wl_easy_open_opts_t opts = WL_EASY_OPEN_OPTS_INIT;
+    opts._reserved = (const void *)0x1;
+    wl_easy_session_t *s = (wl_easy_session_t *)0xdeadbeef;
+    wirelog_error_t rc
+        = wl_easy_open_opts("this is not datalog", &opts, &s);
+    if (rc != WIRELOG_ERR_EXEC) {
+        FAIL("expected WIRELOG_ERR_EXEC");
+        return;
+    }
+    if (s != NULL) {
+        FAIL("*out should be NULL on error");
+        return;
+    }
+    PASS();
+}
+
+static void
+test_open_opts_init_macro(void)
+{
+    TEST("open_opts init macro sets defaults");
+
+    wl_easy_open_opts_t opts = WL_EASY_OPEN_OPTS_INIT;
+    if (opts.size != sizeof(wl_easy_open_opts_t)) {
+        FAIL("unexpected size");
+        return;
+    }
+    if (opts.num_workers != 0) {
+        FAIL("unexpected num_workers");
+        return;
+    }
+    if (opts.eager_build) {
+        FAIL("unexpected eager_build");
+        return;
+    }
+    if (opts._reserved != NULL) {
+        FAIL("unexpected _reserved");
+        return;
+    }
+    PASS();
+}
+
+static void
+test_open_opts_eager_build_ok(void)
+{
+    TEST("open_opts eager_build opens usable session");
+
+    wl_easy_open_opts_t opts = WL_EASY_OPEN_OPTS_INIT;
+    opts.eager_build = true;
+    wl_easy_session_t *s = NULL;
+    if (wl_easy_open_opts(ACCESS_CONTROL_SRC, &opts, &s) != WIRELOG_OK || !s) {
+        FAIL("open_opts eager_build failed");
+        return;
+    }
+    if (!drive_access_control_trace(s)) {
+        FAIL("access-control trace failed");
+        wl_easy_close(s);
+        return;
+    }
+    wl_easy_close(s);
+    PASS();
+}
+
+/*
+ * The codebase has no fixture for "parses-clean-but-plans-dirty" today, so
+ * the eager-build error contract is currently exercised only via the
+ * parse-error path (per the architect+critic synthesis plan, scope-narrow per
+ * Critic MAJOR #6).
+ */
+static void
+test_open_opts_eager_build_propagates_parse_error(void)
+{
+    TEST("open_opts eager_build propagates parse error");
+
+    wl_easy_open_opts_t opts = WL_EASY_OPEN_OPTS_INIT;
+    opts.eager_build = true;
+    wl_easy_session_t *s = (wl_easy_session_t *)0xdeadbeef;
+    wirelog_error_t rc
+        = wl_easy_open_opts("definitely not datalog", &opts, &s);
+    if (rc != WIRELOG_ERR_PARSE) {
+        FAIL("expected WIRELOG_ERR_PARSE");
+        return;
+    }
+    if (s != NULL) {
+        FAIL("*out should be NULL on error");
+        return;
+    }
+    PASS();
+}
+
+static void
+test_num_workers_default_is_one(void)
+{
+    TEST("open_opts default num_workers logs one");
+
+#ifdef _WIN32
+    SKIP("POSIX fd redirection not available on Windows");
+    return;
+#else
+    if (!capture_num_workers_log(NULL, 1)) {
+        FAIL("expected num_workers=1 log");
+        return;
+    }
+    PASS();
+#endif
+}
+
+static void
+test_num_workers_explicit_four(void)
+{
+    TEST("open_opts explicit num_workers logs four");
+
+#ifdef _WIN32
+    SKIP("POSIX fd redirection not available on Windows");
+    return;
+#else
+    wl_easy_open_opts_t opts = WL_EASY_OPEN_OPTS_INIT;
+    opts.num_workers = 4;
+    if (!capture_num_workers_log(&opts, 4)) {
+        FAIL("expected num_workers=4 log");
+        return;
+    }
+    PASS();
+#endif
 }
 
 static void
@@ -596,6 +885,14 @@ main(void)
 
     test_open_close_null_safe();
     test_open_parse_error();
+    test_open_opts_null_equiv_to_open();
+    test_open_opts_zero_size_rejected();
+    test_open_opts_reserved_rejected();
+    test_open_opts_init_macro();
+    test_open_opts_eager_build_ok();
+    test_open_opts_eager_build_propagates_parse_error();
+    test_num_workers_default_is_one();
+    test_num_workers_explicit_four();
     test_intern_returns_same_id();
     test_insert_step_delta();
     test_insert_sym_variadic();
