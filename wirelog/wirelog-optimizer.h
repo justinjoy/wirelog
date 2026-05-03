@@ -23,6 +23,13 @@
 #ifndef WIRELOG_OPTIMIZER_H
 #define WIRELOG_OPTIMIZER_H
 
+/*
+ * Pull in wirelog.h for the foundational opaque types
+ * (wirelog_program_t) and the wirelog_error_t enum.  The umbrella
+ * include in wirelog.h handles the cycle via header guards.
+ */
+#include "wirelog/wirelog.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -42,7 +49,7 @@ extern "C" {
 typedef enum {
     WIRELOG_OPT_LOGIC_FUSION = 0, /* Fuse Join+Map+Filter operations */
     WIRELOG_OPT_JOIN_PROJECT_PLAN
-    = 1,                             /* Optimize join ordering and projection */
+        = 1,                         /* Optimize join ordering and projection */
     WIRELOG_OPT_SEMIJOIN = 2,        /* Apply semijoin pre-filtering */
     WIRELOG_OPT_SUBPLAN_SHARING = 3, /* Share common subplans (CTEs) */
     WIRELOG_OPT_BOOLEAN_SPEC = 4,    /* Specialize Boolean operations */
@@ -112,7 +119,7 @@ wirelog_optimizer_get_default_config(void);
  * Returns: true on success, false on error
  */
 bool
-wirelog_optimize(void *program, int *error);
+wirelog_optimize(wirelog_program_t *program, wirelog_error_t *error);
 
 /**
  * wirelog_optimize_with_config:
@@ -125,8 +132,9 @@ wirelog_optimize(void *program, int *error);
  * Returns: true on success, false on error
  */
 bool
-wirelog_optimize_with_config(void *program, const wirelog_opt_config_t *config,
-                             int *error);
+wirelog_optimize_with_config(wirelog_program_t *program,
+    const wirelog_opt_config_t *config,
+    wirelog_error_t *error);
 
 /**
  * wirelog_optimize_apply_pass:
@@ -141,7 +149,8 @@ wirelog_optimize_with_config(void *program, const wirelog_opt_config_t *config,
  * Returns: true on success, false on error
  */
 bool
-wirelog_optimize_apply_pass(void *program, wirelog_opt_pass_t pass, int *error);
+wirelog_optimize_apply_pass(wirelog_program_t *program, wirelog_opt_pass_t pass,
+    wirelog_error_t *error);
 
 /* ======================================================================== */
 /* Optimization Analysis                                                    */
@@ -157,7 +166,8 @@ wirelog_optimize_apply_pass(void *program, wirelog_opt_pass_t pass, int *error);
  * Returns: true if stats were collected, false otherwise
  */
 bool
-wirelog_optimizer_get_stats(const void *program, wirelog_opt_stats_t *stats);
+wirelog_optimizer_get_stats(const wirelog_program_t *program,
+    wirelog_opt_stats_t *stats);
 
 /**
  * wirelog_optimizer_debug_print:
@@ -172,7 +182,7 @@ wirelog_optimizer_get_stats(const void *program, wirelog_opt_stats_t *stats);
  * - Join ordering rationale
  */
 void
-wirelog_optimizer_debug_print(const void *program);
+wirelog_optimizer_debug_print(const wirelog_program_t *program);
 
 /**
  * wirelog_optimizer_cost_estimate:
@@ -183,7 +193,7 @@ wirelog_optimizer_debug_print(const void *program);
  * Returns: Estimated cost (arbitrary units), or 0 if not available
  */
 uint64_t
-wirelog_optimizer_cost_estimate(const void *program);
+wirelog_optimizer_cost_estimate(const wirelog_program_t *program);
 
 #ifdef __cplusplus
 }

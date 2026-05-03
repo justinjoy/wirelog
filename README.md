@@ -17,7 +17,7 @@ path(X, Z) :- path(X, Y), edge(Y, Z).
 Run it from C using the `wl_easy` facade:
 
 ```c
-#include "wirelog/wl_easy.h"
+#include <wirelog/wirelog.h>  /* umbrella: pulls in wl_easy and the rest */
 
 int main(void) {
     wl_easy_session_t *s = NULL;

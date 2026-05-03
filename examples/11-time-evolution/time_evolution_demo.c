@@ -27,7 +27,7 @@
  * Run:   ./build/examples/11-time-evolution/time_evolution_demo
  */
 
-#include "wirelog/wl_easy.h"
+#include "wirelog/wirelog.h"
 
 #include <stdint.h>
 #include <stdio.h>

@@ -13,7 +13,7 @@
  * Run:   ./build/examples/08-delta-queries/delta_demo
  */
 
-#include "wirelog/wl_easy.h"
+#include "wirelog/wirelog.h"
 
 #include <stdio.h>
 #include <stdlib.h>
