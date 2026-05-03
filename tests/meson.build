@@ -340,6 +340,10 @@ if not is_windows
        find_program(meson.project_source_root() / 'scripts/ci/check-no-testhook-in-libwirelog.sh'),
        args: [meson.project_build_root()],
        suite: 'abi')
+  test('wl_easy_abi_opts_symbol',
+       find_program(meson.project_source_root() / 'scripts/ci/check-wl-easy-opts-symbol.sh'),
+       args: [meson.project_build_root()],
+       suite: 'abi')
 endif
 
 test_intern_exe = executable(
