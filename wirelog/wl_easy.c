@@ -33,6 +33,7 @@
 #include "wirelog/wirelog-parser.h"
 #include "wirelog/wirelog-types.h"
 
+#include <errno.h>
 #include <inttypes.h>
 #include <stdarg.h>
 #include <stdbool.h>
@@ -51,6 +52,7 @@ struct wl_easy_session {
      * wl_intern_put() needs a mutable pointer; the program owns the
      * intern's lifetime so the cast is safe. */
     wl_intern_t *intern_mut;
+    uint32_t num_workers;
     bool plan_built; /* true once first wl_easy_step-class call ran */
 };
 
@@ -59,7 +61,7 @@ struct wl_easy_session {
 /* ======================================================================== */
 
 static wirelog_error_t
-ensure_plan_built(wl_easy_session_t *s)
+ensure_plan_built(wl_easy_session_t *s, uint32_t num_workers)
 {
     if (!s)
         return WIRELOG_ERR_EXEC;
@@ -68,14 +70,18 @@ ensure_plan_built(wl_easy_session_t *s)
 
     wl_plan_t *plan = NULL;
     int rc = wl_plan_from_program(s->prog, &plan);
-    if (rc != 0 || !plan)
-        return WIRELOG_ERR_EXEC;
+    if (rc != 0 || !plan) {
+        if (plan)
+            wl_plan_free(plan);
+        return WIRELOG_ERR_INVALID_IR;
+    }
 
     wl_session_t *session = NULL;
-    rc = wl_session_create(wl_backend_columnar(), plan, 1, &session);
+    rc = wl_session_create(wl_backend_columnar(), plan,
+            num_workers > 0 ? num_workers : 1, &session);
     if (rc != 0 || !session) {
         wl_plan_free(plan);
-        return WIRELOG_ERR_EXEC;
+        return (rc == ENOMEM) ? WIRELOG_ERR_MEMORY : WIRELOG_ERR_EXEC;
     }
 
     s->plan = plan;
@@ -89,11 +95,17 @@ ensure_plan_built(wl_easy_session_t *s)
 /* ======================================================================== */
 
 wirelog_error_t
-wl_easy_open(const char *dl_src, wl_easy_session_t **out)
+wl_easy_open_opts(const char *dl_src, const wl_easy_open_opts_t *opts,
+    wl_easy_session_t **out)
 {
     if (!dl_src || !out)
         return WIRELOG_ERR_EXEC;
     *out = NULL;
+
+    if (opts && opts->size < sizeof(wl_easy_open_opts_t))
+        return WIRELOG_ERR_EXEC;
+    if (opts && opts->_reserved)
+        return WIRELOG_ERR_EXEC;
 
     wirelog_error_t err = WIRELOG_OK;
     wirelog_program_t *prog = wirelog_parse_string(dl_src, &err);
@@ -137,10 +149,30 @@ wl_easy_open(const char *dl_src, wl_easy_session_t **out)
     s->intern_mut = (wl_intern_t *)wirelog_program_get_intern(prog);
     s->plan = NULL;
     s->session = NULL;
+    s->num_workers = opts ? opts->num_workers : 0;
     s->plan_built = false;
+
+    if (opts && opts->eager_build) {
+        err = ensure_plan_built(s, s->num_workers);
+        if (err != WIRELOG_OK) {
+            if (s->session)
+                wl_session_destroy(s->session);
+            if (s->plan)
+                wl_plan_free(s->plan);
+            wirelog_program_free(prog);
+            free(s);
+            return err;
+        }
+    }
 
     *out = s;
     return WIRELOG_OK;
+}
+
+wirelog_error_t
+wl_easy_open(const char *dl_src, wl_easy_session_t **out)
+{
+    return wl_easy_open_opts(dl_src, NULL, out);
 }
 
 void
@@ -185,7 +217,7 @@ wl_easy_insert(wl_easy_session_t *s, const char *relation, const int64_t *row,
 {
     if (!s || !relation || !row)
         return WIRELOG_ERR_EXEC;
-    wirelog_error_t err = ensure_plan_built(s);
+    wirelog_error_t err = ensure_plan_built(s, s->num_workers);
     if (err != WIRELOG_OK)
         return err;
     int rc = wl_session_insert(s->session, relation, row, 1, ncols);
@@ -198,7 +230,7 @@ wl_easy_remove(wl_easy_session_t *s, const char *relation, const int64_t *row,
 {
     if (!s || !relation || !row)
         return WIRELOG_ERR_EXEC;
-    wirelog_error_t err = ensure_plan_built(s);
+    wirelog_error_t err = ensure_plan_built(s, s->num_workers);
     if (err != WIRELOG_OK)
         return err;
     int rc = wl_session_remove(s->session, relation, row, 1, ncols);
@@ -271,7 +303,7 @@ wl_easy_step(wl_easy_session_t *s)
 {
     if (!s)
         return WIRELOG_ERR_EXEC;
-    wirelog_error_t err = ensure_plan_built(s);
+    wirelog_error_t err = ensure_plan_built(s, s->num_workers);
     if (err != WIRELOG_OK)
         return err;
     int rc = wl_session_step(s->session);
@@ -283,7 +315,7 @@ wl_easy_set_delta_cb(wl_easy_session_t *s, wl_on_delta_fn cb, void *user_data)
 {
     if (!s)
         return WIRELOG_ERR_EXEC;
-    wirelog_error_t err = ensure_plan_built(s);
+    wirelog_error_t err = ensure_plan_built(s, s->num_workers);
     if (err != WIRELOG_OK)
         return err;
     wl_session_set_delta_cb(s->session, cb, user_data);
@@ -388,7 +420,7 @@ wl_easy_snapshot(wl_easy_session_t *s, const char *relation, wl_on_tuple_fn cb,
 {
     if (!s || !relation || !cb)
         return WIRELOG_ERR_EXEC;
-    wirelog_error_t err = ensure_plan_built(s);
+    wirelog_error_t err = ensure_plan_built(s, s->num_workers);
     if (err != WIRELOG_OK)
         return err;
     wl_easy_snapshot_filter_t filter
