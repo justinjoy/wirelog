@@ -28,17 +28,9 @@ extern "C" {
 #endif
 
 #include "wirelog/wirelog.h"
+#include "wirelog/wirelog-types.h"
 
 #include <stdint.h>
-
-/* Forward-declared callback typedefs (mirrors wirelog/backend.h, which is
- * not part of the public install set).  Definitions must remain in lock-step
- * with backend.h. */
-typedef void (*wl_on_tuple_fn)(const char *relation, const int64_t *row,
-    uint32_t ncols, void *user_data);
-
-typedef void (*wl_on_delta_fn)(const char *relation, const int64_t *row,
-    uint32_t ncols, int32_t diff, void *user_data);
 
 /**
  * wl_easy_session_t:

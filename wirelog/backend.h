@@ -28,9 +28,12 @@ extern "C" {
 #endif
 
 #include "exec_plan.h"
+#include "wirelog/wirelog-types.h"
 
 #include <stdint.h>
 #include <stdbool.h>
+
+/* wl_on_tuple_fn / wl_on_delta_fn now live in wirelog-types.h (single source of truth). */
 
 /**
  * wl_session_t:
@@ -38,33 +41,6 @@ extern "C" {
  * Opaque handle to an active execution session.
  */
 typedef struct wl_session wl_session_t;
-
-/**
- * wl_on_tuple_fn:
- *
- * Callback invoked once per computed output tuple.
- *
- * @relation:  Null-terminated output relation name.
- * @row:       Array of int64_t values (length = @ncols).
- * @ncols:     Number of columns in the row.
- * @user_data: Opaque pointer passed through from the caller.
- */
-typedef void (*wl_on_tuple_fn)(const char *relation, const int64_t *row,
-                               uint32_t ncols, void *user_data);
-
-/**
- * wl_on_delta_fn:
- *
- * Callback invoked when a tuple is inserted/removed in an incremental session.
- *
- * @relation:  Null-terminated output relation name.
- * @row:       Array of int64_t values (length = @ncols).
- * @ncols:     Number of columns in the row.
- * @diff:      +1 for insertion, -1 for removal.
- * @user_data: Opaque pointer passed through from the caller.
- */
-typedef void (*wl_on_delta_fn)(const char *relation, const int64_t *row,
-                               uint32_t ncols, int32_t diff, void *user_data);
 
 /**
  * wl_compute_backend_t:
@@ -86,24 +62,24 @@ typedef struct {
     const char *name;
 
     int (*session_create)(const wl_plan_t *plan, uint32_t num_workers,
-                          wl_session_t **out);
+        wl_session_t **out);
     void (*session_destroy)(wl_session_t *session);
 
     int (*session_insert)(wl_session_t *session, const char *relation,
-                          const int64_t *data, uint32_t num_rows,
-                          uint32_t num_cols);
+        const int64_t *data, uint32_t num_rows,
+        uint32_t num_cols);
 
     int (*session_remove)(wl_session_t *session, const char *relation,
-                          const int64_t *data, uint32_t num_rows,
-                          uint32_t num_cols);
+        const int64_t *data, uint32_t num_rows,
+        uint32_t num_cols);
 
     int (*session_step)(wl_session_t *session);
 
     void (*session_set_delta_cb)(wl_session_t *session, wl_on_delta_fn callback,
-                                 void *user_data);
+        void *user_data);
 
     int (*session_snapshot)(wl_session_t *session, wl_on_tuple_fn callback,
-                            void *user_data);
+        void *user_data);
 } wl_compute_backend_t;
 
 /**
