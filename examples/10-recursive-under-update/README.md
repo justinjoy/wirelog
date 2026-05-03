@@ -86,4 +86,4 @@ Done.
 - `examples/09-retraction-basics/` -- non-recursive retraction basics with
   `-1` deltas on a single-join rule.
 - `tests/test_delta_retraction.c` -- engine-level retraction tests (issue
-  #158) that exercise the same `wl_session_remove` contract used here.
+  #158) that exercise the same `wl_easy_remove_sym` contract used here.
