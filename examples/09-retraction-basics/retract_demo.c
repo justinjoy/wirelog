@@ -28,7 +28,7 @@
  * Run:   ./build/examples/09-retraction-basics/retract_demo
  */
 
-#include "wirelog/wl_easy.h"
+#include "wirelog/wirelog.h"
 
 #include <stdint.h>
 #include <stdio.h>

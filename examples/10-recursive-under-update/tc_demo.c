@@ -28,7 +28,7 @@
  * Run:   ./build/examples/10-recursive-under-update/tc_demo
  */
 
-#include "wirelog/wl_easy.h"
+#include "wirelog/wirelog.h"
 
 #include <stdint.h>
 #include <stdio.h>

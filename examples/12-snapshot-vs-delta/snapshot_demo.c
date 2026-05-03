@@ -33,7 +33,7 @@
  * Run:   ./build/examples/12-snapshot-vs-delta/snapshot_demo
  */
 
-#include "wirelog/wl_easy.h"
+#include "wirelog/wirelog.h"
 
 #include <inttypes.h>
 #include <stdint.h>

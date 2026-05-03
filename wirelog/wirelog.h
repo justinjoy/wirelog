@@ -23,6 +23,18 @@
 #ifndef WIRELOG_H
 #define WIRELOG_H
 
+/*
+ * wirelog.h is the umbrella header for the wirelog public API.
+ * Downstream users should include only this header:
+ *
+ *     #include <wirelog/wirelog.h>
+ *
+ * Individual sub-headers (wirelog-types.h, wirelog-parser.h,
+ * wirelog-ir.h, wirelog-optimizer.h, wirelog-export.h, wl_easy.h,
+ * io/io_adapter.h) are still installed for backwards compatibility
+ * but should not be included directly in new code.
+ */
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -40,8 +52,8 @@ extern "C" {
 #define WIRELOG_VERSION_PATCH 0
 
 #define WIRELOG_VERSION                                          \
-    (WIRELOG_VERSION_MAJOR * 10000 + WIRELOG_VERSION_MINOR * 100 \
-     + WIRELOG_VERSION_PATCH)
+        (WIRELOG_VERSION_MAJOR * 10000 + WIRELOG_VERSION_MINOR * 100 \
+        + WIRELOG_VERSION_PATCH)
 
 /* ======================================================================== */
 /* Type Definitions                                                         */
@@ -131,8 +143,8 @@ wirelog_program_get_intern(const wirelog_program_t *prog);
  */
 int
 wirelog_program_get_facts(const wirelog_program_t *prog, const char *relation,
-                          int64_t **data, uint32_t *num_rows,
-                          uint32_t *num_cols);
+    int64_t **data, uint32_t *num_rows,
+    uint32_t *num_cols);
 
 /**
  * Load all inline facts from the program into a DD worker.
@@ -184,8 +196,8 @@ wirelog_executor_free(wirelog_executor_t *executor);
 
 bool
 wirelog_load_facts_from_csv(wirelog_executor_t *executor,
-                            const char *relation_name, const char *csv_file,
-                            wirelog_error_t *error);
+    const char *relation_name, const char *csv_file,
+    wirelog_error_t *error);
 
 wirelog_result_t *
 wirelog_evaluate(wirelog_executor_t *executor, wirelog_error_t *error);
@@ -196,16 +208,16 @@ wirelog_evaluate(wirelog_executor_t *executor, wirelog_error_t *error);
 
 const void *
 wirelog_result_get_relation(const wirelog_result_t *result,
-                            const char *relation_name);
+    const char *relation_name);
 
 uint64_t
 wirelog_result_relation_cardinality(const wirelog_result_t *result,
-                                    const char *relation_name);
+    const char *relation_name);
 
 bool
 wirelog_result_write_csv(const wirelog_result_t *result,
-                         const char *relation_name, const char *output_file,
-                         wirelog_error_t *error);
+    const char *relation_name, const char *output_file,
+    wirelog_error_t *error);
 
 void
 wirelog_result_free(wirelog_result_t *result);
@@ -232,5 +244,21 @@ wirelog_config_threads(void);
 #ifdef __cplusplus
 }
 #endif
+
+/* ======================================================================== */
+/* Umbrella includes                                                        */
+/*                                                                          */
+/* Pull in the rest of the public API so users only need this header.       */
+/* Each sub-header has its own include guard, so this is cycle-safe;        */
+/* sub-headers may also reference the opaque types declared above.          */
+/* ======================================================================== */
+
+#include "wirelog/wirelog-export.h"
+#include "wirelog/wirelog-types.h"
+#include "wirelog/wirelog-parser.h"
+#include "wirelog/wirelog-ir.h"
+#include "wirelog/wirelog-optimizer.h"
+#include "wirelog/wl_easy.h"
+#include "wirelog/io/io_adapter.h"
 
 #endif /* WIRELOG_H */

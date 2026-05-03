@@ -14,7 +14,7 @@
  * See also: Issue #446 (Option C design), Issue #462 (CI compile gate).
  */
 
-#include <wirelog/io/io_adapter.h>
+#include <wirelog/wirelog.h>
 
 #include <stdio.h>
 #include <stdlib.h>
