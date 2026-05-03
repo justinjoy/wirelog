@@ -99,12 +99,44 @@ typedef enum {
 /* Parser API                                                               */
 /* ======================================================================== */
 
+/**
+ * wirelog_parse:
+ * @filename: Path to .dl file
+ * @error: (out) (optional): Error code
+ *
+ * Parse a Datalog program from a file.
+ *
+ * Supported Datalog features:
+ * - Facts (extensional database)
+ * - Rules with recursion
+ * - Negation (stratified)
+ * - Aggregation (COUNT, SUM, MIN, MAX, AVG)
+ * - Built-in predicates (=, <, >, <=, >=, !=)
+ * - Comments (% line comments)
+ *
+ * Returns: (transfer full): Parsed program, or NULL on error
+ */
 wirelog_program_t *
 wirelog_parse(const char *filename, wirelog_error_t *error);
 
+/**
+ * wirelog_parse_string:
+ * @program_text: Datalog program as string
+ * @error: (out) (optional): Error code
+ *
+ * Parse a Datalog program from a string.
+ *
+ * Returns: (transfer full): Parsed program, or NULL on error
+ */
 wirelog_program_t *
 wirelog_parse_string(const char *program_text, wirelog_error_t *error);
 
+/**
+ * wirelog_program_free:
+ * @program: (transfer full): Program to free
+ *
+ * Free a parsed program and all associated resources.
+ */
 void
 wirelog_program_free(wirelog_program_t *program);
 

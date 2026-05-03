@@ -102,24 +102,16 @@ typedef struct {
 wirelog_opt_config_t
 wirelog_optimizer_get_default_config(void);
 
-/**
- * wirelog_optimize:
- * @program: Program to optimize
- * @error: (out) (optional): Error code
+/* Note: wirelog_optimize() lives in wirelog.h — this header adds the
+ * config/pass/stats variants on top of the core entry point.
  *
- * Apply all enabled optimizations to a program.
- *
- * Optimizations applied (Phase 0+):
- * 1. Logic Fusion: Merge Join+Map+Filter into FlatMap
- * 2. Join-Project Plan: Determine optimal join order
- * 3. Semijoin Information Passing: Pre-filter with semijoins
- * 4. Subplan Sharing: Share common sub-expressions
- * 5. Boolean Specialization: Optimize diff field encoding
- *
- * Returns: true on success, false on error
+ * Phase 0+ optimization pipeline:
+ *   1. Logic Fusion: Merge Join+Map+Filter into FlatMap
+ *   2. Join-Project Plan: Determine optimal join order
+ *   3. Semijoin Information Passing: Pre-filter with semijoins
+ *   4. Subplan Sharing: Share common sub-expressions
+ *   5. Boolean Specialization: Optimize diff field encoding
  */
-bool
-wirelog_optimize(wirelog_program_t *program, wirelog_error_t *error);
 
 /**
  * wirelog_optimize_with_config:

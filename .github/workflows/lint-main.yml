@@ -8,7 +8,7 @@ name: Lint Main
 # Jobs:
 #   - editorconfig-check  : whitespace/encoding/line-ending consistency
 #   - uncrustify-check    : formatting against uncrustify.cfg
-#   - clang-tidy-check    : static analysis via LLVM 18 (Linux only, slow)
+#   - clang-tidy-check    : static analysis via LLVM 22 (Linux only, slow)
 #
 # All jobs have continue-on-error: true — issues are surfaced as annotations
 # and step summaries without failing the workflow run.
@@ -108,27 +108,27 @@ jobs:
           fi
 
   # ==========================================================================
-  # Check 3: clang-tidy 18 (slow, up to 30 min, Linux only)
+  # Check 3: clang-tidy 22 (slow, up to 30 min, Linux only)
   # Non-blocking: reports static analysis findings.
   # Excludes: subprojects/**, build/**
   # ==========================================================================
   clang-tidy-check:
-    name: clang-tidy 18 check (monitor)
+    name: clang-tidy 22 check (monitor)
     runs-on: ubuntu-latest
     continue-on-error: true
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
 
-      - name: Install LLVM 18
+      - name: Install LLVM 22
         run: |
           wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
-          echo "deb https://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-18 main" | sudo tee /etc/apt/sources.list.d/llvm-18.list
+          echo "deb https://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-22 main" | sudo tee /etc/apt/sources.list.d/llvm-22.list
           sudo apt-get update
-          sudo apt-get install -y clang-tidy-18 clang-tools-18
+          sudo apt-get install -y clang-tidy-22 clang-tools-22
 
       - name: Verify tool version
-        run: clang-tidy-18 --version
+        run: clang-tidy-22 --version
 
       - name: Install build dependencies
         run: |
@@ -139,7 +139,7 @@ jobs:
 
       - name: Run clang-tidy
         run: |
-          run-clang-tidy-18 -p builddir-tidy \
+          run-clang-tidy-22 -p builddir-tidy \
             "^\\.\\./wirelog/.*\\.(c|h)$" \
             2>&1 | tee tidy-results.txt || true
 

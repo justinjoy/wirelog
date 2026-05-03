@@ -114,28 +114,28 @@ jobs:
           fi
 
   # ==========================================================================
-  # Phase 1c: clang-tidy 18 check (slow, up to 30 min, Linux only)
+  # Phase 1c: clang-tidy 22 check (slow, up to 30 min, Linux only)
   # Hard gate: tidy violations fail the PR.
   # Excludes: subprojects/**, build/**
   # Runs only after uncrustify passes.
   # ==========================================================================
   clang-tidy-check:
-    name: clang-tidy 18 check
+    name: clang-tidy 22 check
     needs: [uncrustify-check]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
 
-      - name: Install LLVM 18
+      - name: Install LLVM 22
         run: |
           wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
-          echo "deb https://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-18 main" | sudo tee /etc/apt/sources.list.d/llvm-18.list
+          echo "deb https://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-22 main" | sudo tee /etc/apt/sources.list.d/llvm-22.list
           sudo apt-get update
-          sudo apt-get install -y clang-tidy-18 clang-tools-18
+          sudo apt-get install -y clang-tidy-22 clang-tools-22
 
       - name: Verify tool version
-        run: clang-tidy-18 --version
+        run: clang-tidy-22 --version
 
       - name: Install build dependencies
         run: |
@@ -147,7 +147,7 @@ jobs:
       - name: Run clang-tidy (hard gate)
         run: |
           set -o pipefail
-          run-clang-tidy-18 -p builddir-tidy \
+          run-clang-tidy-22 -p builddir-tidy \
             "^\\.\\./wirelog/.*\\.(c|h)$" \
             2>&1 | tee tidy-results.txt
           if grep -qE '^.*\.(c|h):[0-9]+:[0-9]+: (warning|error):' tidy-results.txt; then

@@ -19,7 +19,7 @@ permissions:
 jobs:
   # ==========================================================================
   # Phase 1: Lint (import lint-pr.yml as prerequisite)
-  # editorconfig -> uncrustify -> clang-tidy 18 (sequential, hard gates)
+  # editorconfig -> uncrustify -> clang-tidy 22 (sequential, hard gates)
   # ==========================================================================
   lint:
     uses: ./.github/workflows/lint-pr.yml
