@@ -50,38 +50,8 @@ typedef struct {
 /* ======================================================================== */
 /* Parsing                                                                  */
 /* ======================================================================== */
-
-/**
- * wirelog_parse:
- * @filename: Path to .dl file
- * @error: (out) (optional): Error code
- *
- * Parse a Datalog program from a file.
- *
- * Supported Datalog features:
- * - Facts (extensional database)
- * - Rules with recursion
- * - Negation (stratified)
- * - Aggregation (COUNT, SUM, MIN, MAX, AVG)
- * - Built-in predicates (=, <, >, <=, >=, !=)
- * - Comments (% line comments)
- *
- * Returns: (transfer full): Parsed program, or NULL on error
- */
-wirelog_program_t *
-wirelog_parse(const char *filename, wirelog_error_t *error);
-
-/**
- * wirelog_parse_string:
- * @program_text: Datalog program as string
- * @error: (out) (optional): Error code
- *
- * Parse a Datalog program from a string.
- *
- * Returns: (transfer full): Parsed program, or NULL on error
- */
-wirelog_program_t *
-wirelog_parse_string(const char *program_text, wirelog_error_t *error);
+/* Note: wirelog_parse() and wirelog_parse_string() live in wirelog.h —
+ * this header only adds the error-info variant on top of the core API. */
 
 /**
  * wirelog_parse_with_error_info:
@@ -94,7 +64,7 @@ wirelog_parse_string(const char *program_text, wirelog_error_t *error);
  */
 wirelog_program_t *
 wirelog_parse_with_error_info(const char *filename,
-                              wirelog_parse_error_t *error_info);
+    wirelog_parse_error_t *error_info);
 
 /* ======================================================================== */
 /* Program Inspection                                                       */
@@ -122,7 +92,7 @@ wirelog_program_get_stratum_count(const wirelog_program_t *program);
  */
 const wirelog_stratum_t *
 wirelog_program_get_stratum(const wirelog_program_t *program,
-                            uint32_t stratum_id);
+    uint32_t stratum_id);
 
 /**
  * wirelog_program_get_rule_count:
@@ -146,7 +116,7 @@ wirelog_program_get_rule_count(const wirelog_program_t *program);
  */
 const wirelog_schema_t *
 wirelog_program_get_schema(const wirelog_program_t *program,
-                           const char *relation_name);
+    const char *relation_name);
 
 /**
  * wirelog_program_is_stratified:
@@ -159,18 +129,7 @@ wirelog_program_get_schema(const wirelog_program_t *program,
 bool
 wirelog_program_is_stratified(const wirelog_program_t *program);
 
-/* ======================================================================== */
-/* Cleanup                                                                  */
-/* ======================================================================== */
-
-/**
- * wirelog_program_free:
- * @program: (transfer full): Program to free
- *
- * Free a parsed program and all associated resources.
- */
-void
-wirelog_program_free(wirelog_program_t *program);
+/* Note: wirelog_program_free() lives in wirelog.h. */
 
 #ifdef __cplusplus
 }
