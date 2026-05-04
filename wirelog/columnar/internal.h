@@ -136,7 +136,7 @@ col_columns_alloc(uint32_t ncols, uint32_t capacity)
         if (!cols[c]) {
             for (uint32_t j = 0; j < c; j++)
                 free(cols[j]);
-            free(cols);
+            free((void *)cols);
             return NULL;
         }
     }
@@ -151,7 +151,7 @@ col_columns_free(int64_t **cols, uint32_t ncols)
         return;
     for (uint32_t c = 0; c < ncols; c++)
         free(cols[c]);
-    free(cols);
+    free((void *)cols);
 }
 
 /** Realloc each column to new_cap. Returns 0 on success, ENOMEM on failure. */
