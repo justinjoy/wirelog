@@ -203,7 +203,7 @@ print_tuple_cb(const char *relation, const int64_t *row, uint32_t ncols,
  * @rel_buf_size: Capacity of @relation_out.
  * @values:       Output buffer for parsed int64_t column values.
  * @ncols_out:    (out) Number of values parsed.
- * @rel_info:     Relation schema for type-aware parsing (may be NULL).
+ * @prog:         Program containing relation schemas (may be NULL).
  * @intern:       Intern table for string columns (may be NULL).
  *
  * Parse a line of the form:
@@ -215,7 +215,7 @@ print_tuple_cb(const char *relation, const int64_t *row, uint32_t ncols,
 static int
 parse_watch_line(char *line, char *relation_out, size_t rel_buf_size,
     int64_t *values, uint32_t *ncols_out,
-    const wl_ir_relation_info_t *rel_info, wl_intern_t *intern)
+    const wirelog_program_t *prog, wl_intern_t *intern)
 {
     /* Strip trailing newline/carriage-return */
     size_t len = strlen(line);
@@ -256,6 +256,9 @@ parse_watch_line(char *line, char *relation_out, size_t rel_buf_size,
     if (tlen == 0 || tlen >= rel_buf_size)
         return -1;
     memcpy(relation_out, token, tlen + 1);
+
+    const wl_ir_relation_info_t *rel_info = prog
+        ? find_relation(prog, relation_out) : NULL;
 
     /* Parse remaining tokens as column values */
     uint32_t col = 0;
@@ -490,16 +493,11 @@ wl_run_pipeline(const char *source, uint32_t num_workers, bool delta_mode,
 
         while (fgets(line, (int)sizeof(line), stdin)) {
             uint32_t ncols = 0;
-            const wl_ir_relation_info_t *rel_info
-                = find_relation(prog, relation);
 
             if (parse_watch_line(line, relation, sizeof(relation), values,
-                &ncols, rel_info, prog->intern)
+                &ncols, prog, prog->intern)
                 != 0)
                 continue;
-
-            /* Re-fetch rel_info now that relation name is filled in */
-            rel_info = find_relation(prog, relation);
 
             rc = wl_session_insert(sess, relation, values, 1, ncols);
             if (rc != 0) {
