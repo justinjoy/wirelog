@@ -4,10 +4,9 @@ name: CI PR
 #
 # Phase 1 (Lint):    lint-pr.yml — editorconfig -> uncrustify -> clang-tidy
 # Phase 2 (Build):   Linux (GCC + Clang) + macOS (Clang), fail-fast
-# Phase 3 (Sanitizers): Linux ASan/UBSan (GCC + Clang), depends on build
+# Phase 3 (Sanitizers): ASan/UBSan + TSan, runs after lint
 #
-# Execution order: lint -> build -> sanitizers
-# Any phase failure stops subsequent phases.
+# Execution order: lint -> build + sanitizers
 
 on:
   pull_request:
@@ -146,14 +145,53 @@ jobs:
           LD_LIBRARY_PATH="$staging_prefix/lib/${multiarch:+$multiarch:}$staging_prefix/lib" \
             ./builddir-path-a/pcap_skeleton
 
-      # =======================================================================
-      # Phase 3: Sanitizers (ASan + UBSan) — runs on same platform after build
-      # Linux: GCC + Clang; macOS: Clang (Windows: skipped)
-      # =======================================================================
+  # ==========================================================================
+  # Phase 3a: ASan + UBSan matrix
+  # Runs after lint and in parallel with the normal build matrix.
+  # Linux: GCC + Clang; macOS: Clang
+  # ==========================================================================
+  sanitizer:
+    name: Sanitizers / ${{ matrix.os }} / ${{ matrix.compiler }}
+    needs: [lint]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux - GCC
+          - os: ubuntu-latest
+            compiler: gcc
+            cc: gcc
+
+          # Linux - Clang
+          - os: ubuntu-latest
+            compiler: clang
+            cc: clang
+
+          # macOS - Clang
+          - os: macos-latest
+            compiler: clang
+            cc: clang
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y meson ninja-build libmbedtls-dev
+          if [ "${{ matrix.compiler }}" = "clang" ]; then
+            sudo apt-get install -y clang
+          fi
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install meson ninja mbedtls
+
       - name: Configure with sanitizers
-        if: runner.os != 'Windows'
         run: >
-          rm -rf builddir-san &&
           meson setup builddir-san
           -Db_sanitize=address,undefined
           -Db_lundef=false
@@ -163,21 +201,49 @@ jobs:
           CC: ${{ matrix.cc }}
 
       - name: Build with sanitizers
-        if: runner.os != 'Windows'
         run: meson compile -C builddir-san
 
       - name: Test with sanitizers
-        if: runner.os != 'Windows'
         run: meson test -C builddir-san --print-errorlogs
         env:
           ASAN_OPTIONS: abort_on_error=1:halt_on_error=1
           UBSAN_OPTIONS: abort_on_error=1:halt_on_error=1:print_stacktrace=1
 
-      # TSan: force POSIX pthreads via -Dthreads=posix.
-      # TSan only intercepts pthread calls; C11 <threads.h> functions
-      # (thrd_create, mtx_lock) are uninstrumented and cause false SEGV.
-      - name: Sanitizers / TSan
-        if: matrix.os == 'ubuntu-latest'
+  # ==========================================================================
+  # Phase 3b: TSan
+  # Runs after lint and in parallel with the normal build matrix.
+  # TSan forces POSIX pthreads via -Dthreads=posix.
+  # TSan only intercepts pthread calls; C11 <threads.h> functions
+  # (thrd_create, mtx_lock) are uninstrumented and cause false SEGV.
+  # ==========================================================================
+  tsan:
+    name: TSan / ubuntu-latest / ${{ matrix.compiler }}
+    needs: [lint]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux - GCC
+          - compiler: gcc
+            cc: gcc
+
+          # Linux - Clang
+          - compiler: clang
+            cc: clang
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y meson ninja-build libmbedtls-dev
+          if [ "${{ matrix.compiler }}" = "clang" ]; then
+            sudo apt-get install -y clang
+          fi
+
+      - name: Configure with TSan
         run: |
           meson setup builddir-tsan \
             -Db_sanitize=thread \
@@ -185,8 +251,13 @@ jobs:
             -Dthreads=posix \
             -Dtests=true \
             --buildtype=debug
-          meson compile -C builddir-tsan
-          meson test -C builddir-tsan --print-errorlogs
+        env:
+          CC: ${{ matrix.cc }}
+
+      - name: Build with TSan
+        run: meson compile -C builddir-tsan
+
+      - name: Test with TSan
+        run: meson test -C builddir-tsan --print-errorlogs
         env:
           TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
-          CC: ${{ matrix.cc }}
