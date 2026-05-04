@@ -350,9 +350,9 @@ col_session_get_consolidation_stats(wl_session_t *sess,
 /**
  * col_session_get_exchange_time_ns:
  *
- * Return total nanoseconds spent in exchange barriers (tdd_exchange_deltas /
- * tdd_bdx_exchange_deltas) across the last wl_session_snapshot() call.
- * out_exchange_ns is NULL-safe.
+ * Return legacy coordinator serial time across the last wl_session_snapshot()
+ * call.  This includes recursive TDD exchange scatter/gather and the
+ * non-recursive TDD coordinator merge path.  out_exchange_ns is NULL-safe.
  *
  * @param sess            A wl_session_t* backed by the columnar backend.
  * @param out_exchange_ns Accumulated exchange wall time in nanoseconds.
@@ -360,6 +360,28 @@ col_session_get_consolidation_stats(wl_session_t *sess,
 void
 col_session_get_exchange_time_ns(wl_session_t *sess,
     uint64_t *out_exchange_ns);
+
+/**
+ * col_session_get_tdd_perf_stats:
+ *
+ * Return recursive TDD evaluator profiling counters accumulated across the
+ * last wl_session_snapshot() call.  These counters expose the current
+ * queue-assisted after-barrier path for benchmark measurement only.
+ * All out-parameters are NULL-safe.
+ *
+ * @param sess                 A wl_session_t* backed by the columnar backend.
+ * @param out_total_ns         Total recursive TDD evaluator wall time.
+ * @param out_dispatch_wait_ns Submit loop plus wl_workqueue_wait_all time.
+ * @param out_queue_drain_ns   MPSC drain plus delta matrix reconstruction time.
+ * @param out_convergence_ns   Worker empty-delta and convergence checks.
+ * @param out_exchange_ns      Recursive TDD exchange scatter/gather time.
+ * @param out_final_merge_ns   Final coordinator worker-result merge/dedup time.
+ */
+void
+col_session_get_tdd_perf_stats(wl_session_t *sess, uint64_t *out_total_ns,
+    uint64_t *out_dispatch_wait_ns, uint64_t *out_queue_drain_ns,
+    uint64_t *out_convergence_ns, uint64_t *out_exchange_ns,
+    uint64_t *out_final_merge_ns);
 
 /**
  * col_session_get_darr_count:

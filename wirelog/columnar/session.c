@@ -253,9 +253,9 @@ col_session_get_consolidation_stats(wl_session_t *sess,
 /*
  * col_session_get_exchange_time_ns:
  *
- * Return total nanoseconds spent in tdd_exchange_deltas /
- * tdd_bdx_exchange_deltas (scatter/gather barriers) across the last
- * wl_session_snapshot() call.  out_exchange_ns is NULL-safe.
+ * Return legacy coordinator serial time across the last wl_session_snapshot()
+ * call.  This includes recursive TDD exchange scatter/gather and the
+ * non-recursive TDD coordinator merge path.  out_exchange_ns is NULL-safe.
  */
 void
 col_session_get_exchange_time_ns(wl_session_t *sess,
@@ -264,6 +264,35 @@ col_session_get_exchange_time_ns(wl_session_t *sess,
     wl_col_session_t *cs = COL_SESSION(sess);
     if (out_exchange_ns)
         *out_exchange_ns = cs->exchange_time_ns;
+}
+
+/*
+ * col_session_get_tdd_perf_stats:
+ *
+ * Return recursive TDD evaluator profiling counters from the last
+ * wl_session_snapshot() call.  The counters expose the current
+ * queue-assisted after-barrier implementation without changing execution.
+ * All out-parameters are NULL-safe.
+ */
+void
+col_session_get_tdd_perf_stats(wl_session_t *sess, uint64_t *out_total_ns,
+    uint64_t *out_dispatch_wait_ns, uint64_t *out_queue_drain_ns,
+    uint64_t *out_convergence_ns, uint64_t *out_exchange_ns,
+    uint64_t *out_final_merge_ns)
+{
+    wl_col_session_t *cs = COL_SESSION(sess);
+    if (out_total_ns)
+        *out_total_ns = cs->tdd_total_ns;
+    if (out_dispatch_wait_ns)
+        *out_dispatch_wait_ns = cs->tdd_dispatch_wait_ns;
+    if (out_queue_drain_ns)
+        *out_queue_drain_ns = cs->tdd_queue_drain_ns;
+    if (out_convergence_ns)
+        *out_convergence_ns = cs->tdd_convergence_ns;
+    if (out_exchange_ns)
+        *out_exchange_ns = cs->tdd_exchange_ns;
+    if (out_final_merge_ns)
+        *out_final_merge_ns = cs->tdd_final_merge_ns;
 }
 
 /*
@@ -1781,6 +1810,12 @@ col_session_snapshot(wl_session_t *session, wl_on_tuple_fn callback,
     sess->consolidate_fast_hits = 0;
     sess->consolidate_slow_hits = 0;
     sess->exchange_time_ns = 0;
+    sess->tdd_total_ns = 0;
+    sess->tdd_dispatch_wait_ns = 0;
+    sess->tdd_queue_drain_ns = 0;
+    sess->tdd_convergence_ns = 0;
+    sess->tdd_exchange_ns = 0;
+    sess->tdd_final_merge_ns = 0;
 
     /* Phase 4 incremental skip: when last_inserted_relation is set, only
      * re-evaluate strata that transitively depend on the inserted relation.
