@@ -20,14 +20,19 @@ The executable uses a public side compound declaration for event metadata:
 
 ```datalog
 .decl event(id: int64, tenant: symbol, risk: int64, payload: metadata/4 side)
+.decl pulse(id: int64)
 .decl hot_event(id: int64, tenant: symbol)
+pulse(ID) :- event(ID, _, _, _), ID < 0.
+pulse(ID) :- pulse(ID).
 hot_event(ID, Tenant) :- event(ID, Tenant, Risk, _), Risk > 80.
 ```
 
 The `risk` scalar drives the rule because side-compound body destructuring is a
 larger compiler feature tracked separately. The payload still uses the real
 session-local compound arena, so rotations are triggered by arena saturation
-rather than by a caller-owned event watermark.
+rather than by a caller-owned event watermark. The synthetic empty `pulse`
+recursion forces deterministic epoch advancement for the demo workload; it does
+not change the emitted `hot_event` results.
 The EDB log stores source-level event values rather than encoded Wirelog rows,
 so each fresh session re-interns symbols and rebuilds rows with its own public
 API state.
@@ -71,7 +76,8 @@ sequence:
 
 ```sh
 meson compile -C build daemon_style_demo
-./build/examples/13-daemon-style/daemon_style_demo
+WIRELOG_COMPOUND_MAX_EPOCHS=256 \
+./build/examples/13-daemon-style/daemon_style_demo --events 1000
 ```
 
 For a short deterministic smoke run:
@@ -111,8 +117,8 @@ The exact RSS value depends on platform and allocator state.
 ## What This Demonstrates
 
 - **Daemon lifecycle** -- facts arrive over time, replay is separated from live
-  callbacks, and each live `wl_easy_step` publishes only new deltas for that
-  epoch.
+  callback attachment, and the consumer keeps a monotonic output watermark so
+  repeated rows after rotation are idempotent.
 - **EDB ownership** -- the application owns the durable input log needed to
   reconstruct a fresh session.
 - **Rotation observability** -- `stderr` carries event count, EDB size, live
