@@ -1486,17 +1486,6 @@ void
 col_session_free_sorted_arrangements(wl_col_session_t *cs);
 
 /* ======================================================================== */
-/* Frontier & Affected Strata (columnar/frontier.c)                         */
-/* ======================================================================== */
-
-uint64_t
-col_compute_affected_strata(wl_session_t *session,
-    const char *inserted_relation);
-uint64_t
-col_compute_affected_rules(wl_session_t *session,
-    const char *inserted_relation);
-
-/* ======================================================================== */
 /* Mobius / Z-set (columnar/mobius.c)                                        */
 /* ======================================================================== */
 
