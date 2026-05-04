@@ -856,6 +856,11 @@ typedef struct wl_col_session_t {
     uint64_t tdd_queue_drain_ns;
     uint64_t tdd_convergence_ns;
     uint64_t tdd_exchange_ns;
+    uint64_t tdd_exchange_matrix_ns;
+    uint64_t tdd_exchange_coordinator_ns;
+    uint64_t tdd_exchange_scatter_ns;
+    uint64_t tdd_exchange_gather_ns;
+    uint64_t tdd_exchange_broadcast_ns;
     uint64_t tdd_final_merge_ns;
     /* Phase 4: tracks which relation was just inserted via
      * col_session_insert_incremental, enables affected-stratum skip

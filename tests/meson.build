@@ -218,6 +218,18 @@ test('bench_flowlog_tdd_bdx_smoke', bench_flowlog,
      suite: 'bench',
      timeout: 30)
 
+bench_flowlog_json_py3 = find_program('python3', 'python', required: true)
+bench_flowlog_tdd_json_validator = files('validate_bench_flowlog_tdd_json.py')
+test('bench_flowlog_tdd_bdx_json', bench_flowlog_json_py3,
+     args: [
+       bench_flowlog_tdd_json_validator[0],
+       bench_flowlog.full_path(),
+       meson.project_source_root() / 'bench/data/graph_10.csv',
+     ],
+     depends: bench_flowlog,
+     suite: 'bench',
+     timeout: 30)
+
 # Issue #287: logger env parser tests (pure function; no env mutation).
 test_log_parse_exe = executable(
   'test_log_parse',

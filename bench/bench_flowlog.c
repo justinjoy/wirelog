@@ -38,6 +38,12 @@ extern void
 col_session_get_cache_stats(wl_session_t *sess, uint64_t *out_hits,
     uint64_t *out_misses);
 
+extern void
+wl_columnar_session_get_tdd_exchange_breakdown_stats(wl_session_t *sess,
+    uint64_t *out_matrix_ns, uint64_t *out_coordinator_ns,
+    uint64_t *out_scatter_ns, uint64_t *out_gather_ns,
+    uint64_t *out_broadcast_ns);
+
 /* ----------------------------------------------------------------
  * Global output format and per-run profiling accumulators (3B-003)
  *
@@ -74,6 +80,11 @@ static uint64_t g_last_tdd_idle_estimate_ns = 0;
 static uint64_t g_last_tdd_queue_drain_ns = 0;
 static uint64_t g_last_tdd_convergence_ns = 0;
 static uint64_t g_last_tdd_exchange_ns = 0;
+static uint64_t g_last_tdd_exchange_matrix_ns = 0;
+static uint64_t g_last_tdd_exchange_coordinator_ns = 0;
+static uint64_t g_last_tdd_exchange_scatter_ns = 0;
+static uint64_t g_last_tdd_exchange_gather_ns = 0;
+static uint64_t g_last_tdd_exchange_broadcast_ns = 0;
 static uint64_t g_last_tdd_final_merge_ns = 0;
 
 #ifndef WITH_K_FUSION
@@ -349,6 +360,11 @@ run_pipeline_count(const char *source, uint32_t num_workers, int64_t *out_count,
         &g_last_tdd_queue_drain_ns,
         &g_last_tdd_convergence_ns, &g_last_tdd_exchange_ns,
         &g_last_tdd_final_merge_ns);
+    wl_columnar_session_get_tdd_exchange_breakdown_stats(sess,
+        &g_last_tdd_exchange_matrix_ns,
+        &g_last_tdd_exchange_coordinator_ns,
+        &g_last_tdd_exchange_scatter_ns,
+        &g_last_tdd_exchange_gather_ns, &g_last_tdd_exchange_broadcast_ns);
 
     wl_session_destroy(sess);
     wl_plan_free(plan);
@@ -985,6 +1001,11 @@ run_tdd_bdx_pipeline(const int64_t *rows, uint32_t edge_count,
         &g_last_tdd_queue_drain_ns,
         &g_last_tdd_convergence_ns, &g_last_tdd_exchange_ns,
         &g_last_tdd_final_merge_ns);
+    wl_columnar_session_get_tdd_exchange_breakdown_stats(sess,
+        &g_last_tdd_exchange_matrix_ns,
+        &g_last_tdd_exchange_coordinator_ns,
+        &g_last_tdd_exchange_scatter_ns,
+        &g_last_tdd_exchange_gather_ns, &g_last_tdd_exchange_broadcast_ns);
 
     wl_session_destroy(sess);
     wl_plan_free(plan);
@@ -2972,6 +2993,14 @@ output_json_row(const char *wl_name, int32_t edges, uint32_t workers,
         (double)g_last_tdd_convergence_ns / 1e6,
         (double)g_last_tdd_exchange_ns / 1e6,
         (double)g_last_tdd_final_merge_ns / 1e6);
+    printf("  \"tdd_exchange_phase_ms\": {\"matrix\": %.4f, "
+        "\"coordinator\": %.4f, \"scatter\": %.4f, \"gather\": %.4f, "
+        "\"broadcast\": %.4f},\n",
+        (double)g_last_tdd_exchange_matrix_ns / 1e6,
+        (double)g_last_tdd_exchange_coordinator_ns / 1e6,
+        (double)g_last_tdd_exchange_scatter_ns / 1e6,
+        (double)g_last_tdd_exchange_gather_ns / 1e6,
+        (double)g_last_tdd_exchange_broadcast_ns / 1e6);
     printf("  \"tdd_accounted_pct\": %.1f,\n", tdd_accounted_pct);
     printf("  \"profiling_from_last_run\": true\n");
     printf("}\n");

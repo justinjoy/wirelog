@@ -2747,8 +2747,10 @@ tdd_exchange_deltas(const wl_plan_stratum_t *sp,
      * worker can probe its 1/W IDB partition with the full delta. */
     if (self_join_mode && default_hash) {
         int rc = 0;
+        uint64_t t0 = now_ns();
         for (uint32_t ri = 0; rc == 0 && ri < nrels; ri++)
             rc = tdd_broadcast_relation_delta(sp, ri, coord, ctxs, W);
+        coord->tdd_exchange_broadcast_ns += now_ns() - t0;
         return rc;
     }
 
@@ -2764,16 +2766,26 @@ tdd_exchange_deltas(const wl_plan_stratum_t *sp,
     }
 
     /* No EXCHANGE metadata and no default hash: broadcast (replicate mode). */
-    if (!has_exchange && !default_hash)
-        return tdd_broadcast_deltas(sp, coord, ctxs, W);
+    if (!has_exchange && !default_hash) {
+        uint64_t t0 = now_ns();
+        int rc = tdd_broadcast_deltas(sp, coord, ctxs, W);
+        coord->tdd_exchange_broadcast_ns += now_ns() - t0;
+        return rc;
+    }
 
     /* Replicate mode: all workers hold identical data, so hash scatter/gather
      * would produce W× duplicate deltas.  Force broadcast to avoid bloat. */
-    if (!default_hash)
-        return tdd_broadcast_deltas(sp, coord, ctxs, W);
+    if (!default_hash) {
+        uint64_t t0 = now_ns();
+        int rc = tdd_broadcast_deltas(sp, coord, ctxs, W);
+        coord->tdd_exchange_broadcast_ns += now_ns() - t0;
+        return rc;
+    }
 
     /* Hash-partitioned scatter/gather exchange. */
+    uint64_t matrix_t0 = now_ns();
     int rc = tdd_alloc_exchange_bufs(coord, W);
+    coord->tdd_exchange_matrix_ns += now_ns() - matrix_t0;
     if (rc != 0) {
         for (uint32_t w = 0; w < W; w++)
             for (uint32_t ri = 0; ri < nrels; ri++) {
@@ -2787,6 +2799,7 @@ tdd_exchange_deltas(const wl_plan_stratum_t *sp,
         const char *dname = sp->relations[ri].delta_name;
 
         /* Locate EXCHANGE key columns for this relation (if any). */
+        uint64_t prepare_t0 = now_ns();
         const uint32_t *key_cols = NULL;
         uint32_t key_count = 0;
         for (uint32_t oi = 0; oi < sp->relations[ri].op_count; oi++) {
@@ -2815,10 +2828,12 @@ tdd_exchange_deltas(const wl_plan_stratum_t *sp,
             key_cols = default_key;
             key_count = 1;
         }
+        coord->tdd_exchange_coordinator_ns += now_ns() - prepare_t0;
 
         if (!key_cols || key_count == 0) {
             /* Broadcast: union worker deltas, install on every worker.
              * Used for replicate-mode strata where IDB is not partitioned. */
+            uint64_t broadcast_t0 = now_ns();
             uint32_t total = 0, ncols = 0;
             for (uint32_t w = 0; w < W; w++) {
                 col_rel_t *d = ctxs[w].delta_rels[ri];
@@ -2872,8 +2887,10 @@ tdd_exchange_deltas(const wl_plan_stratum_t *sp,
                     }
                 }
             }
+            coord->tdd_exchange_broadcast_ns += now_ns() - broadcast_t0;
         } else {
             /* Hash-partitioned scatter/gather for EXCHANGE-keyed relations */
+            uint64_t scatter_t0 = now_ns();
             for (uint32_t w = 0; w < W; w++) {
                 col_rel_t *d = ctxs[w].delta_rels[ri];
                 ctxs[w].delta_rels[ri] = NULL;
@@ -2890,8 +2907,10 @@ tdd_exchange_deltas(const wl_plan_stratum_t *sp,
                 if (rc != 0)
                     goto exchange_done;
             }
+            coord->tdd_exchange_scatter_ns += now_ns() - scatter_t0;
 
             /* Gather: worker dst receives exchange_bufs[*][dst]. */
+            uint64_t gather_t0 = now_ns();
             for (uint32_t dst = 0; dst < W; dst++) {
                 col_rel_t *gathered = NULL;
                 rc = tdd_gather_for_worker(coord, dst, W, dname, &gathered);
@@ -2906,20 +2925,25 @@ tdd_exchange_deltas(const wl_plan_stratum_t *sp,
                     }
                 }
             }
+            coord->tdd_exchange_gather_ns += now_ns() - gather_t0;
         }
 
         /* Release exchange_bufs[*][*] for this relation — data was copied
          * into the gathered relations above. */
+        uint64_t matrix_release_t0 = now_ns();
         for (uint32_t src = 0; src < W; src++) {
             for (uint32_t dst = 0; dst < W; dst++) {
                 col_rel_destroy(coord->exchange_bufs[src][dst]);
                 coord->exchange_bufs[src][dst] = NULL;
             }
         }
+        coord->tdd_exchange_matrix_ns += now_ns() - matrix_release_t0;
     }
 
 exchange_done:
+    matrix_t0 = now_ns();
     tdd_free_exchange_bufs(coord);
+    coord->tdd_exchange_matrix_ns += now_ns() - matrix_t0;
     return rc;
 }
 
@@ -3834,6 +3858,8 @@ tdd_bdx_exchange_deltas(const wl_plan_stratum_t *sp,
         const char *dname = sp->relations[ri].delta_name;
         const char *rel_name = sp->relations[ri].name;
 
+        uint64_t prepare_t0 = now_ns();
+
         /* Remove stale $d$ from workers */
         for (uint32_t w = 0; w < W; w++)
             session_remove_rel(&coord->tdd_workers[w], dname);
@@ -3854,6 +3880,7 @@ tdd_bdx_exchange_deltas(const wl_plan_stratum_t *sp,
                 col_rel_destroy(ctxs[w].delta_rels[ri]);
                 ctxs[w].delta_rels[ri] = NULL;
             }
+            coord->tdd_exchange_coordinator_ns += now_ns() - prepare_t0;
             continue;
         }
 
@@ -3884,6 +3911,7 @@ tdd_bdx_exchange_deltas(const wl_plan_stratum_t *sp,
 
         if (combined->nrows == 0) {
             col_rel_destroy(combined);
+            coord->tdd_exchange_coordinator_ns += now_ns() - prepare_t0;
             continue;
         }
 
@@ -3919,9 +3947,11 @@ tdd_bdx_exchange_deltas(const wl_plan_stratum_t *sp,
             if (widb)
                 widb->nrows = snap[w * nrels + ri];
         }
+        coord->tdd_exchange_coordinator_ns += now_ns() - prepare_t0;
 
         /* Step 5: Hash-partition combined_delta by EXCHANGE key,
          * append to correct worker's IDB */
+        uint64_t scatter_t0 = now_ns();
         const uint32_t *key_cols = NULL;
         uint32_t key_count = 0;
         for (uint32_t oi = 0; oi < sp->relations[ri].op_count; oi++) {
@@ -3980,8 +4010,10 @@ tdd_bdx_exchange_deltas(const wl_plan_stratum_t *sp,
             col_rel_destroy(parts[w]);
         }
         free(parts);
+        coord->tdd_exchange_scatter_ns += now_ns() - scatter_t0;
 
         /* Step 8: Broadcast combined_delta as $d$ via col_shared zero-copy */
+        uint64_t broadcast_t0 = now_ns();
         rc = session_add_rel(&coord->tdd_workers[0], combined);
         if (rc != 0) {
             col_rel_destroy(combined);
@@ -4006,6 +4038,7 @@ tdd_bdx_exchange_deltas(const wl_plan_stratum_t *sp,
                 return rc;
             }
         }
+        coord->tdd_exchange_broadcast_ns += now_ns() - broadcast_t0;
     }
 
     return 0;

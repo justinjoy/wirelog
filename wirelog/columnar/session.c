@@ -309,6 +309,36 @@ col_session_get_tdd_perf_stats(wl_session_t *sess, uint64_t *out_total_ns,
 }
 
 /*
+ * wl_columnar_session_get_tdd_exchange_breakdown_stats:
+ *
+ * Return private recursive TDD exchange sub-counters from the last
+ * wl_session_snapshot() call.  Kept out of the installed columnar header so
+ * benchmark instrumentation can advance without changing public API shape.
+ * All out-parameters are NULL-safe.
+ */
+#if defined(__GNUC__) && __GNUC__ >= 4
+__attribute__((visibility("hidden")))
+#endif
+void
+wl_columnar_session_get_tdd_exchange_breakdown_stats(wl_session_t *sess,
+    uint64_t *out_matrix_ns, uint64_t *out_coordinator_ns,
+    uint64_t *out_scatter_ns, uint64_t *out_gather_ns,
+    uint64_t *out_broadcast_ns)
+{
+    wl_col_session_t *cs = COL_SESSION(sess);
+    if (out_matrix_ns)
+        *out_matrix_ns = cs->tdd_exchange_matrix_ns;
+    if (out_coordinator_ns)
+        *out_coordinator_ns = cs->tdd_exchange_coordinator_ns;
+    if (out_scatter_ns)
+        *out_scatter_ns = cs->tdd_exchange_scatter_ns;
+    if (out_gather_ns)
+        *out_gather_ns = cs->tdd_exchange_gather_ns;
+    if (out_broadcast_ns)
+        *out_broadcast_ns = cs->tdd_exchange_broadcast_ns;
+}
+
+/*
  * col_session_cleanup_old_data:
  *
  * Remove data that is entirely before the frontier (iteration, stratum).
@@ -1833,6 +1863,11 @@ col_session_snapshot(wl_session_t *session, wl_on_tuple_fn callback,
     sess->tdd_queue_drain_ns = 0;
     sess->tdd_convergence_ns = 0;
     sess->tdd_exchange_ns = 0;
+    sess->tdd_exchange_matrix_ns = 0;
+    sess->tdd_exchange_coordinator_ns = 0;
+    sess->tdd_exchange_scatter_ns = 0;
+    sess->tdd_exchange_gather_ns = 0;
+    sess->tdd_exchange_broadcast_ns = 0;
     sess->tdd_final_merge_ns = 0;
 
     /* Phase 4 incremental skip: when last_inserted_relation is set, only
