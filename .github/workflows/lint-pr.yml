@@ -170,7 +170,7 @@ jobs:
 
       - name: Upload tidy results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: tidy-results-pr
           path: tidy-results.txt
