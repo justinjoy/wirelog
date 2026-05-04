@@ -55,8 +55,10 @@ wl_read_file(const char *path)
         fclose(f);
         return NULL;
     }
-
-    rewind(f);
+    if (fseek(f, 0, SEEK_SET) != 0) {
+        fclose(f);
+        return NULL;
+    }
 
     char *buf = (char *)malloc((size_t)len + 1);
     if (!buf) {
