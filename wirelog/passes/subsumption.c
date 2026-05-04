@@ -113,8 +113,10 @@ mark_subsumed_rules(struct wirelog_program *prog)
 static uint32_t
 compact_marked_rules(struct wirelog_program *prog)
 {
-    if (!prog || prog->rule_count == 0)
-        return prog->rule_count;
+    if (!prog)
+        return 0;
+    if (prog->rule_count == 0)
+        return 0;
 
     uint32_t write_idx = 0;
 
@@ -136,7 +138,7 @@ compact_marked_rules(struct wirelog_program *prog)
 
 int
 wl_subsumption_apply(struct wirelog_program *prog,
-                     wl_subsumption_stats_t *stats)
+    wl_subsumption_stats_t *stats)
 {
     if (!prog)
         return -2;
