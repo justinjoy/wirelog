@@ -23,6 +23,7 @@
 #include <stdatomic.h>
 #else
 #include <windows.h>
+#include <intrin.h>
 /*
  * MSVC C11 mode does not yet provide full <stdatomic.h> for all types.
  * Provide a minimal shim for _Atomic uint32_t using volatile + Interlocked.
