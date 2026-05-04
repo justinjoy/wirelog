@@ -488,10 +488,10 @@ The canary adds the residual #598 acceptance bullet:
 **Vacuous in production today**: `col_rel_deep_copy` has NO
 production callers in rotation paths today (verified by grep across
 `wirelog/`). Only `tests/test_col_rel_deep_copy.c` and
-`tests/col_rel_deep_copy_fixture.c` invoke it. The canary becomes
-load-bearing when #550-C `wl_session_rotate` ships: the cross-arena
-rotation helper will deep-copy live relations into the new arena,
-and any ledger churn would corrupt per-session memory accounting.
+`tests/col_rel_deep_copy_fixture.c` invoke it. The canary remains as
+cheap regression coverage for the deep-copy ledger contract; public
+daemon rotation is caller-owned close/open/replay, not an engine-owned
+cross-arena session helper.
 
 Registered in the default suite as `deep_copy_ledger_canary`.
 
@@ -655,9 +655,10 @@ needed).
   W=8 invocation runs manually per the script above. Adding an
   automated release pipeline is a separate (follow-up) issue.
 - **Cross-arena rotation workload**: this harness exercises the
-  *in-place* apply pass (#589 / #590). Cross-arena rotation needs
-  the #550 Option C `wl_session_rotate` helper, which has not
-  landed; a sibling workload will be added when #550-C ships.
+  *in-place* apply pass (#589 / #590). #550 Option C was declined;
+  public daemon rotation is validated through caller-owned
+  close/open/replay coverage instead of an engine-owned cross-arena
+  session helper.
 - **Existing hardcoded canaries**: `test_compound_arena_freeze_
   cycle_stress.c` (#582), `test_gc_freeze_alloc_race.c` (#584),
   and `test_worker_borrow_w2_tsan.c` (#592) are intentionally

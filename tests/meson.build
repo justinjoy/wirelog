@@ -2490,8 +2490,8 @@ test('compound_side_relation', test_compound_side_relation_exe)
 # Compound arena freeze-cycle stress (Issue #582)
 # Concurrent workers + many freeze/unfreeze cycles on a borrowed arena.
 # Heavy under TSan; timeout extended.  Note: this is the in-arena freeze
-# cycle, NOT the cross-arena rotation that #550 Option C will introduce;
-# a sibling test will own that path.
+# cycle, not public daemon rotation. #550 Option C was declined; public
+# daemon rotation is covered by the caller-owned replay example.
 # ============================================================================
 
 test_compound_arena_freeze_cycle_stress_exe = executable(
@@ -2917,7 +2917,7 @@ test('rotate_latency_release_pinned', test_rotate_latency_exe,
 # ----------------------------------------------------------------------------
 # deep_copy ledger-charge canary (Issue #598)
 # Vacuous today (col_rel_deep_copy has no production rotation callers);
-# regression canary for #550-C wl_session_rotate.
+# regression canary for the deep-copy ledger contract.
 # ----------------------------------------------------------------------------
 
 test_deep_copy_ledger_canary_exe = executable(

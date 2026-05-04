@@ -7,9 +7,8 @@
  *
  * Drives wl_handle_remap_apply_columns end-to-end against a 10K-row x
  * 3-compound-column fixture, the size #589 pins as the acceptance
- * test.  The fixture builds the remap table by hand (the rotation
- * helper that would normally populate it is #550 Option C, not yet
- * implemented), so this is unit-style coverage of the apply pass +
+ * test.  The fixture builds the remap table by hand because this is
+ * unit-style coverage of the apply pass +
  * the underlying SplitMix64 / open-addressing table together.
  *
  * Acceptance bullets the test pins:

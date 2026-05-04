@@ -10,12 +10,10 @@
  * Row-scan helpers that rewrite compound handles in a col_rel_t's
  * column buffers using a build-then-query wl_handle_remap_t.
  *
- * Used by the rotation helper (#550 Option C) to repoint EDB rows
- * from the old session's compound arena to the new session's arena
- * after a handle-renumbering pass.  The pass is single-threaded and
- * runs while the compound arena is frozen (#561 / #584 freeze
- * contract), so the table itself does not need internal
- * synchronisation.
+ * Used by internal remap callers to repoint EDB rows after a
+ * handle-renumbering pass.  The pass is single-threaded and runs while
+ * the compound arena is frozen (#561 / #584 freeze contract), so the
+ * table itself does not need internal synchronisation.
  *
  * Algorithm
  * ---------
@@ -71,9 +69,8 @@
  *         and column k is rewritten through row r-1, where (r, k) is
  *         the failing cell; (r, k) and beyond are unchanged.
  *         @out_rewrites reflects exactly that prefix.  The relation
- *         is in a half-rotated state — the caller (rotation helper,
- *         #550 Option C) MUST treat it as poisoned: discard, restore
- *         from a snapshot, or abort the rotation.  There is no
+ *         is in a half-remapped state; the caller MUST treat it as
+ *         poisoned: discard, restore from a snapshot, or abort.  There is no
  *         in-band roll-back primitive.
  */
 int
