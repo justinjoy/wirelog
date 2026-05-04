@@ -305,6 +305,12 @@ wl_compound_arena_gc_epoch_boundary(wl_compound_arena_t *arena)
 {
     if (!arena)
         return (uint32_t)-1;
+    if (arena->current_epoch >= arena->max_epochs) {
+        WL_LOG(WL_LOG_SEC_COMPOUND, WL_LOG_WARN,
+            "lifecycle event=gc_skip_saturated current_epoch=%u max_epochs=%u",
+            arena->current_epoch, arena->max_epochs);
+        return 0;
+    }
     if (arena->frozen) {
         /* Issue #561 / #584: freeze guard is a no-op skip, not a reset.
          * Returning the unchanged current_epoch (rather than 0) lets
