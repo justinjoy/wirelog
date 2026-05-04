@@ -516,6 +516,220 @@ test_insert_step_delta(void)
 }
 
 static void
+test_inline_compound_body_binding(void)
+{
+    TEST("inline compound body pattern binds public Datalog variables");
+
+    const char *src
+        = ".decl event(id: int64, payload: metadata/4 inline)\n"
+        ".decl hot(id: int64)\n"
+        "hot(ID) :- event(ID, metadata(Level, Ts, Host, Risk)), Risk > 80.\n";
+
+    wl_easy_session_t *s = NULL;
+    if (wl_easy_open(src, &s) != WIRELOG_OK || !s) {
+        FAIL("open failed");
+        return;
+    }
+
+    int64_t hot_row[5] = { 7, 1, 2, 3, 90 };
+    int64_t cold_row[5] = { 8, 1, 2, 3, 40 };
+    if (wl_easy_insert(s, "event", hot_row, 5) != WIRELOG_OK
+        || wl_easy_insert(s, "event", cold_row, 5) != WIRELOG_OK) {
+        FAIL("insert failed");
+        wl_easy_close(s);
+        return;
+    }
+
+    tuple_collector_t hot;
+    memset(&hot, 0, sizeof(hot));
+    if (wl_easy_snapshot(s, "hot", collect_tuple, &hot) != WIRELOG_OK) {
+        FAIL("snapshot failed");
+        wl_easy_close(s);
+        return;
+    }
+
+    wl_easy_close(s);
+
+    if (hot.count != 1 || strcmp(hot.relations[0], "hot") != 0
+        || hot.ncols[0] != 1 || hot.rows[0][0] != 7) {
+        FAIL("expected only hot(7)");
+        return;
+    }
+    PASS();
+}
+
+static void
+test_inline_compound_body_join_binding(void)
+{
+    TEST("inline compound body variables participate in joins");
+
+    const char *src
+        = ".decl event(id: int64, payload: metadata/4 inline)\n"
+        ".decl threshold(risk: int64)\n"
+        ".decl hot(id: int64)\n"
+        "hot(ID) :- event(ID, metadata(Level, Ts, Host, Risk)), "
+        "threshold(Risk).\n";
+
+    wl_easy_session_t *s = NULL;
+    if (wl_easy_open(src, &s) != WIRELOG_OK || !s) {
+        FAIL("open failed");
+        return;
+    }
+
+    int64_t matched_row[5] = { 7, 1, 2, 3, 90 };
+    int64_t unmatched_row[5] = { 8, 1, 2, 3, 40 };
+    int64_t threshold_row[1] = { 90 };
+    if (wl_easy_insert(s, "event", matched_row, 5) != WIRELOG_OK
+        || wl_easy_insert(s, "event", unmatched_row, 5) != WIRELOG_OK
+        || wl_easy_insert(s, "threshold", threshold_row, 1) != WIRELOG_OK) {
+        FAIL("insert failed");
+        wl_easy_close(s);
+        return;
+    }
+
+    tuple_collector_t hot;
+    memset(&hot, 0, sizeof(hot));
+    if (wl_easy_snapshot(s, "hot", collect_tuple, &hot) != WIRELOG_OK) {
+        FAIL("snapshot failed");
+        wl_easy_close(s);
+        return;
+    }
+
+    wl_easy_close(s);
+
+    if (hot.count != 1 || strcmp(hot.relations[0], "hot") != 0
+        || hot.ncols[0] != 1 || hot.rows[0][0] != 7) {
+        FAIL("expected join to derive only hot(7)");
+        return;
+    }
+    PASS();
+}
+
+static void
+test_inline_compound_functor_mismatch_is_empty(void)
+{
+    TEST("inline compound functor mismatch does not match");
+
+    const char *src
+        = ".decl event(id: int64, payload: metadata/4 inline)\n"
+        ".decl bad(id: int64)\n"
+        "bad(ID) :- event(ID, other(Level, Ts, Host, Risk)).\n";
+
+    wl_easy_session_t *s = NULL;
+    if (wl_easy_open(src, &s) != WIRELOG_OK || !s) {
+        FAIL("open failed");
+        return;
+    }
+
+    int64_t row[5] = { 7, 1, 2, 3, 90 };
+    if (wl_easy_insert(s, "event", row, 5) != WIRELOG_OK) {
+        FAIL("insert failed");
+        wl_easy_close(s);
+        return;
+    }
+
+    tuple_collector_t bad;
+    memset(&bad, 0, sizeof(bad));
+    if (wl_easy_snapshot(s, "bad", collect_tuple, &bad) != WIRELOG_OK) {
+        FAIL("snapshot failed");
+        wl_easy_close(s);
+        return;
+    }
+
+    wl_easy_close(s);
+
+    if (bad.count != 0) {
+        FAIL("mismatched functor should derive no rows");
+        return;
+    }
+    PASS();
+}
+
+static void
+test_inline_compound_constant_child_filters(void)
+{
+    TEST("inline compound constant child filters rows");
+
+    const char *src
+        = ".decl event(id: int64, payload: metadata/4 inline)\n"
+        ".decl hot(id: int64)\n"
+        "hot(ID) :- event(ID, metadata(_, _, _, 90)).\n";
+
+    wl_easy_session_t *s = NULL;
+    if (wl_easy_open(src, &s) != WIRELOG_OK || !s) {
+        FAIL("open failed");
+        return;
+    }
+
+    int64_t hot_row[5] = { 7, 1, 2, 3, 90 };
+    int64_t cold_row[5] = { 8, 1, 2, 3, 40 };
+    if (wl_easy_insert(s, "event", hot_row, 5) != WIRELOG_OK
+        || wl_easy_insert(s, "event", cold_row, 5) != WIRELOG_OK) {
+        FAIL("insert failed");
+        wl_easy_close(s);
+        return;
+    }
+
+    tuple_collector_t hot;
+    memset(&hot, 0, sizeof(hot));
+    if (wl_easy_snapshot(s, "hot", collect_tuple, &hot) != WIRELOG_OK) {
+        FAIL("snapshot failed");
+        wl_easy_close(s);
+        return;
+    }
+
+    wl_easy_close(s);
+
+    if (hot.count != 1 || hot.ncols[0] != 1 || hot.rows[0][0] != 7) {
+        FAIL("expected only row with constant child value 90");
+        return;
+    }
+    PASS();
+}
+
+static void
+test_inline_compound_duplicate_child_variables_filter(void)
+{
+    TEST("inline compound duplicate child variables filter rows");
+
+    const char *src
+        = ".decl event(id: int64, payload: metadata/4 inline)\n"
+        ".decl same(id: int64)\n"
+        "same(ID) :- event(ID, metadata(X, X, _, _)).\n";
+
+    wl_easy_session_t *s = NULL;
+    if (wl_easy_open(src, &s) != WIRELOG_OK || !s) {
+        FAIL("open failed");
+        return;
+    }
+
+    int64_t matched_row[5] = { 7, 4, 4, 3, 90 };
+    int64_t unmatched_row[5] = { 8, 1, 2, 3, 90 };
+    if (wl_easy_insert(s, "event", matched_row, 5) != WIRELOG_OK
+        || wl_easy_insert(s, "event", unmatched_row, 5) != WIRELOG_OK) {
+        FAIL("insert failed");
+        wl_easy_close(s);
+        return;
+    }
+
+    tuple_collector_t same;
+    memset(&same, 0, sizeof(same));
+    if (wl_easy_snapshot(s, "same", collect_tuple, &same) != WIRELOG_OK) {
+        FAIL("snapshot failed");
+        wl_easy_close(s);
+        return;
+    }
+
+    wl_easy_close(s);
+
+    if (same.count != 1 || same.ncols[0] != 1 || same.rows[0][0] != 7) {
+        FAIL("expected only row with equal duplicate child variables");
+        return;
+    }
+    PASS();
+}
+
+static void
 test_insert_sym_variadic(void)
 {
     TEST("insert_sym variadic helper");
@@ -895,6 +1109,11 @@ main(void)
     test_num_workers_explicit_four();
     test_intern_returns_same_id();
     test_insert_step_delta();
+    test_inline_compound_body_binding();
+    test_inline_compound_body_join_binding();
+    test_inline_compound_functor_mismatch_is_empty();
+    test_inline_compound_constant_child_filters();
+    test_inline_compound_duplicate_child_variables_filter();
     test_insert_sym_variadic();
     test_remove_sym();
     test_snapshot_filter();
