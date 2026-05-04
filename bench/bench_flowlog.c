@@ -12,7 +12,7 @@
  * .input CSV loading feature is not yet merged to main.
  *
  * Usage:
- *   bench_flowlog --workload {tc|reach|cc|sssp|all} --data FILE
+ *   bench_flowlog --workload {tc|reach|cc|sssp|tdd-bdx|all} --data FILE
  *                 [--data-weighted FILE] [--workers N] [--repeat R]
  */
 
@@ -906,6 +906,150 @@ csv_load_int64(const char *path, int64_t **out_data, uint32_t max_rows)
 
     *out_data = buf;
     return count;
+}
+
+/* ----------------------------------------------------------------
+ * TDD BDX self-join benchmark
+ *
+ * This workload mirrors the recursive self-join shape covered by
+ * tests/test_tdd_recursive.c and intentionally loads EDB rows through
+ * wl_session_insert().  Inline facts run through the initial snapshot path
+ * used by the generic FlowLog workloads and may not exercise recursive TDD.
+ * ---------------------------------------------------------------- */
+
+static const char *tdd_bdx_source
+    = ".decl edge(x: int32, y: int32)\n"
+    ".decl r(x: int32, y: int32)\n"
+    "r(x, y) :- edge(x, y).\n"
+    "r(x, z) :- r(x, y), r(y, z).\n";
+
+static int
+run_tdd_bdx_pipeline(const int64_t *rows, uint32_t edge_count,
+    uint32_t num_workers, int64_t *out_count, uint32_t *out_iters)
+{
+    wirelog_error_t err;
+    wirelog_program_t *prog = wirelog_parse_string(tdd_bdx_source, &err);
+    if (!prog)
+        return -1;
+
+    wl_fusion_apply(prog, NULL);
+    wl_jpp_apply(prog, NULL);
+    wl_sip_apply(prog, NULL);
+
+    wl_plan_t *plan = NULL;
+    int rc = wl_plan_from_program(prog, &plan);
+    if (rc != 0) {
+        wirelog_program_free(prog);
+        return -1;
+    }
+
+    wl_session_t *sess = NULL;
+    rc = wl_session_create(wl_backend_columnar(), plan, num_workers, &sess);
+    if (rc != 0) {
+        wl_plan_free(plan);
+        wirelog_program_free(prog);
+        return -1;
+    }
+
+    rc = wl_session_insert(sess, "edge", rows, edge_count, 2);
+    if (rc != 0) {
+        wl_session_destroy(sess);
+        wl_plan_free(plan);
+        wirelog_program_free(prog);
+        return -1;
+    }
+
+    struct count_ctx ctx = { 0 };
+    rc = wl_session_snapshot(sess, count_tuple_cb, &ctx);
+
+    uint32_t total_iters = col_session_get_iteration_count(sess);
+    col_session_get_perf_stats(
+        sess, &g_last_consolidation_ns, &g_last_kfusion_ns,
+        &g_last_kfusion_alloc_ns, &g_last_kfusion_dispatch_ns,
+        &g_last_kfusion_merge_ns, &g_last_kfusion_cleanup_ns);
+    col_session_get_consolidation_stats(sess, &g_last_consolidate_fast_hits,
+        &g_last_consolidate_slow_hits);
+    col_session_get_exchange_time_ns(sess, &g_last_exchange_ns);
+    col_session_get_tdd_perf_stats(sess, &g_last_tdd_total_ns,
+        &g_last_tdd_dispatch_wait_ns, &g_last_tdd_queue_drain_ns,
+        &g_last_tdd_convergence_ns, &g_last_tdd_exchange_ns,
+        &g_last_tdd_final_merge_ns);
+
+    wl_session_destroy(sess);
+    wl_plan_free(plan);
+    wirelog_program_free(prog);
+
+    if (rc == 0 && out_count)
+        *out_count = ctx.count;
+    if (out_iters)
+        *out_iters = total_iters;
+    return rc;
+}
+
+static int
+run_tdd_bdx_workload(const char *data_path, uint32_t workers, int repeat)
+{
+    int64_t *rows = NULL;
+    int32_t edge_count = csv_load_int64(data_path, &rows, 65536);
+    if (edge_count < 0)
+        return -1;
+
+    double *times = (double *)malloc(sizeof(double) * (size_t)repeat);
+    if (!times) {
+        free(rows);
+        return -1;
+    }
+
+    int64_t tuples = 0;
+    uint32_t total_iters = 0;
+    int status_ok = 1;
+
+    for (int r = 0; r < repeat; r++) {
+        bench_time_t t0 = bench_time_now();
+        int64_t cnt = 0;
+        uint32_t iters = 0;
+        int rc = run_tdd_bdx_pipeline(
+            rows, (uint32_t)edge_count, workers, &cnt, &iters);
+        bench_time_t t1 = bench_time_now();
+
+        times[r] = bench_time_diff_ms(t0, t1);
+        if (rc != 0) {
+            status_ok = 0;
+            break;
+        }
+        g_last_wall_ms = times[r];
+        tuples = cnt;
+        total_iters = iters;
+    }
+
+    int64_t peak_rss = bench_peak_rss_kb();
+
+    if (status_ok) {
+        qsort(times, (size_t)repeat, sizeof(double), bench_cmp_double);
+        double min_ms = times[0];
+        double median_ms = times[repeat / 2];
+        double max_ms = times[repeat - 1];
+
+        if (g_format_json)
+            output_json_row("tdd-bdx", edge_count, workers, repeat, min_ms,
+                median_ms, max_ms, peak_rss, tuples, total_iters,
+                g_last_consolidation_ns, g_last_kfusion_ns,
+                g_last_kfusion_alloc_ns, g_last_kfusion_dispatch_ns,
+                g_last_kfusion_merge_ns, g_last_kfusion_cleanup_ns,
+                g_last_exchange_ns);
+        else
+            printf("tdd-bdx\t-\t%d\t%u\t%d\t%.1f\t%.1f\t%.1f\t%" PRId64
+                "\t%" PRId64 "\t%u\t%s\n",
+                edge_count, workers, repeat, min_ms, median_ms, max_ms,
+                peak_rss, tuples, total_iters, "OK");
+    } else {
+        printf("tdd-bdx\t-\t-\t%u\t%d\t-\t-\t-\t-\t-\t-\tFAIL\n", workers,
+            repeat);
+    }
+
+    free(times);
+    free(rows);
+    return status_ok ? 0 : -1;
 }
 
 static int
@@ -2830,7 +2974,7 @@ usage(const char *prog)
         stderr,
         "Usage: %s --workload "
         "{tc|reach|cc|sssp|sg|bipartite|andersen|dyck|cspa|csda|"
-        "galen|polonius|ddisasm|crdt|doop|all} --data FILE\n"
+        "galen|polonius|ddisasm|crdt|doop|tdd-bdx|all} --data FILE\n"
         "          [--data-weighted FILE] [--data-andersen DIR]\n"
         "          [--data-dyck DIR] [--data-cspa DIR]\n"
         "          [--data-csda DIR] [--data-galen DIR]\n"
@@ -2981,6 +3125,12 @@ main(int argc, char **argv)
         rc = run_workload(WL_SG, data_path, workers, repeat);
     } else if (strcmp(workload, "bipartite") == 0) {
         rc = run_workload(WL_BP, data_path, workers, repeat);
+    } else if (strcmp(workload, "tdd-bdx") == 0) {
+        if (!data_path) {
+            fprintf(stderr, "error: --data required for tdd-bdx\n");
+            return 1;
+        }
+        rc = run_tdd_bdx_workload(data_path, workers, repeat);
     } else if (strcmp(workload, "andersen") == 0) {
         if (!data_andersen_path) {
             fprintf(stderr, "error: andersen requires --data-andersen DIR\n");

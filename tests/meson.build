@@ -207,6 +207,17 @@ test_bench_argv_exe = executable(
 test('bench_argv', test_bench_argv_exe,
      suite: 'bench')
 
+test('bench_flowlog_tdd_bdx_smoke', bench_flowlog,
+     args: [
+       '--workload', 'tdd-bdx',
+       '--data', meson.project_source_root() / 'bench/data/graph_10.csv',
+       '--workers', '4',
+       '--repeat', '1',
+       '--format', 'json',
+     ],
+     suite: 'bench',
+     timeout: 30)
+
 # Issue #287: logger env parser tests (pure function; no env mutation).
 test_log_parse_exe = executable(
   'test_log_parse',
