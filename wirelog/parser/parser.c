@@ -35,9 +35,12 @@
 
 #include "parser.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#define WL_PARSER_COMPOUND_INLINE_MAX_ARITY 4u
 
 /* ======================================================================== */
 /* Utility                                                                  */
@@ -151,6 +154,97 @@ token_to_str_value(const wl_parser_lexer_token_t *token)
         return s;
     }
     return (char *)calloc(1, 1);
+}
+
+static bool
+token_text_equals(const wl_parser_lexer_token_t *token, const char *text)
+{
+    size_t len = strlen(text);
+    return token->length == len && strncmp(token->start, text, len) == 0;
+}
+
+static char *
+parse_declaration_type(wl_parser_t *parser)
+{
+    if (parser_match(parser, WL_PARSER_LEXER_TOK_INT32))
+        return strdup_safe("int32");
+    if (parser_match(parser, WL_PARSER_LEXER_TOK_INT64))
+        return strdup_safe("int64");
+    if (parser_match(parser, WL_PARSER_LEXER_TOK_STRING_TYPE))
+        return strdup_safe("string");
+    if (parser_match(parser, WL_PARSER_LEXER_TOK_SYMBOL_TYPE))
+        return strdup_safe("symbol");
+
+    if (!parser_consume(parser, WL_PARSER_LEXER_TOK_IDENT,
+        "expected type (int32, int64, string, symbol, or compound functor/arity)"))
+    {
+        return NULL;
+    }
+    char *functor = token_to_name(&parser->previous);
+    if (!functor)
+        return NULL;
+
+    if (!parser_consume(parser, WL_PARSER_LEXER_TOK_SLASH,
+        "expected '/' in compound type")) {
+        free(functor);
+        return NULL;
+    }
+    if (!parser_consume(parser, WL_PARSER_LEXER_TOK_INTEGER,
+        "expected compound arity after '/'")) {
+        free(functor);
+        return NULL;
+    }
+
+    int64_t arity_value = parser->previous.int_value;
+    if (arity_value <= 0 || arity_value > UINT32_MAX) {
+        parser_error(parser, "compound arity must be a positive uint32");
+        free(functor);
+        return NULL;
+    }
+
+    const char *modifier = NULL;
+    if (parser_check(parser, WL_PARSER_LEXER_TOK_IDENT)) {
+        if (parser->previous.start + parser->previous.length
+            == parser->current.start) {
+            parser_error(parser,
+                "expected whitespace before compound modifier");
+            free(functor);
+            return NULL;
+        }
+        if (token_text_equals(&parser->current, "inline")) {
+            modifier = "inline";
+        } else if (token_text_equals(&parser->current, "side")) {
+            modifier = "side";
+        } else {
+            parser_error(parser,
+                "expected compound modifier 'inline' or 'side'");
+            free(functor);
+            return NULL;
+        }
+        parser_advance(parser);
+    }
+
+    if (modifier && strcmp(modifier, "inline") == 0
+        && (uint32_t)arity_value > WL_PARSER_COMPOUND_INLINE_MAX_ARITY) {
+        parser_error(parser, "inline compound arity exceeds maximum arity 4");
+        free(functor);
+        return NULL;
+    }
+
+    char arity_buf[32];
+    snprintf(arity_buf, sizeof(arity_buf), "%u", (uint32_t)arity_value);
+
+    size_t len = strlen(functor) + 1 + strlen(arity_buf)
+        + (modifier ? 1 + strlen(modifier) : 0);
+    char *type_name = (char *)malloc(len + 1);
+    if (!type_name) {
+        free(functor);
+        return NULL;
+    }
+    snprintf(type_name, len + 1, "%s/%s%s%s", functor, arity_buf,
+        modifier ? " " : "", modifier ? modifier : "");
+    free(functor);
+    return type_name;
 }
 
 /* ======================================================================== */
@@ -1327,19 +1421,8 @@ parse_declaration(wl_parser_t *parser)
                 return NULL;
             }
 
-            /* Type: int32, int64, string, or symbol */
-            const char *type_str = NULL;
-            if (parser_match(parser, WL_PARSER_LEXER_TOK_INT32)) {
-                type_str = "int32";
-            } else if (parser_match(parser, WL_PARSER_LEXER_TOK_INT64)) {
-                type_str = "int64";
-            } else if (parser_match(parser, WL_PARSER_LEXER_TOK_STRING_TYPE)) {
-                type_str = "string";
-            } else if (parser_match(parser, WL_PARSER_LEXER_TOK_SYMBOL_TYPE)) {
-                type_str = "symbol";
-            } else {
-                parser_error(parser,
-                    "expected type (int32, int64, string, or symbol)");
+            char *type_name = parse_declaration_type(parser);
+            if (!type_name) {
                 free(attr_name);
                 wl_parser_ast_node_free(decl);
                 return NULL;
@@ -1348,7 +1431,7 @@ parse_declaration(wl_parser_t *parser)
             wl_parser_ast_node_t *param = wl_parser_ast_node_create(
                 WL_PARSER_AST_NODE_TYPED_PARAM, attr_line, attr_col);
             param->name = attr_name;
-            param->type_name = strdup_safe(type_str);
+            param->type_name = type_name;
             wl_parser_ast_node_add_child(decl, param);
 
             if (!parser_match(parser, WL_PARSER_LEXER_TOK_COMMA))
