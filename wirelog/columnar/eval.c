@@ -1851,6 +1851,12 @@ tdd_worker_subpass_fn(void *arg)
     const wl_plan_stratum_t *sp = ctx->sp;
     uint32_t eff_iter = ctx->eff_iter;
     uint32_t nrels = sp->relation_count;
+    uint64_t worker_t0 = now_ns();
+#define TDD_WORKER_RETURN() \
+        do { \
+            ctx->runtime_ns = now_ns() - worker_t0; \
+            return; \
+        } while (0)
 
     /* Issue #282: Enable differential operators from eff_iter 1 onward.
      * Mirrors eval.c:410-411 / Clarification 3.
@@ -1884,7 +1890,7 @@ tdd_worker_subpass_fn(void *arg)
             ctx->all_empty_delta = true;
             sess->tdd_subpass_active = saved_tdd_subpass;
             sess->diff_operators_active = saved_diff;
-            return;
+            TDD_WORKER_RETURN();
         }
     }
 
@@ -1894,7 +1900,7 @@ tdd_worker_subpass_fn(void *arg)
         ctx->rc = ENOMEM;
         sess->tdd_subpass_active = saved_tdd_subpass;
         sess->diff_operators_active = saved_diff;
-        return;
+        TDD_WORKER_RETURN();
     }
     for (uint32_t ri = 0; ri < nrels; ri++) {
         col_rel_t *r = session_find_rel(sess, sp->relations[ri].name);
@@ -1918,7 +1924,7 @@ tdd_worker_subpass_fn(void *arg)
             free(snap);
             sess->tdd_subpass_active = saved_tdd_subpass;
             sess->diff_operators_active = saved_diff;
-            return;
+            TDD_WORKER_RETURN();
         }
 
         if (stack.top == 0)
@@ -1946,7 +1952,7 @@ tdd_worker_subpass_fn(void *arg)
                     free(snap);
                     sess->tdd_subpass_active = saved_tdd_subpass;
                     sess->diff_operators_active = saved_diff;
-                    return;
+                    TDD_WORKER_RETURN();
                 }
                 result.owned = false;
             } else {
@@ -1957,7 +1963,7 @@ tdd_worker_subpass_fn(void *arg)
                     free(snap);
                     sess->tdd_subpass_active = saved_tdd_subpass;
                     sess->diff_operators_active = saved_diff;
-                    return;
+                    TDD_WORKER_RETURN();
                 }
                 rc = col_rel_append_all(copy, result.rel, sess->eval_arena);
                 if (rc != 0) {
@@ -1966,7 +1972,7 @@ tdd_worker_subpass_fn(void *arg)
                     free(snap);
                     sess->tdd_subpass_active = saved_tdd_subpass;
                     sess->diff_operators_active = saved_diff;
-                    return;
+                    TDD_WORKER_RETURN();
                 }
             }
             rc = session_add_rel(sess, copy);
@@ -1976,7 +1982,7 @@ tdd_worker_subpass_fn(void *arg)
                 free(snap);
                 sess->tdd_subpass_active = saved_tdd_subpass;
                 sess->diff_operators_active = saved_diff;
-                return;
+                TDD_WORKER_RETURN();
             }
         } else {
             if (target->ncols == 0 && result.rel->ncols > 0) {
@@ -1989,7 +1995,7 @@ tdd_worker_subpass_fn(void *arg)
                     free(snap);
                     sess->tdd_subpass_active = saved_tdd_subpass;
                     sess->diff_operators_active = saved_diff;
-                    return;
+                    TDD_WORKER_RETURN();
                 }
             }
             rc = col_rel_append_all(target, result.rel, sess->eval_arena);
@@ -2000,7 +2006,7 @@ tdd_worker_subpass_fn(void *arg)
                 free(snap);
                 sess->tdd_subpass_active = saved_tdd_subpass;
                 sess->diff_operators_active = saved_diff;
-                return;
+                TDD_WORKER_RETURN();
             }
         }
     }
@@ -2035,7 +2041,7 @@ tdd_worker_subpass_fn(void *arg)
             free(snap);
             sess->tdd_subpass_active = saved_tdd_subpass;
             sess->diff_operators_active = saved_diff;
-            return;
+            TDD_WORKER_RETURN();
         }
 
         int rc2 = 0;
@@ -2052,7 +2058,7 @@ tdd_worker_subpass_fn(void *arg)
                 free(snap);
                 sess->tdd_subpass_active = saved_tdd_subpass;
                 sess->diff_operators_active = saved_diff;
-                return;
+                TDD_WORKER_RETURN();
             }
             uint32_t keep = snap[ri];
             for (uint32_t i = snap[ri]; i < r->nrows; i++) {
@@ -2091,7 +2097,7 @@ tdd_worker_subpass_fn(void *arg)
             free(snap);
             sess->tdd_subpass_active = saved_tdd_subpass;
             sess->diff_operators_active = saved_diff;
-            return;
+            TDD_WORKER_RETURN();
         }
 
         if (delta->nrows > 0) {
@@ -2104,7 +2110,7 @@ tdd_worker_subpass_fn(void *arg)
                 free(snap);
                 sess->tdd_subpass_active = saved_tdd_subpass;
                 sess->diff_operators_active = saved_diff;
-                return;
+                TDD_WORKER_RETURN();
             }
             for (uint32_t ti = 0; ti < delta->nrows; ti++) {
                 delta->timestamps[ti].iteration = eff_iter;
@@ -2124,7 +2130,7 @@ tdd_worker_subpass_fn(void *arg)
                     free(snap);
                     sess->tdd_subpass_active = saved_tdd_subpass;
                     sess->diff_operators_active = saved_diff;
-                    return;
+                    TDD_WORKER_RETURN();
                 }
             }
 
@@ -2143,7 +2149,7 @@ tdd_worker_subpass_fn(void *arg)
                     free(snap);
                     sess->tdd_subpass_active = saved_tdd_subpass;
                     sess->diff_operators_active = saved_diff;
-                    return;
+                    TDD_WORKER_RETURN();
                 }
             } else {
                 /* No queue (creation failed): fall back to direct ctx write. */
@@ -2170,6 +2176,8 @@ tdd_worker_subpass_fn(void *arg)
     ctx->any_new = any_new;
     sess->tdd_subpass_active = saved_tdd_subpass;
     sess->diff_operators_active = saved_diff;
+    ctx->runtime_ns = now_ns() - worker_t0;
+#undef TDD_WORKER_RETURN
 }
 
 /*
@@ -4357,6 +4365,7 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
                 ctxs[w].any_new = false;
                 ctxs[w].all_empty_delta = false;
                 ctxs[w].force_diff = bdx_mode;
+                ctxs[w].runtime_ns = 0;
                 ctxs[w].rc = 0;
             }
 
@@ -4371,6 +4380,8 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
                     break;
                 }
             }
+            uint64_t submit_ns = now_ns() - dispatch_t0;
+            coord->tdd_submit_loop_ns += submit_ns;
 
             if (!submit_ok) {
                 for (uint32_t w = 0; w < W; w++)
@@ -4381,8 +4392,22 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
             }
 
             /* BARRIER */
+            uint64_t wait_t0 = now_ns();
             wl_workqueue_wait_all(coord->wq);
-            coord->tdd_dispatch_wait_ns += now_ns() - dispatch_t0;
+            uint64_t wait_ns = now_ns() - wait_t0;
+            coord->tdd_wait_barrier_ns += wait_ns;
+            coord->tdd_dispatch_wait_ns += submit_ns + wait_ns;
+            uint64_t worker_sum_ns = 0;
+            uint64_t worker_max_ns = 0;
+            for (uint32_t w = 0; w < W; w++) {
+                worker_sum_ns += ctxs[w].runtime_ns;
+                if (ctxs[w].runtime_ns > worker_max_ns)
+                    worker_max_ns = ctxs[w].runtime_ns;
+            }
+            coord->tdd_worker_sum_ns += worker_sum_ns;
+            coord->tdd_worker_max_ns += worker_max_ns;
+            if (wait_ns > worker_max_ns)
+                coord->tdd_idle_estimate_ns += wait_ns - worker_max_ns;
 
             /* Collect first worker error */
             for (uint32_t w = 0; w < W; w++) {

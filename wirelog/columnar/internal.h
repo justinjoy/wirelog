@@ -848,6 +848,11 @@ typedef struct wl_col_session_t {
      * Coordinator-only; reset at the start of each wl_session_snapshot(). */
     uint64_t tdd_total_ns;
     uint64_t tdd_dispatch_wait_ns;
+    uint64_t tdd_submit_loop_ns;
+    uint64_t tdd_wait_barrier_ns;
+    uint64_t tdd_worker_sum_ns;
+    uint64_t tdd_worker_max_ns;
+    uint64_t tdd_idle_estimate_ns;
     uint64_t tdd_queue_drain_ns;
     uint64_t tdd_convergence_ns;
     uint64_t tdd_exchange_ns;
@@ -1757,6 +1762,7 @@ typedef struct {
     bool all_empty_delta;          /* OUT: all FORCE_DELTA empty, skipped */
     bool force_diff;               /* IN: enable diff from eff_iter 0 (BDX) */
     col_rel_t **delta_rels;        /* OUT: produced deltas [nrels], coord frees */
+    uint64_t runtime_ns;           /* OUT: worker sub-pass wall runtime */
     int rc;                        /* OUT: return code                */
 } col_eval_tdd_worker_ctx_t;
 
