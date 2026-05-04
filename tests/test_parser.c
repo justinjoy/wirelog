@@ -223,6 +223,89 @@ test_parse_decl_three_attrs(void)
     PASS();
 }
 
+static void
+test_parse_decl_compound_types(void)
+{
+    TEST(".decl with compound column types");
+    PARSE(".decl Event(id: int64, payload: metadata/4, "
+        "inline_payload: metadata/4 inline, side_payload: metadata/4 side)");
+    ASSERT_PARSED();
+    const wl_parser_ast_node_t *decl = child(program, 0);
+    if (decl->child_count != 4) {
+        CLEANUP();
+        FAIL("expected 4 params");
+        return;
+    }
+
+    const char *expected[] = {
+        "int64", "metadata/4", "metadata/4 inline", "metadata/4 side"
+    };
+    for (uint32_t i = 0; i < 4; i++) {
+        const wl_parser_ast_node_t *param = child(decl, i);
+        if (!param || !param->type_name
+            || strcmp(param->type_name, expected[i]) != 0) {
+            CLEANUP();
+            FAIL("compound type_name was not normalized correctly");
+            return;
+        }
+    }
+
+    CLEANUP();
+    PASS();
+}
+
+static void
+test_parse_decl_compound_rejects_zero_arity(void)
+{
+    TEST("error: compound declaration rejects zero arity");
+    PARSE(".decl Event(payload: metadata/0)");
+    if (program != NULL) {
+        CLEANUP();
+        FAIL("expected parse failure");
+        return;
+    }
+    PASS();
+}
+
+static void
+test_parse_decl_compound_rejects_bad_modifier(void)
+{
+    TEST("error: compound declaration rejects bad modifier");
+    PARSE(".decl Event(payload: metadata/4 packed)");
+    if (program != NULL) {
+        CLEANUP();
+        FAIL("expected parse failure");
+        return;
+    }
+    PASS();
+}
+
+static void
+test_parse_decl_compound_rejects_glued_modifier(void)
+{
+    TEST("error: compound declaration rejects glued modifier");
+    PARSE(".decl Event(payload: metadata/4inline)");
+    if (program != NULL) {
+        CLEANUP();
+        FAIL("expected parse failure");
+        return;
+    }
+    PASS();
+}
+
+static void
+test_parse_decl_compound_rejects_inline_overflow(void)
+{
+    TEST("error: inline compound declaration rejects arity > 4");
+    PARSE(".decl Event(payload: metadata/5 inline)");
+    if (program != NULL) {
+        CLEANUP();
+        FAIL("expected parse failure");
+        return;
+    }
+    PASS();
+}
+
 /* ======================================================================== */
 /* Parser: Input/Output/PrintSize Directives                                */
 /* ======================================================================== */
@@ -1772,6 +1855,11 @@ main(void)
     test_parse_decl_string_type();
     test_parse_decl_empty_params();
     test_parse_decl_three_attrs();
+    test_parse_decl_compound_types();
+    test_parse_decl_compound_rejects_zero_arity();
+    test_parse_decl_compound_rejects_bad_modifier();
+    test_parse_decl_compound_rejects_glued_modifier();
+    test_parse_decl_compound_rejects_inline_overflow();
 
     printf("\n--- Directives ---\n");
     test_parse_input_directive();
