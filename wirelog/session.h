@@ -96,6 +96,27 @@ wl_session_insert(wl_session_t *session, const char *relation,
     const int64_t *data, uint32_t num_rows, uint32_t num_cols);
 
 /**
+ * wl_session_make_compound:
+ * @session:    The active execution session.
+ * @functor:    Compound functor name.
+ * @arity:      Number of compound arguments.
+ * @args:       Argument values and declared scalar types.
+ * @handle_out: (out) Newly allocated session-local handle.
+ *
+ * Allocate a handle-backed side-tier compound and append its side-relation row.
+ *
+ * Returns:
+ *    0 on success.
+ *    ENOSPC if the compound arena is saturated.
+ *    EBUSY if the compound arena is temporarily frozen.
+ *    ENOMEM on allocation failure.
+ *    EINVAL or another errno-style value for invalid arguments/backend errors.
+ */
+int
+wl_session_make_compound(wl_session_t *session, const char *functor,
+    uint32_t arity, const wirelog_compound_arg_t *args, uint64_t *handle_out);
+
+/**
  * wl_session_remove:
  * @session:   The active execution session.
  * @relation:  The null-terminated name of the relation to revoke facts from.

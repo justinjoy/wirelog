@@ -21,11 +21,12 @@
  */
 
 #include "session.h"
+#include <errno.h>
 #include <stddef.h>
 
 int
 wl_session_create(const wl_compute_backend_t *backend, const wl_plan_t *plan,
-                  uint32_t num_workers, wl_session_t **out)
+    uint32_t num_workers, wl_session_t **out)
 {
     int rc;
     if (!backend || !backend->session_create || !out)
@@ -49,22 +50,34 @@ wl_session_destroy(wl_session_t *session)
 
 int
 wl_session_insert(wl_session_t *session, const char *relation,
-                  const int64_t *data, uint32_t num_rows, uint32_t num_cols)
+    const int64_t *data, uint32_t num_rows, uint32_t num_cols)
 {
     if (!session || !session->backend || !session->backend->session_insert)
         return -1;
     return session->backend->session_insert(session, relation, data, num_rows,
-                                            num_cols);
+               num_cols);
+}
+
+int
+wl_session_make_compound(wl_session_t *session, const char *functor,
+    uint32_t arity, const wirelog_compound_arg_t *args,
+    uint64_t *handle_out)
+{
+    if (!session || !session->backend
+        || !session->backend->session_make_compound)
+        return EINVAL;
+    return session->backend->session_make_compound(session, functor, arity,
+               args, handle_out);
 }
 
 int
 wl_session_remove(wl_session_t *session, const char *relation,
-                  const int64_t *data, uint32_t num_rows, uint32_t num_cols)
+    const int64_t *data, uint32_t num_rows, uint32_t num_cols)
 {
     if (!session || !session->backend || !session->backend->session_remove)
         return -1;
     return session->backend->session_remove(session, relation, data, num_rows,
-                                            num_cols);
+               num_cols);
 }
 
 int
@@ -77,7 +90,7 @@ wl_session_step(wl_session_t *session)
 
 void
 wl_session_set_delta_cb(wl_session_t *session, wl_on_delta_fn callback,
-                        void *user_data)
+    void *user_data)
 {
     if (!session || !session->backend
         || !session->backend->session_set_delta_cb)
@@ -87,7 +100,7 @@ wl_session_set_delta_cb(wl_session_t *session, wl_on_delta_fn callback,
 
 int
 wl_session_snapshot(wl_session_t *session, wl_on_tuple_fn callback,
-                    void *user_data)
+    void *user_data)
 {
     if (!session || !session->backend || !session->backend->session_snapshot)
         return -1;

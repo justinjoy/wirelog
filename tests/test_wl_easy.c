@@ -23,6 +23,24 @@
 #include <signal.h>
 #endif
 
+#ifdef _WIN32
+static int
+wl_test_setenv_(const char *name, const char *value, int overwrite)
+{
+    (void)overwrite;
+    return _putenv_s(name, (value && *value) ? value : "1");
+}
+
+static int
+wl_test_unsetenv_(const char *name)
+{
+    return _putenv_s(name, "");
+}
+
+#  define setenv   wl_test_setenv_
+#  define unsetenv wl_test_unsetenv_
+#endif
+
 /* ======================================================================== */
 /* Test Harness                                                             */
 /* ======================================================================== */
@@ -730,6 +748,73 @@ test_inline_compound_duplicate_child_variables_filter(void)
 }
 
 static void
+test_side_compound_public_allocation_saturates(void)
+{
+    TEST("public side compound allocation reports saturation");
+
+    if (setenv("WIRELOG_COMPOUND_MAX_EPOCHS", "2", 1) != 0) {
+        FAIL("setenv failed");
+        return;
+    }
+
+    const char *src
+        = ".decl event(id: int64, payload: metadata/4 side)\n"
+        ".decl seen(id: int64)\n"
+        ".decl edge(x: int64, y: int64)\n"
+        ".decl tc(x: int64, y: int64)\n"
+        "seen(ID) :- event(ID, _).\n"
+        "tc(X, Y) :- edge(X, Y).\n"
+        "tc(X, Z) :- edge(X, Y), tc(Y, Z).\n";
+
+    wl_easy_session_t *s = NULL;
+    if (wl_easy_open(src, &s) != WIRELOG_OK || !s) {
+        unsetenv("WIRELOG_COMPOUND_MAX_EPOCHS");
+        FAIL("open failed");
+        return;
+    }
+
+    wirelog_compound_arg_t args[4] = {
+        { WIRELOG_TYPE_INT64, 1 },
+        { WIRELOG_TYPE_INT64, 2 },
+        { WIRELOG_TYPE_INT64, 3 },
+        { WIRELOG_TYPE_INT64, 4 },
+    };
+    uint64_t handle = 0;
+    wirelog_error_t rc = wirelog_easy_make_compound(s, "metadata", 4, args,
+            &handle);
+    if (rc != WIRELOG_OK || handle == 0) {
+        wl_easy_close(s);
+        unsetenv("WIRELOG_COMPOUND_MAX_EPOCHS");
+        FAIL("first compound allocation failed");
+        return;
+    }
+    int64_t row[2] = { 1, (int64_t)handle };
+    int64_t edge_12[2] = { 1, 2 };
+    int64_t edge_23[2] = { 2, 3 };
+    int64_t edge_34[2] = { 3, 4 };
+    if (wl_easy_insert(s, "event", row, 2) != WIRELOG_OK
+        || wl_easy_insert(s, "edge", edge_12, 2) != WIRELOG_OK
+        || wl_easy_insert(s, "edge", edge_23, 2) != WIRELOG_OK
+        || wl_easy_insert(s, "edge", edge_34, 2) != WIRELOG_OK
+        || wl_easy_step(s) != WIRELOG_OK) {
+        wl_easy_close(s);
+        unsetenv("WIRELOG_COMPOUND_MAX_EPOCHS");
+        FAIL("first insert/step failed");
+        return;
+    }
+
+    handle = 123;
+    rc = wirelog_easy_make_compound(s, "metadata", 4, args, &handle);
+    wl_easy_close(s);
+    unsetenv("WIRELOG_COMPOUND_MAX_EPOCHS");
+    if (rc != WIRELOG_ERR_COMPOUND_SATURATED || handle != 0) {
+        FAIL("expected WIRELOG_ERR_COMPOUND_SATURATED with cleared handle");
+        return;
+    }
+    PASS();
+}
+
+static void
 test_insert_sym_variadic(void)
 {
     TEST("insert_sym variadic helper");
@@ -1114,6 +1199,7 @@ main(void)
     test_inline_compound_functor_mismatch_is_empty();
     test_inline_compound_constant_child_filters();
     test_inline_compound_duplicate_child_variables_filter();
+    test_side_compound_public_allocation_saturates();
     test_insert_sym_variadic();
     test_remove_sym();
     test_snapshot_filter();

@@ -53,6 +53,7 @@ typedef struct wl_session wl_session_t;
  * @session_create: Initialize a session for a given ir plan.
  * @session_destroy: Deallocate session state.
  * @session_insert: Insert EDB facts.
+ * @session_make_compound: Allocate a side-tier compound handle.
  * @session_remove: Retract EDB facts (for incremental backends).
  * @session_step: Perform one epoch advance (incremental).
  * @session_set_delta_cb: Set delta callback on updates.
@@ -68,6 +69,10 @@ typedef struct {
     int (*session_insert)(wl_session_t *session, const char *relation,
         const int64_t *data, uint32_t num_rows,
         uint32_t num_cols);
+
+    int (*session_make_compound)(wl_session_t *session, const char *functor,
+        uint32_t arity, const wirelog_compound_arg_t *args,
+        uint64_t *handle_out);
 
     int (*session_remove)(wl_session_t *session, const char *relation,
         const int64_t *data, uint32_t num_rows,

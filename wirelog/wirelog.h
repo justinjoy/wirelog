@@ -92,6 +92,8 @@ typedef enum {
     WIRELOG_ERR_EXEC = 3,
     WIRELOG_ERR_MEMORY = 4,
     WIRELOG_ERR_IO = 5,
+    WIRELOG_ERR_COMPOUND_SATURATED = 6,
+    WIRELOG_ERR_COMPOUND_BUSY = 7,
     WIRELOG_ERR_UNKNOWN = 255,
 } wirelog_error_t;
 

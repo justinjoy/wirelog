@@ -8,6 +8,7 @@
 
 #define _GNU_SOURCE
 
+#include "columnar/compound_side.h"
 #include "columnar/internal.h"
 #include "wirelog/util/log.h"
 
@@ -65,6 +66,22 @@ session_find_rel(wl_col_session_t *sess, const char *name)
             return sess->rels[i];
     }
     return NULL;
+}
+
+static uint32_t
+session_compound_max_epochs_from_env(void)
+{
+    const char *env = getenv("WIRELOG_COMPOUND_MAX_EPOCHS");
+    if (!env || env[0] == '\0')
+        return 0u;
+    char *endp = NULL;
+    errno = 0;
+    unsigned long v = strtoul(env, &endp, 10);
+    if (endp == env || *endp != '\0' || errno == ERANGE || v == 0)
+        return 0u;
+    if (v > (unsigned long)(WL_COMPOUND_EPOCH_MAX + 1u))
+        return 0u;
+    return (uint32_t)v;
 }
 
 int
@@ -739,19 +756,23 @@ col_session_create(const wl_plan_t *plan, uint32_t num_workers,
      * default_gen_cap=4096 mirrors the smoke-test usage in
      * tests/test_compound_arena.c; max_epochs=0 selects the library
      * default (WL_COMPOUND_EPOCH_MAX + 1). */
-    sess->compound_arena = wl_compound_arena_create(0x53455353u, 4096u, 0u);
+    uint32_t compound_max_epochs = session_compound_max_epochs_from_env();
+    sess->compound_arena = wl_compound_arena_create(0x53455353u, 4096u,
+            compound_max_epochs);
     if (!sess->compound_arena)
         goto oom;
     WL_LOG(WL_LOG_SEC_SESSION, WL_LOG_INFO,
-        "event=compound_arena_init seed=0x%08x default_gen_cap=%u",
-        0x53455353u, 4096u);
+        "event=compound_arena_init seed=0x%08x default_gen_cap=%u "
+        "max_epochs=%u",
+        0x53455353u, 4096u, sess->compound_arena->max_epochs);
     /* Issue #583: lifecycle audit trail for the compound side-relation
      * subsystem.  WL_LOG=COMPOUND:5 captures create/destroy/alloc/
      * freeze/unfreeze in one section without enabling the noisier
      * SESSION INFO surface. */
     WL_LOG(WL_LOG_SEC_COMPOUND, WL_LOG_TRACE,
-        "lifecycle event=session_create seed=0x%08x default_gen_cap=%u",
-        0x53455353u, 4096u);
+        "lifecycle event=session_create seed=0x%08x default_gen_cap=%u "
+        "max_epochs=%u",
+        0x53455353u, 4096u, sess->compound_arena->max_epochs);
 
     /* Pre-register EDB relations (ncols determined at first insert) */
     for (uint32_t i = 0; i < plan->edb_count; i++) {
@@ -1238,6 +1259,73 @@ col_session_insert(wl_session_t *session, const char *relation,
      * skip condition to reduce iterations on subsequent snapshots. */
     COL_SESSION(session)->last_inserted_relation = relation;
 
+    return 0;
+}
+
+static int
+col_session_make_compound(wl_session_t *session, const char *functor,
+    uint32_t arity, const wirelog_compound_arg_t *args, uint64_t *handle_out)
+{
+    if (handle_out)
+        *handle_out = WIRELOG_COMPOUND_HANDLE_NULL;
+    if (!session || !functor || !args || arity == 0 || !handle_out)
+        return EINVAL;
+    if (arity > UINT32_MAX - 1u)
+        return EOVERFLOW;
+    if (arity > UINT32_MAX / (uint32_t)sizeof(int64_t))
+        return EOVERFLOW;
+
+    wl_col_session_t *sess = COL_SESSION(session);
+    if (!sess || !sess->compound_arena)
+        return EINVAL;
+    if (sess->compound_arena->frozen)
+        return EBUSY;
+    if (sess->compound_arena->current_epoch >= sess->compound_arena->max_epochs)
+        return ENOSPC;
+
+    col_rel_t *side_rel = NULL;
+    int rc = wl_compound_side_ensure(sess, functor, arity, &side_rel);
+    if (rc != 0)
+        return rc;
+    if (!side_rel)
+        return EINVAL;
+
+    uint32_t payload_size = arity * (uint32_t)sizeof(int64_t);
+    uint64_t handle = wl_compound_arena_alloc(sess->compound_arena,
+            payload_size);
+    if (handle == WIRELOG_COMPOUND_HANDLE_NULL) {
+        if (sess->compound_arena->frozen)
+            return EBUSY;
+        if (sess->compound_arena->current_epoch
+            >= sess->compound_arena->max_epochs)
+            return ENOSPC;
+        return ENOMEM;
+    }
+
+    uint32_t ncols = arity + 1u;
+    int64_t stack_row[16];
+    int64_t *row = stack_row;
+    if (ncols > (uint32_t)(sizeof(stack_row) / sizeof(stack_row[0]))) {
+        row = (int64_t *)malloc((size_t)ncols * sizeof(*row));
+        if (!row) {
+            wl_compound_arena_retain(sess->compound_arena, handle, -1);
+            return ENOMEM;
+        }
+    }
+
+    row[0] = (int64_t)handle;
+    for (uint32_t i = 0; i < arity; i++)
+        row[i + 1u] = args[i].value;
+
+    rc = col_rel_append_row(side_rel, row);
+    if (row != stack_row)
+        free(row);
+    if (rc != 0) {
+        wl_compound_arena_retain(sess->compound_arena, handle, -1);
+        return rc;
+    }
+
+    *handle_out = handle;
     return 0;
 }
 
@@ -2074,6 +2162,7 @@ static const wl_compute_backend_t col_backend = {
     .session_create = col_session_create,
     .session_destroy = col_session_destroy,
     .session_insert = col_session_insert,
+    .session_make_compound = col_session_make_compound,
     .session_remove = col_session_remove,
     .session_step = col_session_step,
     .session_set_delta_cb = col_session_set_delta_cb,
