@@ -1527,6 +1527,24 @@ test_cli_exe = executable(
 
 test('cli', test_cli_exe)
 
+test_cli_watch_exe = executable(
+  'test_cli_watch',
+  files('test_cli_watch.c'),
+  parser_src,
+  ir_src,
+  optimizer_src,
+  backend_src,
+  io_src,
+  arena_src,
+  thread_src,
+  workqueue_src,
+  driver_src,
+  include_directories: [wirelog_inc, wirelog_src_inc],
+  dependencies: [nanoarrow_dep, threads_dep, xxhash_dep, mbedtls_dep, math_dep],
+)
+
+test('cli_watch', test_cli_watch_exe)
+
 test_cli_delta_exe = executable(
   'test_cli_delta',
   files('test_cli_delta.c'),
