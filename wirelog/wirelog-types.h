@@ -185,6 +185,13 @@ typedef enum {
     WIRELOG_COMPOUND_KIND_SIDE = 2,   /* f/N side-relation compound (default) */
 } wirelog_compound_kind_t;
 
+#define WIRELOG_COMPOUND_HANDLE_NULL ((uint64_t)0)
+
+typedef struct {
+    wirelog_column_type_t type;
+    int64_t value;
+} wirelog_compound_arg_t;
+
 /**
  * wirelog_column_t:
  *

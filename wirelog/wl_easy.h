@@ -167,6 +167,30 @@ int64_t
 wl_easy_intern(wl_easy_session_t *s, const char *sym);
 
 /**
+ * wirelog_easy_make_compound:
+ * @s:          Open wl_easy session.
+ * @functor:    Compound functor name, e.g. "metadata".
+ * @arity:      Number of compound arguments.
+ * @args:       Row values for arg0..arg{arity-1}.
+ * @handle_out: (out) Receives a session-local compound handle.
+ *
+ * Allocate a handle-backed side-tier compound in the session-local compound
+ * arena and insert its side-relation row (`__compound_<functor>_<arity>`).
+ * The returned handle is valid only for this session.  Callers that rotate
+ * sessions must persist source-level argument values and rebuild handles in
+ * the fresh session; do not persist handles across `wl_easy_open()` calls.
+ *
+ * Returns: WIRELOG_OK on success, WIRELOG_ERR_COMPOUND_SATURATED when the arena
+ * refuses allocation after epoch saturation, WIRELOG_ERR_COMPOUND_BUSY when it
+ * is temporarily frozen, WIRELOG_ERR_MEMORY for allocation failure, or
+ * WIRELOG_ERR_EXEC for invalid arguments, plan/session build failure,
+ * side-relation registration failure, or insertion failure.
+ */
+wirelog_error_t
+wirelog_easy_make_compound(wl_easy_session_t *s, const char *functor,
+    uint32_t arity, const wirelog_compound_arg_t *args, uint64_t *handle_out);
+
+/**
  * wl_easy_insert:
  * @s:        Open session.
  * @relation: Relation name (must not be NULL).
