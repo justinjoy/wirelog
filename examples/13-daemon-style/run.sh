@@ -10,8 +10,10 @@ if [ ! -x "$demo" ]; then
   exit 1
 fi
 
+: "${WIRELOG_COMPOUND_MAX_EPOCHS:=256}"
+export WIRELOG_COMPOUND_MAX_EPOCHS
+
 "$demo" --events "${WIRELOG_DAEMON_EVENTS:-1000}" \
   --seconds "${WIRELOG_DAEMON_SECONDS:-10}" \
-  --rotate-every "${WIRELOG_DAEMON_ROTATE_EVERY:-128}" \
   --log-every "${WIRELOG_DAEMON_LOG_EVERY:-64}" \
   --sleep-ms "${WIRELOG_DAEMON_SLEEP_MS:-10}"

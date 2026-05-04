@@ -17,8 +17,9 @@ daemon_style_demo = executable(
 test(
   'example_13_daemon_style_smoke',
   daemon_style_demo,
-  args: ['--events', '128', '--rotate-every', '32', '--log-every', '64'],
+  args: ['--events', '96', '--log-every', '32'],
   suite: 'examples',
+  env: {'WIRELOG_COMPOUND_MAX_EPOCHS': '32'},
   is_parallel: false,
 )
 
@@ -28,11 +29,11 @@ test(
   args: [
     '--events', '1200',
     '--seconds', '10',
-    '--rotate-every', '128',
     '--log-every', '256',
     '--sleep-ms', '10',
   ],
   suite: 'examples',
+  env: {'WIRELOG_COMPOUND_MAX_EPOCHS': '64'},
   is_parallel: false,
   timeout: 30,
 )
