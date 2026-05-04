@@ -7,10 +7,13 @@ name: CI PR
 # Phase 2 (Build):       Linux (GCC + Clang) + macOS (Clang), fail-fast
 # Phase 3 (Sanitizers):  ASan/UBSan + TSan, runs after lint
 #
-# Execution order: lint + CodeQL -> build + sanitizers
+# Execution order on PR: lint + CodeQL -> build + sanitizers
+# Execution order on main push: CodeQL only
 
 on:
   pull_request:
+    branches: [main]
+  push:
     branches: [main]
 
 permissions:
@@ -24,6 +27,7 @@ jobs:
   # editorconfig -> uncrustify -> clang-tidy 22 (sequential, hard gates)
   # ==========================================================================
   lint:
+    if: github.event_name == 'pull_request'
     uses: ./.github/workflows/lint-pr.yml
 
   # ==========================================================================
@@ -68,6 +72,7 @@ jobs:
   # Excludes: subprojects/**, build/**
   # ==========================================================================
   build:
+    if: github.event_name == 'pull_request'
     name: Build / ${{ matrix.os }} / ${{ matrix.compiler }}
     needs: [lint]
     runs-on: ${{ matrix.os }}
@@ -188,6 +193,7 @@ jobs:
   # Linux: GCC + Clang; macOS: Clang
   # ==========================================================================
   sanitizer:
+    if: github.event_name == 'pull_request'
     name: Sanitizers / ${{ matrix.os }} / ${{ matrix.compiler }}
     needs: [lint]
     runs-on: ${{ matrix.os }}
@@ -254,6 +260,7 @@ jobs:
   # (thrd_create, mtx_lock) are uninstrumented and cause false SEGV.
   # ==========================================================================
   tsan:
+    if: github.event_name == 'pull_request'
     name: TSan / ubuntu-latest / gcc
     needs: [lint]
     runs-on: ubuntu-latest
