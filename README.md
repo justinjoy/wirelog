@@ -99,6 +99,7 @@ For fine-grained control over plans, backends, or worker counts, use the `wl_ses
 | `10-recursive-under-update` | Transitive closure under insert/remove |
 | `11-time-evolution` | Per-epoch delta isolation |
 | `12-snapshot-vs-delta` | Snapshot vs streaming API comparison |
+| `13-daemon-style` | Long-running daemon rotation pattern |
 
 ## Build & Test
 

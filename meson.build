@@ -343,6 +343,7 @@ subdir('examples/09-retraction-basics')
 subdir('examples/10-recursive-under-update')
 subdir('examples/11-time-evolution')
 subdir('examples/12-snapshot-vs-delta')
+subdir('examples/13-daemon-style')
 
 #== == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == ==
 #Documentation
