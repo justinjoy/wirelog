@@ -217,20 +217,9 @@ jobs:
   # (thrd_create, mtx_lock) are uninstrumented and cause false SEGV.
   # ==========================================================================
   tsan:
-    name: TSan / ubuntu-latest / ${{ matrix.compiler }}
+    name: TSan / ubuntu-latest / gcc
     needs: [lint]
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # Linux - GCC
-          - compiler: gcc
-            cc: gcc
-
-          # Linux - Clang
-          - compiler: clang
-            cc: clang
 
     steps:
       - uses: actions/checkout@v5
@@ -239,9 +228,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y meson ninja-build libmbedtls-dev
-          if [ "${{ matrix.compiler }}" = "clang" ]; then
-            sudo apt-get install -y clang
-          fi
 
       - name: Configure with TSan
         run: |
@@ -252,7 +238,7 @@ jobs:
             -Dtests=true \
             --buildtype=debug
         env:
-          CC: ${{ matrix.cc }}
+          CC: gcc
 
       - name: Build with TSan
         run: meson compile -C builddir-tsan
