@@ -85,15 +85,16 @@ Declare a compound column using the type `functor/arity` in a `.decl` statement:
 The inline tier stores compound arguments as additional physical columns
 appended directly to the main relation.
 
-**Limits** (enforced in IR lowering, `wirelog/columnar/internal.h`):
+**Limits** (enforced when parsing declarations and applying columnar schemas):
 
 | Constant                     | Value | Meaning                                   |
 |------------------------------|-------|-------------------------------------------|
 | `WL_COMPOUND_INLINE_MAX_ARITY` | 4   | Maximum number of compound arguments      |
 | `WL_COMPOUND_INLINE_MAX_DEPTH` | 1   | Maximum nesting depth for inline compounds|
 
-A compound declared with `functor/N inline` where `N > 4` or where it is
-nested inside another compound (depth > 1) is rejected at schema-apply time.
+A compound declared with `functor/N inline` where `N > 4` is rejected by the
+public parser. Inline compounds nested inside another compound (depth > 1) are
+rejected at schema-apply time.
 
 **Physical layout example** — relation `edge(src: int64, lbl: pair/2 inline, dst: int64)`:
 
@@ -103,8 +104,8 @@ Logical columns:   [ src ] [  lbl/2   ]              [ dst ]
 ```
 
 The compound occupies two consecutive physical slots starting at
-`inline_physical_offset`. The `compound_arity_map` array records the arity of
-each logical column (0 for scalars, N for inline compounds).
+`inline_physical_offset`. The `compound_arity_map` array records the physical
+width of each logical column (1 for scalars, N for inline compounds).
 
 ### Side-relation tier
 
@@ -248,14 +249,12 @@ For a nested compound like `scope(metadata(t, ts, loc, risk))`:
    Returns `handle_scope`.
 3. Main relation column: holds `handle_scope`.
 
-Rule body matching follows the same nesting:
+Nested side-tier storage metadata follows the same nesting. Rule-body binding
+for nested side terms is not lowered yet:
 
 ```
 .decl record(id: int64, scope_col: scope/1)
-.decl result(id: int64, tenant: int64, location: int64)
-
-result(id, t, loc) :-
-    record(id, scope(metadata(t, ts, loc, risk))).
+.decl record(id: int64, scope_col: scope/1)
 ```
 
 ---
@@ -281,7 +280,7 @@ When in doubt, omit the hint. The default (`side`) is always correct.
 |------------------------------------------|-------------------------------------------------------|
 | `f()` — arity zero                       | Parse error: "compound term requires at least one argument" |
 | Nesting > 64 levels                      | Parse error: "compound term nesting too deep"         |
-| `inline` hint with arity > 4            | Schema-apply error; `WL_LOG=COMPOUND:2` emits `error=arity_overflow` |
+| `inline` hint with arity > 4            | Parse error |
 | `inline` hint with depth > 1            | Schema-apply error; `WL_LOG=COMPOUND:2` emits `error=depth_overflow` |
 | Handle from session A used in session B  | `arena_lookup` returns NULL (session seed mismatch)   |
 | Handle after arena saturation (epoch 4095)| `arena_alloc` returns `WL_COMPOUND_HANDLE_NULL`      |
@@ -300,18 +299,14 @@ When in doubt, omit the hint. The default (`side`) is always correct.
 sum_rel(id, x + y) :- pair_rel(id, pair(x, y)).
 ```
 
-### Nested compound (side tier)
+### Nested compound declaration (side tier)
 
 ```
 .decl message(msg_id: int64, envelope: envelope/2)
-.decl trusted_messages(msg_id: int64, sender: int64)
-.output trusted_messages
-
-trusted_messages(msg_id, sender) :-
-    message(msg_id, envelope(header(sender, ts), body_hash)).
 ```
 
-Side relations created: `__compound_header_2`, `__compound_envelope_2`.
+The declaration is accepted and exposed in schema metadata. Binding nested side
+arguments in rule bodies requires the future side-relation lowering path.
 
 ---
 

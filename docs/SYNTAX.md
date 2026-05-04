@@ -175,6 +175,9 @@ Supported column types:
 - `int64` -- 64-bit signed integer
 - `string` -- variable-length string
 - `symbol` -- interned symbol (string stored as integer ID)
+- `functor/arity` -- compound term handle stored in a 64-bit column
+- `functor/arity side` -- explicit side-relation compound storage
+- `functor/arity inline` -- inline compound storage, limited to arity 4
 
 ---
 
