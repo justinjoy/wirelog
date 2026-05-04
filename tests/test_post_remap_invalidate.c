@@ -22,8 +22,7 @@
  *   4. NULL session is rejected with EINVAL.
  *
  * The test does NOT also call the apply pass; the invalidation
- * helper is independent and the rotation helper (#550-C) calls it
- * after a successful apply.  Calling it standalone here pins the
+ * helper is independent. Calling it standalone here pins the
  * pure-invalidation behaviour without entangling #589/#590 again.
  */
 

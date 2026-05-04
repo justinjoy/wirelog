@@ -304,9 +304,7 @@ wl_compound_arena_gc_epoch_boundary(wl_compound_arena_t *arena);
  *
  * Return the current live-handle population of @arena (the value of
  * @arena->live_handles), or 0 if @arena is NULL.  Introspection-only
- * accessor used by the rotation-helper path (Issue #586): the remap
- * table sizes itself against this number when migrating compound
- * handles into a fresh session (#562 / #550 Option C).
+ * accessor used by internal remap sizing paths (Issue #586).
  *
  * Stability: NOT stable across rotations or during live K-Fusion
  * worker access.  Callers must invoke this either while the arena

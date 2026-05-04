@@ -25,10 +25,9 @@
  * Vacuous in production today (col_rel_deep_copy has NO production
  * callers in rotation paths -- verified by grep across wirelog/).  Only
  * tests/test_col_rel_deep_copy.c and tests/col_rel_deep_copy_fixture.c
- * invoke it.  Becomes load-bearing when #550-C wl_session_rotate ships:
- * the cross-arena rotation helper will deep-copy the live relations into
- * the new arena, and any ledger churn would corrupt the per-session
- * memory accounting.
+ * invoke it.  It remains cheap regression coverage for the deep-copy ledger
+ * contract; public daemon rotation is caller-owned close/open/replay, not an
+ * engine-owned cross-arena session helper.
  */
 
 #include "../wirelog/columnar/internal.h"

@@ -14,11 +14,10 @@
  * pair) so the freeze flag, lookup table, and live_handles counter
  * are visible to workers without explicit atomics.
  *
- * Note on naming: this is a freeze-cycle test, NOT an arena-rotation
- * test in the #550-C sense (rotate to a fresh arena while workers are
- * mid-flight).  Issue #582 used the word "rotation" loosely to mean
- * "iteration cycle".  When #550-C lands, a sibling test will exercise
- * the cross-arena swap path; this harness pins the in-arena cycle.
+ * Note on naming: this is a freeze-cycle test, NOT public daemon rotation.
+ * Issue #582 used the word "rotation" loosely to mean "iteration cycle".
+ * #550 Option C was declined; public daemon rotation is covered by
+ * caller-owned close/open/replay tests.
  *
  * Two configurations exercised:
  *   - W = 4, 500 cycles  (smaller fan-out, more turn-around per worker)
@@ -95,10 +94,10 @@ run_freeze_cycle_stress(uint32_t num_workers, uint32_t cycles,
     /* Bound check (test contract): each cycle advances current_epoch by
      * one (gc_epoch_boundary at cycle tail), so the configured cycle
      * count must fit within the arena's epoch cap.  We deliberately do
-     * NOT recover from saturation here — that's the cross-arena swap
-     * path Option C in #550 introduces, and a sibling test will own it.
-     * Keeping the bound assertion explicit makes accidental saturation
-     * loud instead of silently re-creating the arena under workers. */
+     * NOT recover from saturation here. Public daemon rotation is covered
+     * by caller-owned close/open/replay tests. Keeping the bound assertion
+     * explicit makes accidental saturation loud instead of silently
+     * re-creating the arena under workers. */
     if (cycles >= arena->max_epochs) {
         printf("FAIL: requested cycles=%u exceeds max_epochs=%u\n",
             cycles, arena->max_epochs);

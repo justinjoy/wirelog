@@ -59,18 +59,12 @@ already-known rows after rotation. The pattern is deliberately conservative and
 demonstrates the lifecycle shape without including internal headers such as
 `wirelog/columnar/internal.h`.
 
-## Remaining Engine Work
+## Rotation Contract
 
-The example still keeps EDB ownership in application code. A future
-engine-owned rotation primitive could replace the manual close/open/replay
-sequence:
-
-```diff
-- wl_easy_close(old);
-- wl_easy_open(program, &fresh);
-- replay_edb(fresh, &edb);
-+ wl_session_rotate(session);
-```
+The example keeps EDB ownership in application code by design. #550's
+engine-owned rotation helper proposal was declined, so the supported public
+contract is to close the saturated session, open a fresh session, replay
+caller-owned durable EDB facts, and retry the current allocation.
 
 ## Build & Run
 

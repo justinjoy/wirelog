@@ -33,9 +33,9 @@
  *       wl_handle_remap_apply_columns is single-mutator by contract;
  *       W is accepted as input but ignored, with a one-line note
  *       printed to keep CI tier wiring uniform across workloads.
- *       (No #550 Option C rotation helper required: the apply pass
- *       rewrites the same arena in place; cross-arena swap is a
- *       separate concern that needs its own sibling test.)
+ *       (No engine-owned rotation helper required: the apply pass
+ *       rewrites the same arena in place; public daemon rotation is
+ *       caller-owned close/open/replay coverage.)
  *
  *   "daemon-soak" (#597):
  *       Long-running soak that proves bounded-RSS behavior under

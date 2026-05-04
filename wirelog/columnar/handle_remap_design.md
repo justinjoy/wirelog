@@ -168,13 +168,14 @@ The minimum capacity is 16 (small enough not to matter; large enough
 that the rounding doesn't dominate). This is an implementation detail
 and not exposed through the API.
 
-### 2.8 Initial capacity for rotation evacuation (Issue #586)
+### 2.8 Initial capacity for bulk remap paths (Issue #586)
 
-When the table is created on the rotation-helper path
-(`wl_session_rotate`, #550 Option C / blocked by #562), the caller
+When the table is created for a bulk handle-remap path, the caller
 already knows the live-handle population it is about to migrate:
-`wl_compound_arena_t.live_handles`.  The contract is one-sided to
-avoid double-counting the load-factor headroom against §4.1:
+`wl_compound_arena_t.live_handles`. The contract is one-sided to
+avoid double-counting the load-factor headroom against §4.1. Public
+daemon rotation does not use this path; #550 Option C was declined in
+favor of caller-owned close/open/replay.
 
   - Caller passes the raw `live_handles` value to
     `wl_handle_remap_create(capacity, &out)`.  Do NOT pre-divide by

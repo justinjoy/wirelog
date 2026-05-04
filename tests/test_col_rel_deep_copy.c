@@ -726,8 +726,8 @@ test_deep_copy_remap_metadata_preserved(void)
      * inline) and Group I/J zero-state helper
      * (deep_copy_fixture_assert_design_invariants) already prove the
      * underlying behaviour, but #587's acceptance bullets call for three
-     * named assertions in one place so a future remap caller (#588 +
-     * #550 Option C) can rely on the contract without grep-archaeology:
+     * named assertions in one place so remap callers can rely on the
+     * contract without grep-archaeology:
      *
      *   1. compound_arity_map deep-copied (non-NULL, non-aliased,
      *      value-equal, mutation-isolated -- Group G)

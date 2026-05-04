@@ -27,9 +27,9 @@
  *      "__compound_<functor>_<arity>" name prefix (#580 convention),
  *      and rewrites column 0 of each match.  Nested-arg rewrites
  *      stay caller-driven because there is no schema-level "this
- *      arg holds a handle" tag today; callers that know the nested
- *      structure (rotation helper #550 Option C) iterate side-
- *      relations themselves and call the per-relation primitive.
+ *      arg holds a handle" tag today; internal callers that know the
+ *      nested structure iterate side-relations themselves and call the
+ *      per-relation primitive.
  *
  * Multiplicity (Z-set) is preserved by construction: the apply pass
  * touches col_rel_t::columns[][] only; col_rel_t::timestamps[] (which
@@ -149,9 +149,8 @@ wl_handle_remap_apply_session_side_relations(struct wl_col_session_t *sess,
  *
  * Out of scope for #591 (call out for #598 / follow-up):
  *   - mat_cache is content-keyed and may carry stale join results
- *     over remapped sources.  Whether to clear or accept the
- *     content-hash miss is left to the rotation helper (#550-C);
- *     this pass does NOT touch mat_cache.
+ *     over remapped sources.  Cache policy for remap callers remains
+ *     outside this pass; this pass does NOT touch mat_cache.
  *   - sarr_entries (sorted-by-key permutations) are not currently
  *     touched by col_session_invalidate_arrangements.  Side-
  *     relations are not expected to have sarr entries today, so
