@@ -2,11 +2,9 @@
  * daemon.c - Example 13: Daemon-style session rotation
  *
  * Demonstrates a long-running wl_easy caller that preserves persistent EDB
- * facts across session rotations.  The example uses a public inline compound
- * declaration for event metadata.  Today the public API does not expose the
- * compound arena epoch, a saturation callback, or an engine-owned rotation
- * primitive, so the daemon uses a caller-owned watermark as the rotation
- * trigger.  See README.md for how #550 would simplify the loop.
+ * facts across session rotations.  The example uses a public side compound
+ * declaration for event metadata and rotates when the compound arena reports
+ * saturation through the installed public API.
  */
 
 #if !defined(_WIN32)
@@ -30,10 +28,13 @@
 #endif
 
 static const char *DAEMON_SRC
-    = ".decl event(id: int64, tenant: symbol, payload: metadata/4 inline)\n"
+    = ".decl event(id: int64, tenant: symbol, risk: int64, "
+    "payload: metadata/4 side)\n"
+    ".decl pulse(id: int64)\n"
     ".decl hot_event(id: int64, tenant: symbol)\n"
-    "hot_event(ID, Tenant) :- "
-    "event(ID, Tenant, metadata(Level, Ts, Host, Risk)), Risk > 80.\n";
+    "pulse(ID) :- event(ID, _, _, _), ID < 0.\n"
+    "pulse(ID) :- pulse(ID).\n"
+    "hot_event(ID, Tenant) :- event(ID, Tenant, Risk, _), Risk > 80.\n";
 
 typedef struct {
     int64_t tenant_a;
@@ -66,10 +67,15 @@ typedef struct {
 typedef struct {
     uint64_t max_events;
     uint64_t max_seconds;
-    uint64_t rotate_every;
     uint64_t log_every;
     uint64_t sleep_ms;
 } daemon_opts_t;
+
+typedef enum {
+    INSERT_OK = 0,
+    INSERT_SATURATED = 1,
+    INSERT_FAILED = 2,
+} insert_status_t;
 
 typedef struct {
 #if defined(_WIN32)
@@ -112,7 +118,6 @@ parse_args(int argc, char **argv, daemon_opts_t *opts)
 {
     opts->max_events = 512;
     opts->max_seconds = 0;
-    opts->rotate_every = 128;
     opts->log_every = 64;
     opts->sleep_ms = 0;
 
@@ -122,9 +127,6 @@ parse_args(int argc, char **argv, daemon_opts_t *opts)
                 return -1;
         } else if (strcmp(argv[i], "--seconds") == 0 && i + 1 < argc) {
             if (parse_u64(argv[++i], &opts->max_seconds) != 0)
-                return -1;
-        } else if (strcmp(argv[i], "--rotate-every") == 0 && i + 1 < argc) {
-            if (parse_u64(argv[++i], &opts->rotate_every) != 0)
                 return -1;
         } else if (strcmp(argv[i], "--log-every") == 0 && i + 1 < argc) {
             if (parse_u64(argv[++i], &opts->log_every) != 0)
@@ -143,8 +145,8 @@ static void
 usage(const char *argv0)
 {
     fprintf(stderr,
-        "usage: %s [--events N] [--seconds N] [--rotate-every N] "
-        "[--log-every N] [--sleep-ms N]\n",
+        "usage: %s [--events N] [--seconds N] [--log-every N] "
+        "[--sleep-ms N]\n",
         argv0);
 }
 
@@ -267,15 +269,6 @@ enable_delta_cb(wl_easy_session_t *s, delta_stats_t *stats)
 }
 
 static int
-baseline_delta_state(wl_easy_session_t *s, delta_stats_t *stats)
-{
-    stats->suppress_deltas = true;
-    wirelog_error_t rc = wl_easy_step(s);
-    stats->suppress_deltas = false;
-    return rc == WIRELOG_OK ? 0 : -1;
-}
-
-static int
 open_session(wl_easy_session_t **out, symbol_ids_t *ids, delta_stats_t *stats,
     bool emit_live_deltas)
 {
@@ -294,18 +287,35 @@ open_session(wl_easy_session_t **out, symbol_ids_t *ids, delta_stats_t *stats,
     return 0;
 }
 
-static int
+static insert_status_t
 insert_event(wl_easy_session_t *s, const symbol_ids_t *ids,
     const event_record_t *record)
 {
-    int64_t row[6];
+    const int64_t level = record->hot ? ids->warn : ids->info;
+    const int64_t ts = (int64_t)(1700000000u + record->id);
+    const int64_t host = record->host_a ? ids->host_a : ids->host_b;
+    const int64_t risk = record->hot ? 95 : 10;
+    wirelog_compound_arg_t payload_args[4] = {
+        { WIRELOG_TYPE_STRING, level },
+        { WIRELOG_TYPE_INT64, ts },
+        { WIRELOG_TYPE_STRING, host },
+        { WIRELOG_TYPE_INT64, risk },
+    };
+    uint64_t payload = WIRELOG_COMPOUND_HANDLE_NULL;
+    wirelog_error_t rc = wirelog_easy_make_compound(s, "metadata", 4,
+            payload_args, &payload);
+    if (rc == WIRELOG_ERR_COMPOUND_SATURATED)
+        return INSERT_SATURATED;
+    if (rc != WIRELOG_OK || payload == WIRELOG_COMPOUND_HANDLE_NULL)
+        return INSERT_FAILED;
+
+    int64_t row[4];
     row[0] = (int64_t)record->id;
     row[1] = record->tenant_a ? ids->tenant_a : ids->tenant_b;
-    row[2] = record->hot ? ids->warn : ids->info;
-    row[3] = (int64_t)(1700000000u + record->id);
-    row[4] = record->host_a ? ids->host_a : ids->host_b;
-    row[5] = record->hot ? 95 : 10;
-    return wl_easy_insert(s, "event", row, 6) == WIRELOG_OK ? 0 : -1;
+    row[2] = risk;
+    row[3] = (int64_t)payload;
+    return wl_easy_insert(s, "event", row, 4) == WIRELOG_OK ? INSERT_OK
+                                                            : INSERT_FAILED;
 }
 
 static int
@@ -313,10 +323,10 @@ replay_edb(wl_easy_session_t *s, const symbol_ids_t *ids,
     const edb_store_t *edb)
 {
     for (size_t i = 0; i < edb->count; i++) {
-        if (insert_event(s, ids, &edb->records[i]) != 0)
+        if (insert_event(s, ids, &edb->records[i]) != INSERT_OK)
             return -1;
     }
-    return wl_easy_step(s) == WIRELOG_OK ? 0 : -1;
+    return 0;
 }
 
 static int
@@ -324,9 +334,6 @@ rotate_session(wl_easy_session_t **session_io, symbol_ids_t *ids,
     const edb_store_t *edb, delta_stats_t *stats, uint64_t *rotations)
 {
     wl_easy_session_t *fresh = NULL;
-    if (wl_easy_step(*session_io) != WIRELOG_OK)
-        return -1;
-
     if (open_session(&fresh, ids, stats, false) != 0)
         return -1;
     if (replay_edb(fresh, ids, edb) != 0) {
@@ -334,10 +341,6 @@ rotate_session(wl_easy_session_t **session_io, symbol_ids_t *ids,
         return -1;
     }
     if (enable_delta_cb(fresh, stats) != 0) {
-        wl_easy_close(fresh);
-        return -1;
-    }
-    if (baseline_delta_state(fresh, stats) != 0) {
         wl_easy_close(fresh);
         return -1;
     }
@@ -367,7 +370,7 @@ main(int argc, char **argv)
     delta_stats_t stats = { 0 };
     edb_store_t edb = { 0 };
     uint64_t rotations = 0;
-    uint64_t since_rotation = 0;
+    uint64_t saturations = 0;
     uint64_t event_id = 0;
     monotonic_time_t start;
 
@@ -390,13 +393,24 @@ main(int argc, char **argv)
             break;
         event_id++;
         event_record_t record = make_event_record(event_id);
-        if (edb_push(&edb, &record) != 0) {
-            fprintf(stderr, "[daemon] out of memory while recording EDB\n");
-            wl_easy_close(session);
-            edb_free(&edb);
-            return 1;
+
+        insert_status_t insert_rc = insert_event(session, &ids, &record);
+        if (insert_rc == INSERT_SATURATED) {
+            saturations++;
+            fprintf(stderr,
+                "[daemon] rotation request: compound arena saturated "
+                "event=%" PRIu64 "\n",
+                event_id);
+            if (rotate_session(&session, &ids, &edb, &stats, &rotations)
+                != 0) {
+                fprintf(stderr, "[daemon] rotation failed\n");
+                wl_easy_close(session);
+                edb_free(&edb);
+                return 1;
+            }
+            insert_rc = insert_event(session, &ids, &record);
         }
-        if (insert_event(session, &ids, &record) != 0) {
+        if (insert_rc != INSERT_OK) {
             fprintf(stderr, "[daemon] insert failed at event=%" PRIu64 "\n",
                 event_id);
             wl_easy_close(session);
@@ -410,34 +424,21 @@ main(int argc, char **argv)
             edb_free(&edb);
             return 1;
         }
+        if (edb_push(&edb, &record) != 0) {
+            fprintf(stderr, "[daemon] out of memory while recording EDB\n");
+            wl_easy_close(session);
+            edb_free(&edb);
+            return 1;
+        }
 
-        since_rotation++;
         if (opts.log_every != 0 && (event_id % opts.log_every) == 0) {
             fprintf(stderr,
                 "[daemon] t=%.2fs events=%" PRIu64 " edb=%zu hot=%" PRIu64
-                " rotations=%" PRIu64 " rss_kb=%" PRIu64 "\n",
+                " rotations=%" PRIu64 " saturations=%" PRIu64
+                " rss_kb=%" PRIu64 "\n",
                 monotonic_elapsed_seconds(&start), event_id, edb.count,
                 stats.hot_deltas,
-                rotations, rss_kb());
-        }
-
-        const bool reached_event_limit = event_id >= opts.max_events;
-        const bool reached_time_limit = opts.max_seconds != 0
-            && monotonic_elapsed_seconds(&start) >= (double)opts.max_seconds;
-        if (since_rotation >= opts.rotate_every && !reached_event_limit
-            && !reached_time_limit) {
-            fprintf(stderr,
-                "[daemon] rotation request: events_since_rotation=%" PRIu64
-                " watermark=%" PRIu64 "\n",
-                since_rotation, opts.rotate_every);
-            if (rotate_session(&session, &ids, &edb, &stats, &rotations)
-                != 0) {
-                fprintf(stderr, "[daemon] rotation failed\n");
-                wl_easy_close(session);
-                edb_free(&edb);
-                return 1;
-            }
-            since_rotation = 0;
+                rotations, saturations, rss_kb());
         }
 
         sleep_millis(opts.sleep_ms);
@@ -445,8 +446,10 @@ main(int argc, char **argv)
 
     fprintf(stderr,
         "[daemon] summary: events=%" PRIu64 " edb=%zu hot=%" PRIu64
-        " rotations=%" PRIu64 " rss_kb=%" PRIu64 "\n",
-        event_id, edb.count, stats.hot_deltas, rotations, rss_kb());
+        " rotations=%" PRIu64 " saturations=%" PRIu64 " rss_kb=%" PRIu64
+        "\n",
+        event_id, edb.count, stats.hot_deltas, rotations, saturations,
+        rss_kb());
 
     wl_easy_close(session);
     edb_free(&edb);
