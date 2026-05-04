@@ -47,6 +47,7 @@ bench_backend_src = files(
   subdir_wirelog / 'columnar/progress.c',
   subdir_wirelog / 'columnar/rotation_standard.c',
   subdir_wirelog / 'columnar/rotation_pinned.c',
+  subdir_wirelog / 'columnar/compound_side.c',
   subdir_wirelog / 'util/lockfree_queue.c',
   subdir_wirelog / 'util/log.c',
   subdir_wirelog / 'util/log_emit.c',
