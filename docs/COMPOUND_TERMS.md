@@ -170,11 +170,13 @@ In rule bodies, compound terms appear with functor-application syntax:
 head(...) :- rel(x, f(a, b), y), ...
 ```
 
-The pattern `f(a, b)` in a body literal:
-- Matches any row whose compound column has functor `f` and arity 2.
-- Binds variables `a` and `b` to the compound's arguments.
-- Fails to match rows where the compound column holds a different functor or
-  the null handle.
+For `inline` compound columns, the pattern `f(a, b)` in a body literal:
+- Matches rows whose declared compound column has functor `f` and arity 2.
+- Binds variables `a` and `b` to the inline physical argument columns.
+- Fails to match rows when the declared functor or arity differs.
+
+Side-relation compound declarations are parsed and exposed in schema metadata,
+but side body-argument binding is not yet lowered into a side-relation join.
 
 ### Example: projecting a compound argument
 
@@ -188,11 +190,24 @@ x_values(id, x) :- event(id, point(x, _)).
 ### Example: filtering on a compound field
 
 ```
-.decl item(key: int64, label: tag/2)
+.decl item(key: int64, label: tag/2 inline)
 .decl hot_items(key: int64)
 
 hot_items(key) :- item(key, tag(category, priority)), priority > 10.
 ```
+
+### Current limitation: side-relation body binding
+
+Side declarations are accepted:
+
+```
+.decl event(id: int64, meta: metadata/4)
+.decl event_side(id: int64, meta: metadata/4 side)
+```
+
+The public execution path currently binds compound body variables for inline
+columns only. Support for lowering side patterns through
+`__compound_<functor>_<arity>` side-relation joins is tracked separately.
 
 ### Parser limitation: compound terms in rule heads
 
@@ -284,21 +299,6 @@ When in doubt, omit the hint. The default (`side`) is always correct.
 
 sum_rel(id, x + y) :- pair_rel(id, pair(x, y)).
 ```
-
-### Side-relation compound with filtering
-
-```
-.decl event(id: int64, meta: metadata/4)
-.decl high_risk(id: int64, tenant: int64)
-.output high_risk
-
-high_risk(id, tenant) :-
-    event(id, metadata(tenant, ts, loc, risk)),
-    risk > 100.
-```
-
-The engine creates `__compound_metadata_4` automatically. No `.decl` for the
-side relation is needed.
 
 ### Nested compound (side tier)
 

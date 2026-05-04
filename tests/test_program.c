@@ -143,6 +143,65 @@ test_decl_single_relation(void)
 }
 
 static void
+test_decl_compound_column_metadata(void)
+{
+    TEST("Compound declarations populate relation metadata");
+
+    struct wirelog_program *prog
+        = make_program(".decl Event(id: int64, payload: metadata/4, "
+            "inline_payload: metadata/4 inline, "
+            "side_payload: metadata/2 side)\n");
+    if (!prog) {
+        FAIL("program is NULL");
+        return;
+    }
+
+    const wl_ir_relation_info_t *rel = &prog->relations[0];
+    if (rel->column_count != 4) {
+        wl_ir_program_free(prog);
+        FAIL("expected 4 columns");
+        return;
+    }
+
+    int64_t metadata_id = wl_intern_get(prog->intern, "metadata");
+    if (metadata_id < 0) {
+        wl_ir_program_free(prog);
+        FAIL("metadata functor was not interned");
+        return;
+    }
+
+    if (rel->columns[1].type != WIRELOG_TYPE_INT64
+        || rel->columns[1].compound_kind != WIRELOG_COMPOUND_KIND_SIDE
+        || rel->columns[1].compound_functor_id != (uint32_t)metadata_id
+        || rel->columns[1].compound_arity != 4) {
+        wl_ir_program_free(prog);
+        FAIL("default side compound metadata is incorrect");
+        return;
+    }
+
+    if (rel->columns[2].type != WIRELOG_TYPE_INT64
+        || rel->columns[2].compound_kind != WIRELOG_COMPOUND_KIND_INLINE
+        || rel->columns[2].compound_functor_id != (uint32_t)metadata_id
+        || rel->columns[2].compound_arity != 4
+        || rel->columns[2].compound_inline_col_offset != 2) {
+        wl_ir_program_free(prog);
+        FAIL("inline compound metadata is incorrect");
+        return;
+    }
+
+    if (rel->columns[3].compound_kind != WIRELOG_COMPOUND_KIND_SIDE
+        || rel->columns[3].compound_arity != 2
+        || rel->columns[3].compound_inline_col_offset != 0) {
+        wl_ir_program_free(prog);
+        FAIL("explicit side compound metadata is incorrect");
+        return;
+    }
+
+    wl_ir_program_free(prog);
+    PASS();
+}
+
+static void
 test_input_directive(void)
 {
     TEST("Parse .input marks relation has_input");
@@ -1412,6 +1471,47 @@ test_compound_inline_annotation(void)
 }
 
 static void
+test_compound_inline_annotation_from_declaration(void)
+{
+    TEST("INLINE compound declaration annotates matching body pattern");
+
+    struct wirelog_program *prog
+        = make_program(".decl pred(id: int32, payload: f/1 inline)\n"
+            ".decl r(x: int32)\n"
+            "r(x) :- pred(id, f(x)).\n");
+    if (!prog) {
+        FAIL("program is NULL");
+        return;
+    }
+
+    if (wl_ir_program_convert_rules(prog, prog->ast) != 0) {
+        wl_ir_program_free(prog);
+        FAIL("convert_rules failed");
+        return;
+    }
+
+    const wirelog_ir_node_t *leaf
+        = find_relation_leaf(prog->rules[0].ir_root, "pred");
+    if (!leaf || leaf->type != WIRELOG_IR_COMPOUND_INLINE) {
+        wl_ir_program_free(prog);
+        FAIL("leaf type should be COMPOUND_INLINE");
+        return;
+    }
+
+    int64_t expected_fid = wl_intern_get(prog->intern, "f");
+    if (leaf->compound_inline.functor_id != (uint32_t)expected_fid
+        || leaf->compound_inline.arity != 1
+        || leaf->compound_inline.inline_col_offset != 1) {
+        wl_ir_program_free(prog);
+        FAIL("declared compound metadata incorrect on annotated leaf");
+        return;
+    }
+
+    wl_ir_program_free(prog);
+    PASS();
+}
+
+static void
 test_compound_side_annotation(void)
 {
     TEST("SIDE compound: scan->type becomes COMPOUND_SIDE with metadata");
@@ -2145,6 +2245,40 @@ test_api_get_schema(void)
 }
 
 static void
+test_api_get_schema_compound_columns(void)
+{
+    TEST("wirelog_program_get_schema exposes compound column metadata");
+
+    wirelog_program_t *prog = wirelog_parse_string(
+        ".decl Event(id: int64, payload: metadata/4 inline)\n", NULL);
+    if (!prog) {
+        FAIL("program is NULL");
+        return;
+    }
+
+    const wirelog_schema_t *schema
+        = wirelog_program_get_schema(prog, "Event");
+    if (!schema || schema->column_count != 2) {
+        wirelog_program_free(prog);
+        FAIL("schema for Event should have 2 columns");
+        return;
+    }
+
+    const wirelog_column_t *payload = &schema->columns[1];
+    if (payload->type != WIRELOG_TYPE_INT64
+        || payload->compound_kind != WIRELOG_COMPOUND_KIND_INLINE
+        || payload->compound_arity != 4
+        || payload->compound_inline_col_offset != 1) {
+        wirelog_program_free(prog);
+        FAIL("payload compound metadata is incorrect");
+        return;
+    }
+
+    wirelog_program_free(prog);
+    PASS();
+}
+
+static void
 test_api_get_schema_null(void)
 {
     TEST("wirelog_program_get_schema(nonexistent) returns NULL");
@@ -2820,6 +2954,7 @@ main(void)
 
     /* Metadata collection */
     test_decl_single_relation();
+    test_decl_compound_column_metadata();
     test_input_directive();
     test_input_directive_param_names_values();
     test_input_io_scheme_present();
@@ -2855,6 +2990,7 @@ main(void)
 
     /* Phase 2B: compound column IR lowering (Issue #531/#539) */
     test_compound_inline_annotation();
+    test_compound_inline_annotation_from_declaration();
     test_compound_side_annotation();
     test_compound_annotation_not_wrapped();
     test_compound_mixed_columns();
@@ -2897,6 +3033,7 @@ main(void)
     test_api_parse_string_error();
     test_api_get_rule_count();
     test_api_get_schema();
+    test_api_get_schema_compound_columns();
     test_api_get_schema_null();
     test_api_get_stratum_count();
     test_api_get_stratum();
