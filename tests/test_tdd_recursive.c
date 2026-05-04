@@ -122,6 +122,27 @@ count_rows(wl_col_session_t *sess, const char *name)
     return r ? r->nrows : 0;
 }
 
+static int
+relation_rows_equal(wl_col_session_t *left, wl_col_session_t *right,
+    const char *name)
+{
+    col_rel_t *lr = session_find_rel(left, name);
+    col_rel_t *rr = session_find_rel(right, name);
+    if (!lr || !rr)
+        return lr == rr;
+    if (lr->ncols != rr->ncols || lr->nrows != rr->nrows)
+        return 0;
+
+    col_rel_radix_sort_int64(lr);
+    col_rel_radix_sort_int64(rr);
+
+    for (uint32_t c = 0; c < lr->ncols; c++)
+        for (uint32_t r = 0; r < lr->nrows; r++)
+            if (lr->columns[c][r] != rr->columns[c][r])
+                return 0;
+    return 1;
+}
+
 /* ======================================================================== */
 /* Tests                                                                    */
 /* ======================================================================== */
@@ -646,8 +667,7 @@ test_bdx_selfjoin_w2(void)
     int rc1 = wl_session_step(&s1->base);
     int rc2 = wl_session_step(&s2->base);
 
-    uint32_t cnt1 = count_rows(s1, "r");
-    uint32_t cnt2 = count_rows(s2, "r");
+    int equal = relation_rows_equal(s1, s2, "r");
 
     cleanup_session(s1, p1, pr1);
     cleanup_session(s2, p2, pr2);
@@ -656,8 +676,8 @@ test_bdx_selfjoin_w2(void)
         FAIL("session step failed");
         return 1;
     }
-    if (cnt1 != cnt2) {
-        FAIL("BDX W=2 row count differs from W=1");
+    if (!equal) {
+        FAIL("BDX W=2 row set differs from W=1");
         return 1;
     }
     PASS();
@@ -686,8 +706,7 @@ test_bdx_selfjoin_w4(void)
     int rc1 = wl_session_step(&s1->base);
     int rc4 = wl_session_step(&s4->base);
 
-    uint32_t cnt1 = count_rows(s1, "r");
-    uint32_t cnt4 = count_rows(s4, "r");
+    int equal = relation_rows_equal(s1, s4, "r");
 
     cleanup_session(s1, p1, pr1);
     cleanup_session(s4, p4, pr4);
@@ -696,8 +715,49 @@ test_bdx_selfjoin_w4(void)
         FAIL("session step failed");
         return 1;
     }
-    if (cnt1 != cnt4) {
-        FAIL("BDX W=4 row count differs from W=1");
+    if (!equal) {
+        FAIL("BDX W=4 row set differs from W=1");
+        return 1;
+    }
+    PASS();
+    return 0;
+}
+
+static int
+test_bdx_selfjoin_w4_shuffled_duplicates(void)
+{
+    TEST("BDX self-join W=4 shuffled duplicate edges matches W=1 rows");
+
+    wl_plan_t *p1, *p4;
+    wirelog_program_t *pr1, *pr4;
+    wl_col_session_t *s1 = make_selfjoin_tc_session(1, &p1, &pr1);
+    wl_col_session_t *s4 = make_selfjoin_tc_session(4, &p4, &pr4);
+    if (!s1 || !s4) {
+        FAIL("session creation failed");
+        return 1;
+    }
+
+    int64_t edges[] = {
+        3, 4, 1, 2, 2, 3, 4, 5, 2, 3,
+        1, 2, 5, 6, 3, 4, 6, 7, 4, 5
+    };
+    insert_edges(s1, edges, 10);
+    insert_edges(s4, edges, 10);
+
+    int rc1 = wl_session_step(&s1->base);
+    int rc4 = wl_session_step(&s4->base);
+
+    int equal = relation_rows_equal(s1, s4, "r");
+
+    cleanup_session(s1, p1, pr1);
+    cleanup_session(s4, p4, pr4);
+
+    if (rc1 != 0 || rc4 != 0) {
+        FAIL("session step failed");
+        return 1;
+    }
+    if (!equal) {
+        FAIL("BDX W=4 shuffled duplicate row set differs from W=1");
         return 1;
     }
     PASS();
@@ -883,6 +943,7 @@ main(void)
     test_triple_idb_guard();
     test_bdx_selfjoin_w2();
     test_bdx_selfjoin_w4();
+    test_bdx_selfjoin_w4_shuffled_duplicates();
     test_filt_arr_bench_w1();
     test_filt_arr_bench_w4();
 
