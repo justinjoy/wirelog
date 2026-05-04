@@ -50,10 +50,10 @@ crc32_hw_available(void)
     /* CPUID leaf 1, ECX bit 20 = SSE4.2 (includes CRC32 instruction) */
     /* Note: MSVC does not support GCC-style inline asm, disable HW accel on Windows */
     unsigned int eax, ebx, ecx, edx;
-    __asm__ volatile("cpuid"
-                     : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
-                     : "a"(1), "c"(0));
-    return (ecx >> 20) & 1;
+    __asm__ volatile ("cpuid"
+    : "=a" (eax), "=b" (ebx), "=c" (ecx), "=d" (edx)
+    : "a" (1), "c" (0));
+    return ((ecx >> 20) & 1U) != 0U;
 #elif defined(WL_ARCH_ARM64) && !defined(_MSC_VER)
 #if defined(__APPLE__)
     /* Apple Silicon always has CRC32 extension */
