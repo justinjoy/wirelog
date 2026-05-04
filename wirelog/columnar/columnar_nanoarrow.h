@@ -372,6 +372,11 @@ col_session_get_exchange_time_ns(wl_session_t *sess,
  * @param sess                 A wl_session_t* backed by the columnar backend.
  * @param out_total_ns         Total recursive TDD evaluator wall time.
  * @param out_dispatch_wait_ns Submit loop plus wl_workqueue_wait_all time.
+ * @param out_submit_loop_ns   Workqueue submit loop wall time.
+ * @param out_wait_barrier_ns  wl_workqueue_wait_all barrier wall time.
+ * @param out_worker_sum_ns    Sum of worker sub-pass wall runtimes.
+ * @param out_worker_max_ns    Sum of per-sub-pass maximum worker runtimes.
+ * @param out_idle_estimate_ns Estimated barrier/idle time: max(wait - worker max, 0).
  * @param out_queue_drain_ns   MPSC drain plus delta matrix reconstruction time.
  * @param out_convergence_ns   Worker empty-delta and convergence checks.
  * @param out_exchange_ns      Recursive TDD exchange scatter/gather time.
@@ -379,7 +384,10 @@ col_session_get_exchange_time_ns(wl_session_t *sess,
  */
 void
 col_session_get_tdd_perf_stats(wl_session_t *sess, uint64_t *out_total_ns,
-    uint64_t *out_dispatch_wait_ns, uint64_t *out_queue_drain_ns,
+    uint64_t *out_dispatch_wait_ns, uint64_t *out_submit_loop_ns,
+    uint64_t *out_wait_barrier_ns, uint64_t *out_worker_sum_ns,
+    uint64_t *out_worker_max_ns, uint64_t *out_idle_estimate_ns,
+    uint64_t *out_queue_drain_ns,
     uint64_t *out_convergence_ns, uint64_t *out_exchange_ns,
     uint64_t *out_final_merge_ns);
 

@@ -66,6 +66,11 @@ static double g_last_wall_ms = 0.0;
 /* TDD recursive profiling counters (#650). */
 static uint64_t g_last_tdd_total_ns = 0;
 static uint64_t g_last_tdd_dispatch_wait_ns = 0;
+static uint64_t g_last_tdd_submit_loop_ns = 0;
+static uint64_t g_last_tdd_wait_barrier_ns = 0;
+static uint64_t g_last_tdd_worker_sum_ns = 0;
+static uint64_t g_last_tdd_worker_max_ns = 0;
+static uint64_t g_last_tdd_idle_estimate_ns = 0;
 static uint64_t g_last_tdd_queue_drain_ns = 0;
 static uint64_t g_last_tdd_convergence_ns = 0;
 static uint64_t g_last_tdd_exchange_ns = 0;
@@ -338,7 +343,10 @@ run_pipeline_count(const char *source, uint32_t num_workers, int64_t *out_count,
         &g_last_consolidate_slow_hits);
     col_session_get_exchange_time_ns(sess, &g_last_exchange_ns);
     col_session_get_tdd_perf_stats(sess, &g_last_tdd_total_ns,
-        &g_last_tdd_dispatch_wait_ns, &g_last_tdd_queue_drain_ns,
+        &g_last_tdd_dispatch_wait_ns, &g_last_tdd_submit_loop_ns,
+        &g_last_tdd_wait_barrier_ns, &g_last_tdd_worker_sum_ns,
+        &g_last_tdd_worker_max_ns, &g_last_tdd_idle_estimate_ns,
+        &g_last_tdd_queue_drain_ns,
         &g_last_tdd_convergence_ns, &g_last_tdd_exchange_ns,
         &g_last_tdd_final_merge_ns);
 
@@ -971,7 +979,10 @@ run_tdd_bdx_pipeline(const int64_t *rows, uint32_t edge_count,
         &g_last_consolidate_slow_hits);
     col_session_get_exchange_time_ns(sess, &g_last_exchange_ns);
     col_session_get_tdd_perf_stats(sess, &g_last_tdd_total_ns,
-        &g_last_tdd_dispatch_wait_ns, &g_last_tdd_queue_drain_ns,
+        &g_last_tdd_dispatch_wait_ns, &g_last_tdd_submit_loop_ns,
+        &g_last_tdd_wait_barrier_ns, &g_last_tdd_worker_sum_ns,
+        &g_last_tdd_worker_max_ns, &g_last_tdd_idle_estimate_ns,
+        &g_last_tdd_queue_drain_ns,
         &g_last_tdd_convergence_ns, &g_last_tdd_exchange_ns,
         &g_last_tdd_final_merge_ns);
 
@@ -2946,9 +2957,17 @@ output_json_row(const char *wl_name, int32_t edges, uint32_t workers,
         (double)g_last_tdd_total_ns / 1e6);
     printf("  \"tdd_total_pct\": %.1f,\n", tdd_total_pct);
     printf("  \"tdd_phase_ms\": {\"dispatch_wait\": %.4f, "
+        "\"submit_loop\": %.4f, \"wait_barrier\": %.4f, "
+        "\"worker_sum\": %.4f, \"worker_max\": %.4f, "
+        "\"idle_estimate\": %.4f, "
         "\"queue_drain\": %.4f, \"convergence\": %.4f, "
         "\"exchange\": %.4f, \"final_merge\": %.4f},\n",
         (double)g_last_tdd_dispatch_wait_ns / 1e6,
+        (double)g_last_tdd_submit_loop_ns / 1e6,
+        (double)g_last_tdd_wait_barrier_ns / 1e6,
+        (double)g_last_tdd_worker_sum_ns / 1e6,
+        (double)g_last_tdd_worker_max_ns / 1e6,
+        (double)g_last_tdd_idle_estimate_ns / 1e6,
         (double)g_last_tdd_queue_drain_ns / 1e6,
         (double)g_last_tdd_convergence_ns / 1e6,
         (double)g_last_tdd_exchange_ns / 1e6,

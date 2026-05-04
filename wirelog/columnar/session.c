@@ -276,7 +276,10 @@ col_session_get_exchange_time_ns(wl_session_t *sess,
  */
 void
 col_session_get_tdd_perf_stats(wl_session_t *sess, uint64_t *out_total_ns,
-    uint64_t *out_dispatch_wait_ns, uint64_t *out_queue_drain_ns,
+    uint64_t *out_dispatch_wait_ns, uint64_t *out_submit_loop_ns,
+    uint64_t *out_wait_barrier_ns, uint64_t *out_worker_sum_ns,
+    uint64_t *out_worker_max_ns, uint64_t *out_idle_estimate_ns,
+    uint64_t *out_queue_drain_ns,
     uint64_t *out_convergence_ns, uint64_t *out_exchange_ns,
     uint64_t *out_final_merge_ns)
 {
@@ -285,6 +288,16 @@ col_session_get_tdd_perf_stats(wl_session_t *sess, uint64_t *out_total_ns,
         *out_total_ns = cs->tdd_total_ns;
     if (out_dispatch_wait_ns)
         *out_dispatch_wait_ns = cs->tdd_dispatch_wait_ns;
+    if (out_submit_loop_ns)
+        *out_submit_loop_ns = cs->tdd_submit_loop_ns;
+    if (out_wait_barrier_ns)
+        *out_wait_barrier_ns = cs->tdd_wait_barrier_ns;
+    if (out_worker_sum_ns)
+        *out_worker_sum_ns = cs->tdd_worker_sum_ns;
+    if (out_worker_max_ns)
+        *out_worker_max_ns = cs->tdd_worker_max_ns;
+    if (out_idle_estimate_ns)
+        *out_idle_estimate_ns = cs->tdd_idle_estimate_ns;
     if (out_queue_drain_ns)
         *out_queue_drain_ns = cs->tdd_queue_drain_ns;
     if (out_convergence_ns)
@@ -1812,6 +1825,11 @@ col_session_snapshot(wl_session_t *session, wl_on_tuple_fn callback,
     sess->exchange_time_ns = 0;
     sess->tdd_total_ns = 0;
     sess->tdd_dispatch_wait_ns = 0;
+    sess->tdd_submit_loop_ns = 0;
+    sess->tdd_wait_barrier_ns = 0;
+    sess->tdd_worker_sum_ns = 0;
+    sess->tdd_worker_max_ns = 0;
+    sess->tdd_idle_estimate_ns = 0;
     sess->tdd_queue_drain_ns = 0;
     sess->tdd_convergence_ns = 0;
     sess->tdd_exchange_ns = 0;
