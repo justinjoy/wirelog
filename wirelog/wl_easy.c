@@ -211,9 +211,10 @@ wirelog_error_t
 wirelog_easy_make_compound(wl_easy_session_t *s, const char *functor,
     uint32_t arity, const wirelog_compound_arg_t *args, uint64_t *handle_out)
 {
+    if (handle_out)
+        *handle_out = WIRELOG_COMPOUND_HANDLE_NULL;
     if (!s || !functor || !args || arity == 0 || !handle_out)
         return WIRELOG_ERR_EXEC;
-    *handle_out = 0;
 
     wirelog_error_t err = ensure_plan_built(s, s->num_workers);
     if (err != WIRELOG_OK)

@@ -1262,6 +1262,22 @@ col_session_insert(wl_session_t *session, const char *relation,
     return 0;
 }
 
+static bool
+compound_arg_type_valid(wirelog_column_type_t type)
+{
+    switch (type) {
+    case WIRELOG_TYPE_INT32:
+    case WIRELOG_TYPE_INT64:
+    case WIRELOG_TYPE_UINT32:
+    case WIRELOG_TYPE_UINT64:
+    case WIRELOG_TYPE_FLOAT:
+    case WIRELOG_TYPE_STRING:
+    case WIRELOG_TYPE_BOOL:
+        return true;
+    }
+    return false;
+}
+
 static int
 col_session_make_compound(wl_session_t *session, const char *functor,
     uint32_t arity, const wirelog_compound_arg_t *args, uint64_t *handle_out)
@@ -1274,6 +1290,10 @@ col_session_make_compound(wl_session_t *session, const char *functor,
         return EOVERFLOW;
     if (arity > UINT32_MAX / (uint32_t)sizeof(int64_t))
         return EOVERFLOW;
+    for (uint32_t i = 0; i < arity; i++) {
+        if (!compound_arg_type_valid(args[i].type))
+            return EINVAL;
+    }
 
     wl_col_session_t *sess = COL_SESSION(session);
     if (!sess || !sess->compound_arena)
