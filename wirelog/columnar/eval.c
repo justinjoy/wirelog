@@ -2399,14 +2399,9 @@ tdd_dedup_rel(col_rel_t *r)
  * Merge src (sorted, no overlap with dst) into dst (sorted), maintaining
  * lexicographic sorted order.  O(N + D) where N = dst->nrows, D = src->nrows.
  *
- * Preconditions (caller guarantees):
- *   - dst->columns[] rows are in sorted (lexicographic) order
- *   - src->columns[] rows are in sorted order
- *   - No row appears in both dst and src (guaranteed by bdx_merge_diff)
- *
- * Replaces col_rel_append_all + tdd_dedup_rel(dst) in tdd_bdx_exchange_deltas
- * to keep the coordinator IDB sorted for bdx_merge_diff on the next iteration.
- * Issue #390.
+ * Kept with external linkage for compatibility with the existing non-header
+ * symbol.  The BDX coordinator path no longer calls it because BDX deltas are
+ * not guaranteed to arrive sorted.
  */
 int
 tdd_sorted_merge_append(col_rel_t *dst, col_rel_t *src)
@@ -2451,31 +2446,37 @@ tdd_sorted_merge_append(col_rel_t *dst, col_rel_t *src)
             int64_t a = dst->merge_columns[c][i];
             int64_t b = src->columns[c][j];
             if (a < b) {
-                cmp = -1; break;
+                cmp = -1;
+                break;
             }
             if (a > b) {
-                cmp = 1; break;
+                cmp = 1;
+                break;
             }
         }
         if (cmp <= 0) {
             col_columns_copy_row(dst->columns, wr,
                 (int64_t *const *)dst->merge_columns, i, ncols);
-            i++; wr++;
+            i++;
+            wr++;
         } else {
             col_columns_copy_row(dst->columns, wr,
                 (int64_t *const *)src->columns, j, ncols);
-            j++; wr++;
+            j++;
+            wr++;
         }
     }
     while (i < N) {
         col_columns_copy_row(dst->columns, wr,
             (int64_t *const *)dst->merge_columns, i, ncols);
-        i++; wr++;
+        i++;
+        wr++;
     }
     while (j < D) {
         col_columns_copy_row(dst->columns, wr,
             (int64_t *const *)src->columns, j, ncols);
-        j++; wr++;
+        j++;
+        wr++;
     }
     dst->nrows = total;
     return 0;
@@ -3768,64 +3769,82 @@ tdd_check_convergence(const col_eval_tdd_worker_ctx_t *ctxs, uint32_t W)
 }
 
 /*
- * bdx_row_cmp:
- * Compare row i from relation a with row j from relation b.
- * Both must have the same ncols.  Returns <0, 0, or >0.
+ * bdx_hash_diff:
+ * Remove from delta any row that already exists in base.  This exact
+ * hash-table diff does not require sorted inputs, which matches the current
+ * BDX data flow where worker deltas are appended in partition order and
+ * tdd_dedup_rel() may preserve unsorted encounter order.
  */
-static inline int
-bdx_row_cmp(const col_rel_t *a, uint32_t i,
-    const col_rel_t *b, uint32_t j, uint32_t ncols)
-{
-    for (uint32_t c = 0; c < ncols; c++) {
-        int64_t va = a->columns[c][i];
-        int64_t vb = b->columns[c][j];
-        if (va < vb) return -1;
-        if (va > vb) return 1;
-    }
-    return 0;
-}
-
-/*
- * bdx_merge_diff:
- * Given sorted+deduped 'delta' and sorted+deduped 'base', remove from
- * delta any row that also appears in base.  Operates in-place on delta.
- * Both delta and base must be sorted by the same column order (radix sort).
- */
-static void
-bdx_merge_diff(col_rel_t *delta, const col_rel_t *base)
+static int
+bdx_hash_diff(col_rel_t *delta, const col_rel_t *base)
 {
     if (!delta || delta->nrows == 0 || !base || base->nrows == 0)
-        return;
-    uint32_t ncols = delta->ncols;
-    uint32_t di = 0, bi = 0, wr = 0;
-    while (di < delta->nrows && bi < base->nrows) {
-        int cmp = bdx_row_cmp(delta, di, base, bi, ncols);
-        if (cmp < 0) {
-            /* delta[di] < base[bi]: new row, keep it */
-            if (wr != di) {
-                for (uint32_t c = 0; c < ncols; c++)
-                    delta->columns[c][wr] = delta->columns[c][di];
-            }
-            wr++;
-            di++;
-        } else if (cmp > 0) {
-            bi++;
-        } else {
-            /* duplicate: skip */
-            di++;
-            bi++;
-        }
+        return 0;
+    if (delta->ncols != base->ncols)
+        return EINVAL;
+    if (base->nrows > UINT32_MAX - 1)
+        return ENOMEM;
+
+    size_t target = (size_t)base->nrows * 2;
+    size_t cap_sz = 4;
+    while (cap_sz < target) {
+        if (cap_sz > SIZE_MAX / 2)
+            return ENOMEM;
+        cap_sz <<= 1;
     }
-    /* Remaining delta rows are all > any base row: keep them */
-    while (di < delta->nrows) {
+    if (cap_sz > UINT32_MAX)
+        return ENOMEM;
+
+    uint32_t cap = (uint32_t)cap_sz;
+    uint32_t mask = cap - 1;
+    uint32_t *slots = (uint32_t *)malloc(cap * sizeof(uint32_t));
+    if (!slots)
+        return ENOMEM;
+    memset(slots, 0, cap * sizeof(uint32_t));
+
+    uint32_t ncols = base->ncols;
+    for (uint32_t i = 0; i < base->nrows; i++) {
+        uint64_t h = dedup_row_hash(base, i);
+        uint32_t slot = (uint32_t)(h & mask);
+        while (slots[slot] != 0)
+            slot = (slot + 1) & mask;
+        slots[slot] = i + 1;
+    }
+
+    uint32_t wr = 0;
+    for (uint32_t di = 0; di < delta->nrows; di++) {
+        uint64_t h = dedup_row_hash(delta, di);
+        uint32_t slot = (uint32_t)(h & mask);
+        bool found = false;
+        while (slots[slot] != 0) {
+            uint32_t bi = slots[slot] - 1;
+            bool eq = true;
+            for (uint32_t c = 0; c < ncols; c++) {
+                if (base->columns[c][bi] != delta->columns[c][di]) {
+                    eq = false;
+                    break;
+                }
+            }
+            if (eq) {
+                found = true;
+                break;
+            }
+            slot = (slot + 1) & mask;
+        }
+        if (found)
+            continue;
         if (wr != di) {
-            for (uint32_t c = 0; c < ncols; c++)
-                delta->columns[c][wr] = delta->columns[c][di];
+            col_columns_copy_row(delta->columns, wr,
+                (int64_t *const *)delta->columns, di, ncols);
+            if (delta->timestamps)
+                delta->timestamps[wr] = delta->timestamps[di];
         }
         wr++;
-        di++;
     }
+
+    free(slots);
     delta->nrows = wr;
+    return 0;
 }
 
 /*
@@ -3906,8 +3925,13 @@ tdd_bdx_exchange_deltas(const wl_plan_stratum_t *sp,
             tdd_dedup_rel(combined);
 
         col_rel_t *coord_idb = session_find_rel(coord, rel_name);
-        if (coord_idb && coord_idb->nrows > 0 && combined->nrows > 0)
-            bdx_merge_diff(combined, coord_idb);
+        if (coord_idb && coord_idb->nrows > 0 && combined->nrows > 0) {
+            rc = bdx_hash_diff(combined, coord_idb);
+            if (rc != 0) {
+                col_rel_destroy(combined);
+                return rc;
+            }
+        }
 
         if (combined->nrows == 0) {
             col_rel_destroy(combined);
@@ -3925,19 +3949,11 @@ tdd_bdx_exchange_deltas(const wl_plan_stratum_t *sp,
                     return rc;
                 }
             }
-            /* Phase 0 optimization (#406): Use sorted merge-append instead of
-             * append-then-sort. Since combined_delta is already deduped
-             * against coord_idb, merge-append maintains sort order in O(N+D)
-             * time instead of O(N log N) full re-sort. */
-            rc = tdd_sorted_merge_append(coord_idb, combined);
+            rc = col_rel_append_all(coord_idb, combined, NULL);
             if (rc != 0) {
                 col_rel_destroy(combined);
                 return rc;
             }
-            /* Dedup any duplicate rows from merge (safety check).
-             * With presort check, this becomes O(N) if already sorted. */
-            if (coord_idb->nrows > 1)
-                tdd_dedup_rel(coord_idb);
         }
 
         /* Step 4: Truncate worker IDB to pre-subpass snapshot */
