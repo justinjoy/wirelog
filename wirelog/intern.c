@@ -12,6 +12,7 @@
 
 #include "intern.h"
 
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -71,14 +72,16 @@ fnv1a(const char *str)
 static int
 intern_resize(wl_intern_t *intern)
 {
-    uint32_t new_cap = intern->slot_capacity * 2;
+    if (intern->slot_capacity > UINT32_MAX / 2U)
+        return -1;
+    uint32_t new_cap = intern->slot_capacity * 2U;
     wl_intern_slot_t *new_slots
-        = (wl_intern_slot_t *)malloc(new_cap * sizeof(wl_intern_slot_t));
+        = (wl_intern_slot_t *)malloc((size_t)new_cap
+            * sizeof(wl_intern_slot_t));
     if (!new_slots)
         return -1;
 
-    for (uint32_t i = 0; i < new_cap; i++)
-        new_slots[i].string_id = SLOT_EMPTY;
+    memset(new_slots, 0xff, (size_t)new_cap * sizeof(wl_intern_slot_t));
 
     /* Re-insert all existing entries */
     for (uint32_t i = 0; i < intern->count; i++) {
@@ -114,7 +117,7 @@ wl_intern_create(void)
 
     intern->slot_capacity = INTERN_INITIAL_CAP;
     intern->slots = (wl_intern_slot_t *)malloc(intern->slot_capacity
-                                               * sizeof(wl_intern_slot_t));
+            * sizeof(wl_intern_slot_t));
     if (!intern->slots) {
         free((void *)intern->strings);
         free(intern);
@@ -160,9 +163,11 @@ wl_intern_put(wl_intern_t *intern, const char *str)
 
     /* New string: grow string array if needed */
     if (intern->count >= intern->string_capacity) {
-        uint32_t new_cap = intern->string_capacity * 2;
+        if (intern->string_capacity > UINT32_MAX / 2U)
+            return -1;
+        uint32_t new_cap = intern->string_capacity * 2U;
         char **new_strs = (char **)realloc((void *)intern->strings,
-                                           new_cap * sizeof(char *));
+                (size_t)new_cap * sizeof(char *));
         if (!new_strs)
             return -1;
         intern->strings = new_strs;
@@ -175,19 +180,23 @@ wl_intern_put(wl_intern_t *intern, const char *str)
         return -1;
     memcpy(copy, str, slen + 1);
 
+    /* Resize hash table before insertion if the new entry would exceed the load factor. */
+    if ((uint64_t)(intern->count + 1U) * INTERN_LOAD_FACTOR_DEN
+        > (uint64_t)intern->slot_capacity * INTERN_LOAD_FACTOR_NUM) {
+        if (intern_resize(intern) != 0) {
+            free(copy);
+            return -1;
+        }
+        mask = intern->slot_capacity - 1U;
+        h = fnv1a(str) & mask;
+        while (intern->slots[h].string_id != SLOT_EMPTY)
+            h = (h + 1U) & mask;
+    }
+
     uint32_t new_id = intern->count;
     intern->strings[new_id] = copy;
     intern->count++;
-
-    /* Insert into hash table */
     intern->slots[h].string_id = new_id;
-
-    /* Resize hash table if load factor exceeded */
-    if (intern->count * INTERN_LOAD_FACTOR_DEN
-        > intern->slot_capacity * INTERN_LOAD_FACTOR_NUM) {
-        if (intern_resize(intern) != 0)
-            return -1; /* resize failed but entry is already stored */
-    }
 
     return (int64_t)new_id;
 }
