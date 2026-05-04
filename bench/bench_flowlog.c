@@ -61,6 +61,15 @@ static uint64_t g_last_consolidate_fast_hits = 0;
 static uint64_t g_last_consolidate_slow_hits = 0;
 /* Exchange barrier timing (Issue #413): serial fraction measurement */
 static uint64_t g_last_exchange_ns = 0;
+/* Last successful trial wall time, paired with last-run profiling counters. */
+static double g_last_wall_ms = 0.0;
+/* TDD recursive profiling counters (#650). */
+static uint64_t g_last_tdd_total_ns = 0;
+static uint64_t g_last_tdd_dispatch_wait_ns = 0;
+static uint64_t g_last_tdd_queue_drain_ns = 0;
+static uint64_t g_last_tdd_convergence_ns = 0;
+static uint64_t g_last_tdd_exchange_ns = 0;
+static uint64_t g_last_tdd_final_merge_ns = 0;
 
 #ifndef WITH_K_FUSION
 #define WITH_K_FUSION 1
@@ -328,6 +337,10 @@ run_pipeline_count(const char *source, uint32_t num_workers, int64_t *out_count,
     col_session_get_consolidation_stats(sess, &g_last_consolidate_fast_hits,
         &g_last_consolidate_slow_hits);
     col_session_get_exchange_time_ns(sess, &g_last_exchange_ns);
+    col_session_get_tdd_perf_stats(sess, &g_last_tdd_total_ns,
+        &g_last_tdd_dispatch_wait_ns, &g_last_tdd_queue_drain_ns,
+        &g_last_tdd_convergence_ns, &g_last_tdd_exchange_ns,
+        &g_last_tdd_final_merge_ns);
 
     wl_session_destroy(sess);
     wl_plan_free(plan);
@@ -401,6 +414,7 @@ run_workload(int wl_id, const char *data_path, uint32_t workers, int repeat)
             status_ok = 0;
             break;
         }
+        g_last_wall_ms = times[r];
         tuples = cnt;
         total_iters = iters;
     }
@@ -536,6 +550,7 @@ run_andersen_workload(const char *data_dir, uint32_t workers, int repeat)
             status_ok = 0;
             break;
         }
+        g_last_wall_ms = times[r];
         tuples = cnt;
         total_iters = iters;
     }
@@ -669,6 +684,7 @@ run_dyck_workload(const char *data_dir, uint32_t workers, int repeat)
             status_ok = 0;
             break;
         }
+        g_last_wall_ms = times[r];
         tuples = cnt;
         total_iters = iters;
     }
@@ -794,6 +810,7 @@ run_cspa_workload(const char *data_dir, uint32_t workers, int repeat)
             status_ok = 0;
             break;
         }
+        g_last_wall_ms = times[r];
         tuples = cnt;
         total_iters = iters;
     }
@@ -1293,6 +1310,7 @@ run_csda_workload(const char *data_dir, uint32_t workers, int repeat)
             status_ok = 0;
             break;
         }
+        g_last_wall_ms = times[r];
         tuples = cnt;
         total_iters = iters;
     }
@@ -1425,6 +1443,7 @@ run_galen_workload(const char *data_dir, uint32_t workers, int repeat)
             status_ok = 0;
             break;
         }
+        g_last_wall_ms = times[r];
         tuples = cnt;
         total_iters = iters;
     }
@@ -1690,6 +1709,7 @@ run_polonius_workload(const char *data_dir, uint32_t workers, int repeat)
             status_ok = 0;
             break;
         }
+        g_last_wall_ms = times[r];
         tuples = cnt;
         total_iters = iters;
     }
@@ -1883,6 +1903,7 @@ run_ddisasm_workload(const char *data_dir, uint32_t workers, int repeat)
             status_ok = 0;
             break;
         }
+        g_last_wall_ms = times[r];
         tuples = cnt;
         total_iters = iters;
     }
@@ -2057,6 +2078,7 @@ run_crdt_workload(const char *data_dir, uint32_t workers, int repeat)
             status_ok = 0;
             break;
         }
+        g_last_wall_ms = times[r];
         tuples = cnt;
         total_iters = iters;
     }
@@ -2628,6 +2650,7 @@ run_doop_workload(const char *data_dir, uint32_t workers, int repeat)
             status_ok = 0;
             break;
         }
+        g_last_wall_ms = times[r];
         tuples = cnt;
         total_iters = iters;
     }
@@ -2668,8 +2691,8 @@ run_doop_workload(const char *data_dir, uint32_t workers, int repeat)
 /*
  * output_json_row: emit one benchmark result as a JSON object (3B-003).
  *
- * Percentages are computed relative to median wall time.
- * consolidation_ns and kfusion_ns come from g_last_* (last run only).
+ * Whole-run percentages use median wall time.  Last-run profiling fractions
+ * use g_last_wall_ms so numerator and denominator come from the same trial.
  * evaluation_pct = 100 - consolidation_pct - kfusion_pct (residual).
  */
 static void
@@ -2682,6 +2705,9 @@ output_json_row(const char *wl_name, int32_t edges, uint32_t workers,
     uint64_t exchange_ns)
 {
     double wall_ns = median_ms * 1e6;
+    double profiling_wall_ns = g_last_wall_ms > 0.0
+        ? g_last_wall_ms * 1e6
+        : wall_ns;
     double cons_pct
         = wall_ns > 0 ? 100.0 * (double)consolidation_ns / wall_ns : 0.0;
     double kfus_pct = wall_ns > 0 ? 100.0 * (double)kfusion_ns / wall_ns : 0.0;
@@ -2744,7 +2770,9 @@ output_json_row(const char *wl_name, int32_t edges, uint32_t workers,
      * Dispatch time (alloc → worker parallelism → merge) is already factored in. */
     double kf_serial_ns = (double)kfusion_alloc_ns + (double)kfusion_merge_ns
         + (double)kfusion_cleanup_ns;
-    double kf_serial_frac = wall_ns > 0 ? kf_serial_ns / wall_ns : 0.0;
+    double kf_serial_frac = profiling_wall_ns > 0
+        ? kf_serial_ns / profiling_wall_ns
+        : 0.0;
     printf("  \"kfusion_serial_ms\": %.3f,\n", kf_serial_ns / 1e6);
     printf("  \"kfusion_serial_fraction\": %.4f,\n", kf_serial_frac);
     /* Exchange barrier timing (Issue #413): fraction of wall time in serial
@@ -2753,9 +2781,35 @@ output_json_row(const char *wl_name, int32_t edges, uint32_t workers,
      * This is a lower bound on the true Amdahl serial fraction f — queue
      * drain and convergence check are not included. */
     double exch_ms = (double)exchange_ns / 1e6;
-    double exch_frac = wall_ns > 0 ? (double)exchange_ns / wall_ns : 0.0;
+    double exch_frac = profiling_wall_ns > 0
+        ? (double)exchange_ns / profiling_wall_ns
+        : 0.0;
     printf("  \"exchange_ms\": %.3f,\n", exch_ms);
     printf("  \"exchange_fraction\": %.4f,\n", exch_frac);
+    double tdd_phase_ns = (double)g_last_tdd_dispatch_wait_ns
+        + (double)g_last_tdd_queue_drain_ns
+        + (double)g_last_tdd_convergence_ns
+        + (double)g_last_tdd_exchange_ns
+        + (double)g_last_tdd_final_merge_ns;
+    double tdd_total_pct = profiling_wall_ns > 0
+        ? 100.0 * (double)g_last_tdd_total_ns / profiling_wall_ns
+        : 0.0;
+    double tdd_accounted_pct = g_last_tdd_total_ns > 0
+        ? 100.0 * tdd_phase_ns / (double)g_last_tdd_total_ns
+        : 0.0;
+    printf("  \"profiling_wall_ms\": %.3f,\n", g_last_wall_ms);
+    printf("  \"tdd_total_ms\": %.3f,\n",
+        (double)g_last_tdd_total_ns / 1e6);
+    printf("  \"tdd_total_pct\": %.1f,\n", tdd_total_pct);
+    printf("  \"tdd_phase_ms\": {\"dispatch_wait\": %.4f, "
+        "\"queue_drain\": %.4f, \"convergence\": %.4f, "
+        "\"exchange\": %.4f, \"final_merge\": %.4f},\n",
+        (double)g_last_tdd_dispatch_wait_ns / 1e6,
+        (double)g_last_tdd_queue_drain_ns / 1e6,
+        (double)g_last_tdd_convergence_ns / 1e6,
+        (double)g_last_tdd_exchange_ns / 1e6,
+        (double)g_last_tdd_final_merge_ns / 1e6);
+    printf("  \"tdd_accounted_pct\": %.1f,\n", tdd_accounted_pct);
     printf("  \"profiling_from_last_run\": true\n");
     printf("}\n");
 }

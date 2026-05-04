@@ -4023,6 +4023,7 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
     uint32_t W = coord->num_workers;
     uint32_t nrels = sp->relation_count;
     int rc = 0;
+    uint64_t tdd_total_t0 = now_ns();
 
     /* Pre-register empty IDB relations on coordinator (eval.c:291-304) */
     for (uint32_t ri = 0; ri < nrels; ri++) {
@@ -4030,11 +4031,14 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
             continue;
         col_rel_t *empty = NULL;
         int alloc_rc = col_rel_alloc(&empty, sp->relations[ri].name);
-        if (alloc_rc != 0)
+        if (alloc_rc != 0) {
+            coord->tdd_total_ns += now_ns() - tdd_total_t0;
             return ENOMEM;
+        }
         alloc_rc = session_add_rel(coord, empty);
         if (alloc_rc != 0) {
             col_rel_destroy(empty);
+            coord->tdd_total_ns += now_ns() - tdd_total_t0;
             return alloc_rc;
         }
     }
@@ -4096,13 +4100,16 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
         rc = tdd_replicate_workers(coord);
     else
         rc = tdd_init_workers_hybrid(sp, coord);
-    if (rc != 0)
+    if (rc != 0) {
+        coord->tdd_total_ns += now_ns() - tdd_total_t0;
         return rc;
+    }
 
     /* Pre-register empty IDB on each worker */
     rc = tdd_preregister_idb_on_workers(sp, coord);
     if (rc != 0) {
         tdd_cleanup_workers(coord);
+        coord->tdd_total_ns += now_ns() - tdd_total_t0;
         return rc;
     }
 
@@ -4129,12 +4136,14 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
             col_rel_t *slot = col_rel_new_auto(dname, ncols_ri);
             if (!slot) {
                 tdd_cleanup_workers(coord);
+                coord->tdd_total_ns += now_ns() - tdd_total_t0;
                 return ENOMEM;
             }
             rc = session_add_rel(&coord->tdd_workers[w], slot);
             if (rc != 0) {
                 col_rel_destroy(slot);
                 tdd_cleanup_workers(coord);
+                coord->tdd_total_ns += now_ns() - tdd_total_t0;
                 return rc;
             }
         }
@@ -4353,6 +4362,7 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
 
             /* DISPATCH */
             bool submit_ok = true;
+            uint64_t dispatch_t0 = now_ns();
             for (uint32_t w = 0; w < W; w++) {
                 if (wl_workqueue_submit(coord->wq, tdd_worker_subpass_fn,
                     &ctxs[w]) != 0) {
@@ -4372,6 +4382,7 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
 
             /* BARRIER */
             wl_workqueue_wait_all(coord->wq);
+            coord->tdd_dispatch_wait_ns += now_ns() - dispatch_t0;
 
             /* Collect first worker error */
             for (uint32_t w = 0; w < W; w++) {
@@ -4390,6 +4401,7 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
              * ctxs[w].delta_rels[ri] via adapter.  Workers dual-write to both
              * ctx and queue; shadow assert verifies agreement (debug only). */
             if (coord->delta_queue) {
+                uint64_t queue_t0 = now_ns();
                 uint32_t max_msgs = W * nrels;
                 wl_delta_msg_t *msgs = (wl_delta_msg_t *)calloc(
                     max_msgs > 0 ? max_msgs : 1u, sizeof(wl_delta_msg_t));
@@ -4405,7 +4417,10 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
                         W, nrels);
                     free(msgs);
                 }
+                coord->tdd_queue_drain_ns += now_ns() - queue_t0;
             }
+
+            uint64_t convergence_t0 = now_ns();
 
             /* Stratum-level early exit: all workers have all_empty_delta */
             bool all_workers_empty = true;
@@ -4416,6 +4431,7 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
                 }
             }
             if (all_workers_empty) {
+                coord->tdd_convergence_ns += now_ns() - convergence_t0;
                 for (uint32_t w = 0; w < W; w++)
                     for (uint32_t ri = 0; ri < nrels; ri++)
                         col_rel_destroy(ctxs[w].delta_rels[ri]);
@@ -4438,12 +4454,14 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
              * detection.
              */
             if (tdd_check_convergence(ctxs, W)) {
+                coord->tdd_convergence_ns += now_ns() - convergence_t0;
                 for (uint32_t w = 0; w < W; w++)
                     for (uint32_t ri = 0; ri < nrels; ri++)
                         col_rel_destroy(ctxs[w].delta_rels[ri]);
                 converged = true;
                 break;
             }
+            coord->tdd_convergence_ns += now_ns() - convergence_t0;
 
             /* EXCHANGE: BDX for Category C, hash scatter/gather for
              * standard hybrid, broadcast for replicate/self_join_mode.
@@ -4458,7 +4476,9 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
                 else
                     brc = tdd_exchange_deltas(sp, coord, ctxs, W,
                             !replicate_mode, self_join_mode);
-                coord->exchange_time_ns += now_ns() - t0;
+                uint64_t exchange_ns = now_ns() - t0;
+                coord->exchange_time_ns += exchange_ns;
+                coord->tdd_exchange_ns += exchange_ns;
             }
 
             if (brc != 0) {
@@ -4506,14 +4526,17 @@ done:
         if (bdx_mode) {
             /* BDX mode: coordinator IDB is already maintained (monotonic
              * growth via tdd_bdx_exchange_deltas).  Just dedup final. */
+            uint64_t merge_t0 = now_ns();
             for (uint32_t ri = 0; ri < nrels; ri++) {
                 col_rel_t *r = session_find_rel(coord,
                         sp->relations[ri].name);
                 if (r && r->nrows > 1)
                     tdd_dedup_rel(r);
             }
+            coord->tdd_final_merge_ns += now_ns() - merge_t0;
         } else {
             /* Non-BDX: Merge worker IDB into coordinator */
+            uint64_t merge_t0 = now_ns();
             rc = tdd_merge_worker_results(sp, coord);
 
             /* Dedup coordinator IDB (broadcast exchange may introduce
@@ -4526,10 +4549,12 @@ done:
                         tdd_dedup_rel(r);
                 }
             }
+            coord->tdd_final_merge_ns += now_ns() - merge_t0;
         }
     }
 
     tdd_cleanup_workers(coord);
+    coord->tdd_total_ns += now_ns() - tdd_total_t0;
     return rc;
 }
 

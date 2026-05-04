@@ -842,6 +842,16 @@ typedef struct wl_col_session_t {
      * for Amdahl's Law validation at varying worker counts W.
      * Coordinator-only; reset at the start of each wl_session_snapshot(). */
     uint64_t exchange_time_ns;
+    /* TDD recursive evaluator profiling (#650).  These counters split the
+     * current queue-assisted after-barrier path into phases that can be
+     * compared across W=4/W=8/W=16 before choosing an async/exchange change.
+     * Coordinator-only; reset at the start of each wl_session_snapshot(). */
+    uint64_t tdd_total_ns;
+    uint64_t tdd_dispatch_wait_ns;
+    uint64_t tdd_queue_drain_ns;
+    uint64_t tdd_convergence_ns;
+    uint64_t tdd_exchange_ns;
+    uint64_t tdd_final_merge_ns;
     /* Phase 4: tracks which relation was just inserted via
      * col_session_insert_incremental, enables affected-stratum skip
      * optimization. Borrowed pointer; lifetime: until next session_step.
