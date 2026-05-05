@@ -82,6 +82,7 @@ destroy_mock_session(wl_col_session_t *s)
     }
     free(s->arr_entries);
     col_session_free_diff_arrangements(s);
+    col_mat_cache_clear(&s->mat_cache);
     session_rel_free_hash(s);
     delta_pool_destroy(s->delta_pool);
     free(s);
@@ -1251,6 +1252,53 @@ test_projected_materialized_join_does_not_reuse_wrong_shape(void)
 }
 
 static void
+test_materialized_join_cleans_owned_left(void)
+{
+    TEST("materialized join cleans owned left");
+
+    wl_col_session_t *sess = make_mock_session();
+    col_rel_t *left = make_project_left_rel();
+    col_rel_t *right = make_project_right_rel();
+    ASSERT_TRUE(left && right, "relations allocated");
+    ASSERT_TRUE(session_add_rel(sess, right) == 0, "right registered");
+
+    wl_plan_op_t op = {0};
+    op.op = WL_PLAN_OP_JOIN;
+    op.right_relation = "right";
+    op.key_count = 1;
+    char *lkeys[] = {"k"};
+    char *rkeys[] = {"k"};
+    op.left_keys = (const char *const *)lkeys;
+    op.right_keys = (const char *const *)rkeys;
+    op.delta_mode = WL_DELTA_FORCE_FULL;
+    op.materialized = true;
+
+    eval_stack_t stack;
+    eval_stack_init(&stack);
+    eval_stack_push(&stack, left, true);
+    int rc = col_op_join(&op, &stack, sess);
+    ASSERT_TRUE(rc == 0, "materialized join output");
+    eval_entry_t out = eval_stack_pop(&stack);
+    ASSERT_TRUE(out.rel != NULL, "result relation exists");
+    ASSERT_TRUE(!out.owned, "materialized result is cache-owned");
+    ASSERT_TRUE(out.rel->nrows == 2, "materialized row count");
+
+    col_rel_t *left_hit = make_project_left_rel();
+    ASSERT_TRUE(left_hit != NULL, "cache-hit left allocated");
+    eval_stack_init(&stack);
+    eval_stack_push(&stack, left_hit, true);
+    rc = col_op_join(&op, &stack, sess);
+    ASSERT_TRUE(rc == 0, "materialized cache hit output");
+    eval_entry_t hit = eval_stack_pop(&stack);
+    ASSERT_TRUE(hit.rel == out.rel, "cache hit reuses cached result");
+    ASSERT_TRUE(!hit.owned, "cache-hit result is cache-owned");
+    ASSERT_TRUE(hit.rel->nrows == 2, "cache-hit row count");
+
+    destroy_mock_session(sess);
+    PASS;
+}
+
+static void
 test_direct_standard_join_matches_serial_with_workers(void)
 {
     TEST("direct standard join matches serial output with workers");
@@ -1367,6 +1415,7 @@ main(void)
     test_projected_diff_join_emits_projected_columns();
     test_projected_unary_join_emits_projected_columns();
     test_projected_materialized_join_does_not_reuse_wrong_shape();
+    test_materialized_join_cleans_owned_left();
     test_direct_standard_join_matches_serial_with_workers();
     test_parallel_cross_join_matches_serial();
 

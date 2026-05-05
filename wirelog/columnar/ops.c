@@ -2532,6 +2532,10 @@ col_op_join(const wl_plan_op_t *op, eval_stack_t *stack, wl_col_session_t *sess)
 #ifdef WL_PROFILE
             sess->profile.join_cache_hit_ns += now_ns() - _t0_join;
 #endif
+            if (right_filtered)
+                col_rel_destroy(right_filtered);
+            if (left_e.owned)
+                col_rel_destroy(left_e.rel);
             return eval_stack_push_delta(stack, cached, false,
                        left_e.is_delta || used_right_delta);
         }
@@ -2939,8 +2943,6 @@ col_op_join(const wl_plan_op_t *op, eval_stack_t *stack, wl_col_session_t *sess)
     free(tmp);
     free(lk);
     free(rk);
-    if (left_e.owned)
-        col_rel_destroy(left);
     /* Propagate delta flag: result is a delta if left was delta OR we used
      * right-delta. This ensures subsequent JOINs in the same rule plan know
      * whether to apply right-delta (they should NOT if we already used one). */
@@ -2961,8 +2963,12 @@ col_op_join(const wl_plan_op_t *op, eval_stack_t *stack, wl_col_session_t *sess)
 #endif
         if (right_filtered)
             col_rel_destroy(right_filtered);
+        if (left_e.owned)
+            col_rel_destroy(left);
         return eval_stack_push_delta(stack, out, false, result_is_delta);
     }
+    if (left_e.owned)
+        col_rel_destroy(left);
 #ifdef WL_PROFILE
     if (out->nrows == 0)
         sess->profile.join_empty_out++;
@@ -6116,9 +6122,14 @@ col_op_join_diff(const wl_plan_op_t *op, eval_stack_t *stack,
     if (op->materialized && !projected_join) {
         col_rel_t *cached
             = col_mat_cache_lookup(&sess->mat_cache, left_e.rel, right);
-        if (cached)
+        if (cached) {
+            if (right_filtered)
+                col_rel_destroy(right_filtered);
+            if (left_e.owned)
+                col_rel_destroy(left_e.rel);
             return eval_stack_push_delta(stack, cached, false,
                        left_e.is_delta || used_right_delta);
+        }
     }
 
     uint32_t kc = op->key_count;
