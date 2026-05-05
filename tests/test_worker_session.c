@@ -794,6 +794,90 @@ test_hash_table_independent(void)
     return 0;
 }
 
+static int
+test_shared_view_relation_destroy(void)
+{
+    TEST("worker shared-view relation destroy does not free coordinator data");
+
+    wl_plan_t *plan = NULL;
+    wirelog_program_t *prog = NULL;
+    wl_col_session_t *coord = make_coordinator(&plan, &prog);
+    if (!coord) {
+        FAIL("coordinator creation");
+        return 1;
+    }
+
+    int64_t rows[] = { 1, 2, 2, 3, 3, 4, 4, 5 };
+    if (insert_edges(coord, rows, 4) != 0) {
+        cleanup_coordinator(coord, plan, prog);
+        FAIL("insert edges");
+        return 1;
+    }
+
+    col_rel_t *src = session_find_rel(coord, "edge");
+    if (!src) {
+        cleanup_coordinator(coord, plan, prog);
+        FAIL("source relation missing");
+        return 1;
+    }
+
+    col_rel_t *view = col_rel_new_auto("edge", src->ncols);
+    if (!view) {
+        cleanup_coordinator(coord, plan, prog);
+        FAIL("view allocation");
+        return 1;
+    }
+    if (col_rel_install_shared_view(view, src) != 0) {
+        col_rel_destroy(view);
+        cleanup_coordinator(coord, plan, prog);
+        FAIL("shared view install");
+        return 1;
+    }
+
+    col_rel_t *parts[] = { view };
+    wl_col_session_t worker;
+    memset(&worker, 0, sizeof(worker));
+    if (col_worker_session_create(coord, 0, parts, 1, &worker) != 0) {
+        col_rel_destroy(view);
+        cleanup_coordinator(coord, plan, prog);
+        FAIL("worker create");
+        return 1;
+    }
+
+    col_rel_t *worker_rel = session_find_rel(&worker, "edge");
+    if (!worker_rel || worker_rel->columns[0] != src->columns[0]) {
+        col_worker_session_destroy(&worker);
+        cleanup_coordinator(coord, plan, prog);
+        FAIL("worker relation is not a shared view");
+        return 1;
+    }
+
+    for (int i = 0; i < 16; i++) {
+        if (col_rel_install_shared_view(worker_rel, src) != 0) {
+            col_worker_session_destroy(&worker);
+            cleanup_coordinator(coord, plan, prog);
+            FAIL("shared view refresh");
+            return 1;
+        }
+    }
+
+    col_worker_session_destroy(&worker);
+
+    col_rel_t *coord_rel = session_find_rel(coord, "edge");
+    int ok = coord_rel && coord_rel->nrows == 4
+        && coord_rel->columns[0][0] == 1
+        && coord_rel->columns[1][3] == 5;
+
+    cleanup_coordinator(coord, plan, prog);
+
+    if (!ok) {
+        FAIL("coordinator relation corrupted");
+        return 1;
+    }
+    PASS();
+    return 0;
+}
+
 /* ======================================================================== */
 /* Issue #535: RDF Named-Graph column propagation tests                     */
 /* ======================================================================== */
@@ -1053,6 +1137,7 @@ main(void)
     test_find_rel_returns_partition();
     test_invalid_args();
     test_hash_table_independent();
+    test_shared_view_relation_destroy();
     test_join_output_limit_scaling();
     test_rdf_graph_column_propagates_to_col_rel();
     test_rdf_no_graph_column_defaults_to_false();
