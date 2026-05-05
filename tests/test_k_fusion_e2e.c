@@ -93,8 +93,8 @@ count_tuples_cb(const char *relation, const int64_t *row, uint32_t ncols,
  * ---------------------------------------------------------------- */
 
 static int
-run_program(const char *src, const char *tracked_rel, int64_t *out_count,
-    uint32_t *out_iters)
+run_program_with_workers(const char *src, const char *tracked_rel,
+    uint32_t workers, int64_t *out_count, uint32_t *out_iters)
 {
     wirelog_error_t err;
     wirelog_program_t *prog = wirelog_parse_string(src, &err);
@@ -113,7 +113,7 @@ run_program(const char *src, const char *tracked_rel, int64_t *out_count,
     }
 
     wl_session_t *sess = NULL;
-    rc = wl_session_create(wl_backend_columnar(), plan, 1, &sess);
+    rc = wl_session_create(wl_backend_columnar(), plan, workers, &sess);
     if (rc != 0) {
         wl_plan_free(plan);
         wirelog_program_free(prog);
@@ -146,6 +146,13 @@ run_program(const char *src, const char *tracked_rel, int64_t *out_count,
     wl_plan_free(plan);
     wirelog_program_free(prog);
     return 0;
+}
+
+static int
+run_program(const char *src, const char *tracked_rel, int64_t *out_count,
+    uint32_t *out_iters)
+{
+    return run_program_with_workers(src, tracked_rel, 1, out_count, out_iters);
 }
 
 /* ================================================================
@@ -537,6 +544,30 @@ test_k2_all_inactive_branches_preserve_target_schema(void)
 }
 
 /* ================================================================
+ * Test 11: W>1, K below parallel threshold uses the same semantics
+ *
+ * K=2 is below WL_KFUSION_MIN_PARALLEL_K. A multi-worker session should
+ * still produce the same closure while using the serial K-fusion evaluator
+ * instead of allocating branch worker sessions.
+ * ================================================================ */
+static void
+test_k2_multiworker_threshold_serial_semantics(void)
+{
+    TEST("K=2 W=8 threshold serial path preserves closure");
+
+    const char *src = ".decl r(x: int32, y: int32)\n"
+        "r(1, 2). r(2, 3). r(3, 4).\n"
+        "r(x, z) :- r(x, y), r(y, z).\n";
+
+    int64_t count = 0;
+    int rc = run_program_with_workers(src, "r", 8, &count, NULL);
+    ASSERT(rc == 0, "K=2 W=8 program execution failed");
+    ASSERT(count == 6, "K=2 W=8 should produce 6 tuples");
+
+    PASS();
+}
+
+/* ================================================================
  * main
  * ================================================================ */
 
@@ -555,6 +586,7 @@ main(void)
     test_k2_multi_rule_union_cspa_pattern();
     test_k2_multi_rule_union_unique_contributions();
     test_k2_all_inactive_branches_preserve_target_schema();
+    test_k2_multiworker_threshold_serial_semantics();
 
     printf("\nResults: %d/%d passed", pass_count, test_count);
     if (fail_count > 0)

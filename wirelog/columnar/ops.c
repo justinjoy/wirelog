@@ -5122,6 +5122,16 @@ col_op_k_fusion(const wl_plan_op_t *op, eval_stack_t *stack,
         return push_rc;
     }
 
+    /* Use session-level workqueue created at col_session_create (issue #99).
+     * If this invocation cannot or should not dispatch parallel branch work,
+     * use the existing serial K-fusion evaluator before allocating worker
+     * sessions. */
+    wl_work_queue_t *wq = sess->wq; /* NULL when num_workers=1 or in workers */
+    if (!wq || live_count < WL_KFUSION_MIN_PARALLEL_K) {
+        free(live_indices);
+        return col_op_k_fusion_serial(op, stack, sess);
+    }
+
     col_rel_t **results = (col_rel_t **)calloc(live_count, sizeof(col_rel_t *));
     col_op_k_fusion_worker_t *workers = (col_op_k_fusion_worker_t *)calloc(
         live_count, sizeof(col_op_k_fusion_worker_t));
@@ -5137,15 +5147,6 @@ col_op_k_fusion(const wl_plan_op_t *op, eval_stack_t *stack,
         free(worker_sess);
         return ENOMEM;
     }
-
-    /* Use session-level workqueue created at col_session_create (issue #99).
-     * When wq is NULL or the active branch count is below threshold, live
-     * copies are evaluated sequentially below with no thread overhead. */
-    wl_work_queue_t *wq = sess->wq; /* NULL when num_workers=1 */
-    /* Threshold: for few live copies, parallel dispatch costs more than it
-    * saves. Force sequential execution when active copy count is small. */
-    if (wq && live_count < WL_KFUSION_MIN_PARALLEL_K)
-        wq = NULL;
 
     int rc = 0;
 
