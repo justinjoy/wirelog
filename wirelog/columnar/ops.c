@@ -4865,7 +4865,6 @@ typedef struct {
     wl_col_session_t
     *sess;        /* Per-worker session wrapper (isolated mat_cache) */
     int rc;       /* Return code from evaluation */
-    bool skipped; /* true if skipped due to empty forced delta (#85) */
 } col_op_k_fusion_worker_t;
 
 /**
@@ -5080,16 +5079,59 @@ col_op_k_fusion(const wl_plan_op_t *op, eval_stack_t *stack,
     if (sess->wq == NULL && sess->num_workers <= 1)
         return col_op_k_fusion_serial(op, stack, sess);
 
+    /* Issue #560: Advance the compound-arena epoch frontier before
+     * evaluating K-Fusion branch liveness so the parallel path preserves the
+     * same coordinator epoch boundary ordering as worker dispatch. The
+     * compound_arena is borrowed from the coordinator (Issue #579 / R-5);
+     * only the coordinator may mutate it. */
+    if (sess->coordinator == NULL
+        && sess->compound_arena && sess->rotation_ops
+        && sess->rotation_ops->gc_epoch_boundary) {
+        sess->rotation_ops->gc_epoch_boundary(sess);
+    }
+
     uint64_t _phase_t0 = now_ns();
-    col_rel_t **results = (col_rel_t **)calloc(k, sizeof(col_rel_t *));
+    uint32_t *live_indices = (uint32_t *)malloc(k * sizeof(uint32_t));
+    if (!live_indices)
+        return ENOMEM;
+    uint32_t live_count = 0;
+    for (uint32_t d = 0; d < k; d++) {
+        wl_plan_relation_t plan_data;
+        plan_data.name = "<k_fusion_copy>";
+        plan_data.delta_name = NULL;
+        plan_data.ops = meta->k_ops[d];
+        plan_data.op_count = meta->k_op_counts[d];
+        if (!has_empty_forced_delta(&plan_data, sess, sess->current_iteration))
+            live_indices[live_count++] = d;
+    }
+    if (live_count == 0) {
+        COL_SESSION(sess)->kfusion_alloc_ns += now_ns() - _phase_t0;
+        uint32_t ncols = 0;
+        if (op->relation_name) {
+            col_rel_t *target = session_find_rel(sess, op->relation_name);
+            if (target)
+                ncols = target->ncols;
+        }
+        col_rel_t *empty = col_rel_new_auto("$kfusion_empty", ncols);
+        free(live_indices);
+        if (!empty)
+            return ENOMEM;
+        int push_rc = eval_stack_push(stack, empty, true);
+        if (push_rc != 0)
+            col_rel_destroy(empty);
+        return push_rc;
+    }
+
+    col_rel_t **results = (col_rel_t **)calloc(live_count, sizeof(col_rel_t *));
     col_op_k_fusion_worker_t *workers = (col_op_k_fusion_worker_t *)calloc(
-        k, sizeof(col_op_k_fusion_worker_t));
+        live_count, sizeof(col_op_k_fusion_worker_t));
     /* Per-worker session wrappers: shallow copy of sess with an isolated
      * mat_cache so concurrent col_op_join calls do not race on the cache. */
     wl_col_session_t *worker_sess
-        = (wl_col_session_t *)calloc(k, sizeof(wl_col_session_t));
+        = (wl_col_session_t *)calloc(live_count, sizeof(wl_col_session_t));
     COL_SESSION(sess)->kfusion_alloc_ns += now_ns() - _phase_t0;
     if (!results || !workers || !worker_sess) {
+        free(live_indices);
         free(results);
         free(workers);
         free(worker_sess);
@@ -5097,40 +5139,26 @@ col_op_k_fusion(const wl_plan_op_t *op, eval_stack_t *stack,
     }
 
     /* Use session-level workqueue created at col_session_create (issue #99).
-     * When num_workers=1 (wq==NULL), K copies are evaluated sequentially
-     * below with no thread overhead. */
+     * When wq is NULL or the active branch count is below threshold, live
+     * copies are evaluated sequentially below with no thread overhead. */
     wl_work_queue_t *wq = sess->wq; /* NULL when num_workers=1 */
-    /* Threshold: for small K, parallel dispatch costs more than it saves.
-     * Force sequential execution when K < WL_KFUSION_MIN_PARALLEL_K. */
-    if (wq && k < WL_KFUSION_MIN_PARALLEL_K)
+    /* Threshold: for few live copies, parallel dispatch costs more than it
+    * saves. Force sequential execution when active copy count is small. */
+    if (wq && live_count < WL_KFUSION_MIN_PARALLEL_K)
         wq = NULL;
 
     int rc = 0;
-
-    /* Issue #560: Advance the compound-arena epoch frontier before
-     * spawning K-Fusion workers so each worker's view of the arena
-     * starts at a freshly-retired generation.  This bounds the set
-     * of compound handles workers can observe and lets the
-     * epoch-frontier GC reclaim handles whose multiplicity already
-     * dropped to zero in the parent.  Each link is NULL-guarded so
-     * sessions without a compound arena or rotation strategy still
-     * spawn workers unchanged.  The compound_arena is borrowed from
-     * the coordinator (Issue #579 / R-5); only the coordinator may
-     * mutate it, so worker-context invocations skip the dispatch. */
-    if (sess->coordinator == NULL
-        && sess->compound_arena && sess->rotation_ops
-        && sess->rotation_ops->gc_epoch_boundary) {
-        sess->rotation_ops->gc_epoch_boundary(sess);
-    }
 
     /* Issue #196: Workers start with zeroed mat_cache (no shared entries).
      * All worker cache entries are worker-owned; cleanup frees all of them
      * starting from index 0, so no base_count snapshot is needed. */
 
-    /* Initialise per-worker session wrappers and submit all K tasks in one
-     * batch so workers execute in parallel. */
+    /* Initialise per-worker session wrappers and submit only live tasks in one
+     * batch so W acts as a cap instead of forcing allocation for skipped
+     * delta-copy branches. */
     _phase_t0 = now_ns();
-    for (uint32_t d = 0; d < k; d++) {
+    for (uint32_t d = 0; d < live_count; d++) {
+        uint32_t branch_idx = live_indices[d];
         /* Shallow copy shares rels[], plan, etc. (read-only during K-fusion).
          * mat_cache is zeroed below (Issue #196): workers start fresh.
          * arr_* are deep-copied (#260): each worker gets an independent
@@ -5205,19 +5233,19 @@ col_op_k_fusion(const wl_plan_op_t *op, eval_stack_t *stack,
         {
             size_t parent_cap
                 = sess->eval_arena ? sess->eval_arena->capacity : 0;
-            size_t worker_cap = parent_cap / k;
+            size_t worker_cap = parent_cap / live_count;
             if (worker_cap < 8 * 1024 * 1024)
                 worker_cap = 8 * 1024 * 1024; /* 8MB minimum */
             worker_sess[d].eval_arena = wl_arena_create(worker_cap);
             /* NULL arena is handled gracefully: operators check before use */
         }
-        /* Issue #196: Scale per-worker delta_pool inversely with K to
-         * keep aggregate memory ~constant (32MB total vs K×32MB). */
+        /* Issue #196: Scale per-worker delta_pool inversely with active
+         * branch count to keep aggregate memory ~constant. */
         {
-            size_t pool_arena = 32 * 1024 * 1024 / k;
+            size_t pool_arena = 32 * 1024 * 1024 / live_count;
             if (pool_arena < 4 * 1024 * 1024)
                 pool_arena = 4 * 1024 * 1024; /* 4MB minimum */
-            uint32_t pool_slots = 128 / k;
+            uint32_t pool_slots = 128 / live_count;
             if (pool_slots < 16)
                 pool_slots = 16;
             worker_sess[d].delta_pool
@@ -5225,20 +5253,10 @@ col_op_k_fusion(const wl_plan_op_t *op, eval_stack_t *stack,
         }
 
         workers[d].plan_data.name = "<k_fusion_copy>";
-        workers[d].plan_data.ops = meta->k_ops[d];
-        workers[d].plan_data.op_count = meta->k_op_counts[d];
+        workers[d].plan_data.ops = meta->k_ops[branch_idx];
+        workers[d].plan_data.op_count = meta->k_op_counts[branch_idx];
         workers[d].sess = &worker_sess[d];
         workers[d].rc = 0;
-
-        /* Per-copy empty-delta skip (issue #85): if this copy's sub-plan
-         * has a FORCE_DELTA op referencing an empty/absent delta on
-         * iteration > 0, skip dispatching — the copy would produce 0 rows. */
-        if (has_empty_forced_delta(&workers[d].plan_data, sess,
-            sess->current_iteration)) {
-            workers[d].rc = 0; /* mark as succeeded with no output */
-            workers[d].skipped = true;
-            continue;
-        }
 
         if (wq) {
             /* Parallel path: submit to session workqueue (issue #99) */
@@ -5269,7 +5287,7 @@ col_op_k_fusion(const wl_plan_op_t *op, eval_stack_t *stack,
 #ifdef WL_PROFILE
     {
         wl_profile_t base_profile = sess->profile;
-        for (uint32_t d = 0; d < k; d++) {
+        for (uint32_t d = 0; d < live_count; d++) {
             /* Merge counters: sum increments from baseline */
             sess->profile.join_calls
                 += worker_sess[d].profile.join_calls - base_profile.join_calls;
@@ -5285,13 +5303,7 @@ col_op_k_fusion(const wl_plan_op_t *op, eval_stack_t *stack,
 
     /* Collect results from each worker's eval_stack */
     _phase_t0 = now_ns();
-    for (uint32_t d = 0; d < k; d++) {
-        /* Skipped workers (empty forced delta) contribute an empty result */
-        if (workers[d].skipped) {
-            results[d] = NULL; /* NULL = no rows from this copy */
-            continue;
-        }
-
+    for (uint32_t d = 0; d < live_count; d++) {
         if (workers[d].rc != 0) {
             rc = workers[d].rc;
             eval_stack_drain(&workers[d].stack);
@@ -5336,30 +5348,28 @@ col_op_k_fusion(const wl_plan_op_t *op, eval_stack_t *stack,
         eval_stack_drain(&workers[d].stack);
     }
 
-    /* Merge K results with deduplication.
+    /* Merge live branch results with deduplication.
      * Workers ran WL_PLAN_OP_CONSOLIDATE as the last plan op, so each
-     * result is already sorted+deduped — no qsort needed here.
-     * Skipped copies (empty forced delta) have NULL results — compact
-     * them out before merging. */
+     * result is already sorted+deduped — no qsort needed here. */
     {
-        /* Compact non-NULL results (skipped copies have NULL). Use the
+        /* Compact non-NULL results. Use the
          * existing results array as backing — we build compact in-place. */
-        col_rel_t **compact = (col_rel_t **)malloc(k * sizeof(col_rel_t *));
+        col_rel_t **compact
+            = (col_rel_t **)malloc(live_count * sizeof(col_rel_t *));
         if (!compact) {
             rc = ENOMEM;
             goto cleanup_results;
         }
         uint32_t n_results = 0;
-        for (uint32_t d = 0; d < k; d++) {
+        for (uint32_t d = 0; d < live_count; d++) {
             if (results[d])
                 compact[n_results++] = results[d];
         }
 
         col_rel_t *merged;
         if (n_results == 0) {
-            /* All copies skipped: produce empty output.  Derive column
-             * count from the K-fusion target relation (op->relation_name)
-             * so the empty result has a matching schema. */
+            /* Defensive fallback: produce empty output with the target
+             * relation schema if no worker produced a relation. */
             uint32_t ncols = 0;
             if (op->relation_name) {
                 col_rel_t *target = session_find_rel(sess, op->relation_name);
@@ -5383,7 +5393,7 @@ col_op_k_fusion(const wl_plan_op_t *op, eval_stack_t *stack,
 
 cleanup_results:
     _phase_t0 = now_ns();
-    for (uint32_t d = 0; d < k; d++) {
+    for (uint32_t d = 0; d < live_count; d++) {
         if (results[d])
             col_rel_destroy(results[d]);
     }
@@ -5398,7 +5408,7 @@ cleanup_wq:
      * Free each worker's private arrangement caches (arr_* and darr_*).
      * Lock-free design: no synchronization needed because each worker owns
      * its isolated cache — no races at cleanup time. */
-    for (uint32_t d = 0; d < k; d++) {
+    for (uint32_t d = 0; d < live_count; d++) {
         col_mat_cache_t *wc = &worker_sess[d].mat_cache;
         /* Issue #196: worker mat_cache starts empty (zeroed above), so ALL
          * entries were created by this worker — free from index 0. */
@@ -5458,6 +5468,7 @@ cleanup_wq:
     free(worker_sess);
     free(results);
     free(workers);
+    free(live_indices);
     COL_SESSION(sess)->kfusion_cleanup_ns += now_ns() - _phase_t0;
     return rc;
 }
