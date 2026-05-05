@@ -4687,6 +4687,13 @@ tdd_owner_exchange_deltas(const wl_plan_stratum_t *sp,
                     &coord->tdd_workers[w].base, rel_name);
             }
 
+            free(part->name);
+            part->name = wl_strdup(dname);
+            if (!part->name) {
+                col_rel_destroy(part);
+                rc = ENOMEM;
+                break;
+            }
             rc = session_add_rel(&coord->tdd_workers[w], part);
             if (rc != 0) {
                 col_rel_destroy(part);
