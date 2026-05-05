@@ -18,6 +18,7 @@
  */
 
 #include "../wirelog/columnar/columnar_nanoarrow.h"
+#include "../wirelog/columnar/internal.h"
 #include "../wirelog/exec_plan_gen.h"
 #include "../wirelog/ir/program.h"
 #include "../wirelog/passes/fusion.h"
@@ -466,6 +467,76 @@ test_k2_multi_rule_union_unique_contributions(void)
 }
 
 /* ================================================================
+ * Test 10: All inactive K-fusion branches keep target schema
+ *
+ * In iteration > 0, FORCE_DELTA branches whose delta relation is absent
+ * are inactive. The parallel K-fusion path should short-circuit without
+ * allocating worker sessions, but the produced empty relation must still
+ * carry the target relation's column count.
+ * ================================================================ */
+static void
+test_k2_all_inactive_branches_preserve_target_schema(void)
+{
+    TEST("K=2 all inactive branches preserve target schema");
+
+    wl_col_session_t sess;
+    memset(&sess, 0, sizeof(sess));
+    sess.num_workers = 2;
+    sess.current_iteration = 1;
+
+    col_rel_t *target = col_rel_new_auto("out", 3);
+    ASSERT(target != NULL, "target relation allocation failed");
+    int rc = session_add_rel(&sess, target);
+    ASSERT(rc == 0, "target relation registration failed");
+
+    wl_plan_op_t branch0[] = {
+        {
+            .op = WL_PLAN_OP_VARIABLE,
+            .relation_name = "r",
+            .delta_mode = WL_DELTA_FORCE_DELTA,
+        },
+    };
+    wl_plan_op_t branch1[] = {
+        {
+            .op = WL_PLAN_OP_VARIABLE,
+            .relation_name = "r",
+            .delta_mode = WL_DELTA_FORCE_DELTA,
+        },
+    };
+    wl_plan_op_t *k_ops[] = { branch0, branch1 };
+    uint32_t k_counts[] = { 1, 1 };
+    wl_plan_op_k_fusion_t meta = {
+        .k = 2,
+        .k_ops = k_ops,
+        .k_op_counts = k_counts,
+    };
+    wl_plan_op_t op = {
+        .op = WL_PLAN_OP_K_FUSION,
+        .relation_name = "out",
+        .opaque_data = &meta,
+    };
+
+    eval_stack_t stack;
+    eval_stack_init(&stack);
+    rc = col_op_k_fusion(&op, &stack, &sess);
+    ASSERT(rc == 0, "K-fusion all-inactive path failed");
+    ASSERT(stack.top == 1, "K-fusion should push one empty result");
+
+    eval_entry_t result = eval_stack_pop(&stack);
+    ASSERT(result.rel != NULL, "K-fusion result missing");
+    ASSERT(result.owned, "K-fusion empty result should be owned");
+    ASSERT(result.rel->nrows == 0, "K-fusion result should be empty");
+    ASSERT(result.rel->ncols == 3, "empty result must keep target schema");
+    col_rel_destroy(result.rel);
+    eval_stack_drain(&stack);
+
+    col_rel_destroy(target);
+    free(sess.rels);
+    session_rel_free_hash(&sess);
+    PASS();
+}
+
+/* ================================================================
  * main
  * ================================================================ */
 
@@ -483,6 +554,7 @@ main(void)
     test_k2_single_self_loop();
     test_k2_multi_rule_union_cspa_pattern();
     test_k2_multi_rule_union_unique_contributions();
+    test_k2_all_inactive_branches_preserve_target_schema();
 
     printf("\nResults: %d/%d passed", pass_count, test_count);
     if (fail_count > 0)
