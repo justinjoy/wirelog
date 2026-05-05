@@ -1558,7 +1558,19 @@ col_session_insert(wl_session_t *session, const char *relation,
     if (!session || !relation || !data)
         return EINVAL;
 
-    col_rel_t *r = session_find_rel(COL_SESSION(session), relation);
+    /* Issue #662: When a delta callback is installed, EDB inserts must take
+     * the incremental path so arrangement caches are invalidated and the
+     * outer-epoch counter advances; otherwise a subsequent col_session_step
+     * with delta_cb may run differential operators against stale arrangement
+     * indices and surface as -1/EINVAL.  This mirrors col_session_remove,
+     * which already reroutes to col_session_remove_incremental in the same
+     * condition. */
+    wl_col_session_t *sess = COL_SESSION(session);
+    if (sess->delta_cb != NULL)
+        return col_session_insert_incremental(session, relation, data,
+                   num_rows, num_cols);
+
+    col_rel_t *r = session_find_rel(sess, relation);
     if (!r)
         return ENOENT;
 
