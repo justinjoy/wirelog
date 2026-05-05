@@ -707,6 +707,51 @@ test_join_output_limit_scaling(void)
         return 1;
     }
 
+    /* --- max W=4, active W=2: worker gets 1/2 of limit --- */
+    plan = NULL;
+    prog = NULL;
+    wl_col_session_t *coord_active = make_coordinator(&plan, &prog);
+    if (!coord_active) {
+        FAIL("coordinator creation active W=2");
+        return 1;
+    }
+    coord_active->num_workers = 4;
+    coord_active->tdd_active_workers = 2;
+    coord_active->join_output_limit = 8000;
+    coord_active->tdd_budget_per_party = 1800;
+    atomic_store_explicit(&coord_active->mem_ledger.total_budget, 9000,
+        memory_order_relaxed);
+
+    int64_t rows_active[] = { 1, 2, 3, 4 };
+    insert_edges(coord_active, rows_active, 2);
+
+    col_rel_t **parts_active = NULL;
+    partition_rel(coord_active, "edge", 2, &parts_active);
+
+    wl_col_session_t active_workers[2];
+    memset(active_workers, 0, sizeof(active_workers));
+    for (uint32_t w = 0; w < 2; w++) {
+        col_rel_t *wp[1] = { parts_active[w] };
+        parts_active[w] = NULL;
+        col_worker_session_create(coord_active, w, wp, 1, &active_workers[w]);
+        if (active_workers[w].join_output_limit != 4000)
+            ok = 0;
+        uint64_t worker_budget = atomic_load_explicit(
+            &active_workers[w].mem_ledger.total_budget, memory_order_relaxed);
+        if (worker_budget != 3000)
+            ok = 0;
+    }
+    free(parts_active);
+
+    for (uint32_t w = 0; w < 2; w++)
+        col_worker_session_destroy(&active_workers[w]);
+    cleanup_coordinator(coord_active, plan, prog);
+
+    if (!ok) {
+        FAIL("active W=2: worker should get active-width limits");
+        return 1;
+    }
+
     /* --- W=2: zero limit stays zero (disabled) --- */
     plan = NULL;
     prog = NULL;

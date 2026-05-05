@@ -1192,18 +1192,28 @@ col_worker_session_create(wl_col_session_t *coordinator,
      * we lazily shrink the coordinator to its per-party share so that, once
      * workers are live, aggregate memory usage stays within the 75%-RAM
      * envelope (coordinator + W workers each hold tdd_budget_per_party). */
+    uint32_t active_workers = coordinator->tdd_active_workers > 0
+        ? coordinator->tdd_active_workers : coordinator->num_workers;
+    if (active_workers == 0)
+        active_workers = 1;
     uint64_t worker_budget;
     if (coordinator->tdd_budget_per_party > 0) {
+        uint64_t max_workers = coordinator->num_workers > 0
+            ? coordinator->num_workers : active_workers;
+        uint64_t active_party_budget = (coordinator->tdd_budget_per_party
+            * (max_workers + 1)) / (uint64_t)(active_workers + 1);
+        if (active_party_budget == 0)
+            active_party_budget = coordinator->tdd_budget_per_party;
         if (coordinator->tdd_workers_count == 0) {
             /* First worker: shrink coordinator to its per-party share. */
             atomic_store_explicit(&coordinator->mem_ledger.total_budget,
-                coordinator->tdd_budget_per_party, memory_order_relaxed);
+                active_party_budget, memory_order_relaxed);
         }
-        worker_budget = coordinator->tdd_budget_per_party;
+        worker_budget = active_party_budget;
     } else {
         worker_budget = atomic_load_explicit(
             &coordinator->mem_ledger.total_budget, memory_order_relaxed)
-            / coordinator->num_workers;
+            / active_workers;
     }
     wl_mem_ledger_init(&out_worker->mem_ledger, worker_budget);
 
@@ -1212,9 +1222,9 @@ col_worker_session_create(wl_col_session_t *coordinator,
      * shrink to a fair per-worker share (0 = disabled, preserved as-is).
      * Clamp to minimum 1 so that limit < W does not accidentally disable
      * the cap (0 means unlimited). */
-    if (coordinator->num_workers > 0 && coordinator->join_output_limit > 0) {
+    if (active_workers > 0 && coordinator->join_output_limit > 0) {
         uint64_t per_worker =
-            coordinator->join_output_limit / coordinator->num_workers;
+            coordinator->join_output_limit / active_workers;
         out_worker->join_output_limit = per_worker > 0 ? per_worker : 1;
     }
 
@@ -1234,9 +1244,7 @@ col_worker_session_create(wl_col_session_t *coordinator,
 
     /* Step 7: Allocate per-worker arena (scaled by num_workers) */
     {
-        uint32_t k = coordinator->num_workers > 0
-            ? coordinator->num_workers
-            : 1;
+        uint32_t k = active_workers > 0 ? active_workers : 1;
         size_t arena_cap = coordinator->eval_arena
             ? coordinator->eval_arena->capacity / k
             : 8UL * 1024 * 1024;
@@ -1248,9 +1256,7 @@ col_worker_session_create(wl_col_session_t *coordinator,
 
     /* Step 8: Allocate per-worker delta_pool (scaled by num_workers) */
     {
-        uint32_t k = coordinator->num_workers > 0
-            ? coordinator->num_workers
-            : 1;
+        uint32_t k = active_workers > 0 ? active_workers : 1;
         size_t pool_arena = 32UL * 1024 * 1024 / k;
         if (pool_arena < 4UL * 1024 * 1024)
             pool_arena = 4UL * 1024 * 1024;
