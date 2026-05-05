@@ -77,6 +77,17 @@ noop_cb(const char *r, const int64_t *row, uint32_t nc, void *u)
     (void)u;
 }
 
+static void
+noop_delta_cb(const char *r, const int64_t *row, uint32_t nc, int32_t diff,
+    void *u)
+{
+    (void)r;
+    (void)row;
+    (void)nc;
+    (void)diff;
+    (void)u;
+}
+
 struct rel_ctx {
     const char *target;
     int64_t count;
@@ -1054,6 +1065,46 @@ test_bulk_insert_no_epoch_increment(void)
     printf("(epoch_before=%u epoch_after=%u) ", epoch_before, cs->outer_epoch);
     ASSERT(cs->outer_epoch == epoch_before,
         "bulk insert must not increment outer_epoch");
+
+    teardown(sess, plan, prog);
+    PASS();
+}
+
+/* Test 18b (#662): bulk insert under an installed delta callback must take
+ * the incremental path, mirroring wl_session_remove.  Observable witness: the
+ * outer_epoch counter advances exactly as it would for
+ * col_session_insert_incremental.  Without the symmetric routing in
+ * col_session_insert, this assertion fails (epoch stays at epoch_before),
+ * which is the engine-level signature of the wl_easy_step EXEC report in
+ * issue #662. */
+static void
+test_bulk_insert_with_delta_cb_takes_incremental_path(void)
+{
+    TEST("bulk insert under delta_cb increments outer_epoch (issue #662)");
+
+    wirelog_program_t *prog;
+    wl_plan_t *plan;
+    wl_session_t *sess;
+
+    int rc = make_session(tc_src_base, &prog, &plan, &sess);
+    ASSERT(rc == 0, "session creation failed");
+
+    wl_session_set_delta_cb(sess, noop_delta_cb, NULL);
+
+    wl_col_session_t *cs = COL_SESSION(sess);
+    uint32_t epoch_before = cs->outer_epoch;
+
+    int64_t new_edge[2] = { 3, 4 };
+    rc = wl_session_insert(sess, "edge", new_edge, 1, 2);
+    ASSERT(rc == 0, "bulk insert under delta_cb failed");
+
+    printf("(epoch_before=%u epoch_after=%u) ", epoch_before, cs->outer_epoch);
+    ASSERT(cs->outer_epoch == epoch_before + 1,
+        "bulk insert with delta_cb must reroute to incremental and "
+        "increment outer_epoch");
+    ASSERT(cs->last_inserted_relation != NULL
+        && strcmp(cs->last_inserted_relation, "edge") == 0,
+        "rerouted insert must record last_inserted_relation");
 
     teardown(sess, plan, prog);
     PASS();
@@ -2493,6 +2544,7 @@ main(void)
     test_incremental_then_bulk_falls_back();
     test_bulk_insert_5node_matches_fresh();
     test_bulk_insert_no_epoch_increment();
+    test_bulk_insert_with_delta_cb_takes_incremental_path();
 
     /* Category 4: Incremental Insert + Differential Path */
     printf("\n-- Category 4: Incremental Insert + Differential Path --\n");
