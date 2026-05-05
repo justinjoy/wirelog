@@ -95,7 +95,7 @@ col_diff_arrangement_deep_copy(const col_diff_arrangement_t *arr)
         return NULL;
 
     copy->key_cols = malloc(arr->key_count * sizeof(uint32_t));
-    copy->ht_head = malloc(arr->ht_cap * sizeof(uint32_t));
+    copy->ht_head = malloc(arr->nbuckets * sizeof(uint32_t));
     copy->ht_next = malloc(arr->ht_cap * sizeof(uint32_t));
 
     if (!copy->key_cols || !copy->ht_head || !copy->ht_next) {
@@ -107,7 +107,7 @@ col_diff_arrangement_deep_copy(const col_diff_arrangement_t *arr)
     }
 
     memcpy(copy->key_cols, arr->key_cols, arr->key_count * sizeof(uint32_t));
-    memcpy(copy->ht_head, arr->ht_head, arr->ht_cap * sizeof(uint32_t));
+    memcpy(copy->ht_head, arr->ht_head, arr->nbuckets * sizeof(uint32_t));
     memcpy(copy->ht_next, arr->ht_next, arr->ht_cap * sizeof(uint32_t));
 
     copy->key_count = arr->key_count;
