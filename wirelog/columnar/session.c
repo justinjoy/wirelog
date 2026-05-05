@@ -570,6 +570,52 @@ wl_columnar_session_get_tdd_decision_stats(wl_session_t *sess,
     }
 }
 
+int
+wl_columnar_session_ensure_workqueue(wl_col_session_t *sess,
+    uint32_t active_workers)
+{
+    if (!sess)
+        return EINVAL;
+    if (active_workers <= 1)
+        return 0;
+    if (active_workers > sess->num_workers)
+        return EINVAL;
+    if (sess->wq && sess->wq_workers >= active_workers)
+        return 0;
+
+    wl_work_queue_t *new_wq = wl_workqueue_create(active_workers);
+    if (!new_wq)
+        return ENOMEM;
+
+    wl_workqueue_destroy(sess->wq);
+    sess->wq = new_wq;
+    sess->wq_workers = active_workers;
+    return 0;
+}
+
+int
+wl_columnar_session_ensure_tdd_worker_slots(wl_col_session_t *sess,
+    uint32_t active_workers)
+{
+    if (!sess)
+        return EINVAL;
+    if (active_workers == 0 || active_workers > sess->num_workers)
+        return EINVAL;
+    if (sess->tdd_workers_cap >= active_workers)
+        return 0;
+
+    wl_col_session_t *new_workers = (wl_col_session_t *)realloc(
+        sess->tdd_workers, active_workers * sizeof(wl_col_session_t));
+    if (!new_workers)
+        return ENOMEM;
+
+    memset(&new_workers[sess->tdd_workers_cap], 0,
+        (active_workers - sess->tdd_workers_cap) * sizeof(wl_col_session_t));
+    sess->tdd_workers = new_workers;
+    sess->tdd_workers_cap = active_workers;
+    return 0;
+}
+
 /*
  * col_session_cleanup_old_data:
  *
@@ -717,9 +763,9 @@ col_compute_worker_cap(uint64_t ram_bytes)
  * Implements wl_compute_backend_t.session_create vtable slot.
  *
  * @param plan:        Execution plan (borrowed, must outlive session)
- * @param num_workers: Thread pool size for parallel K-fusion. When > 1,
- *                     creates a workqueue at session init. When 1, K-fusion
- *                     evaluates copies sequentially (no thread overhead).
+ * @param num_workers: Thread pool size cap for parallel K-fusion/TDD.
+ *                    Workers are allocated lazily for the active width of a
+ *                    given stratum/operator.
  * @param out:         (out) Receives &sess->base on success
  *
  * Memory initialization order:
@@ -909,32 +955,9 @@ col_session_create(const wl_plan_t *plan, uint32_t num_workers,
         return ENOMEM;
     }
 
-    /* Create workqueue for parallel K-fusion when num_workers > 1.
-     * Single-threaded mode (num_workers=1) leaves wq=NULL; K-fusion
-     * evaluates copies sequentially with no thread overhead. (Issue #99) */
-    if (sess->num_workers > 1) {
-        sess->wq = wl_workqueue_create(sess->num_workers);
-        if (!sess->wq) {
-            free(sess->rels);
-            free(sess);
-            return ENOMEM;
-        }
-    }
-
-    /* Issue #318: Pre-allocate TDD worker sessions array for distributed eval.
-     * Workers are initialized lazily (tdd_workers_count == 0 until first use).
-     * num_workers > 1 check matches the workqueue creation guard above. */
-    if (sess->num_workers > 1) {
-        sess->tdd_workers = (wl_col_session_t *)calloc(
-            sess->num_workers, sizeof(wl_col_session_t));
-        if (!sess->tdd_workers) {
-            wl_workqueue_destroy(sess->wq);
-            free(sess->rels);
-            free(sess);
-            return ENOMEM;
-        }
-        sess->tdd_workers_count = 0; /* populated lazily */
-    }
+    /* Worker resources are allocated lazily after an operator/stratum chooses
+     * its active width. This preserves workers=N as a cap rather than forcing
+     * N threads and N TDD worker slots at session creation. */
 
     /* Create delta pool for per-iteration temporaries.
      * Slab: 256 relations (cover ~20 rules x 5 ops + headroom)
@@ -1308,6 +1331,7 @@ col_worker_session_create(wl_col_session_t *coordinator,
 
     /* Step 3: NULL all owned pointers (safe for cleanup on early abort) */
     out_worker->wq = NULL;
+    out_worker->wq_workers = 0;
     out_worker->eval_arena = NULL;
     out_worker->delta_pool = NULL;
     out_worker->rels = NULL;
@@ -1344,6 +1368,7 @@ col_worker_session_create(wl_col_session_t *coordinator,
     out_worker->exchange_num_workers = 0;
     /* Issue #318: TDD workers array is owned by coordinator; workers have none */
     out_worker->tdd_workers = NULL;
+    out_worker->tdd_workers_cap = 0;
     out_worker->tdd_workers_count = 0;
     /* Issue #317: Worker does not own the progress tracker.
      * NULL entries so col_session_destroy (if called on worker) does not
@@ -2246,7 +2271,7 @@ col_session_snapshot(wl_session_t *session, wl_on_tuple_fn callback,
      * Issue #413: Enable TDD for initial snapshot (total_iterations == 0)
      * OR incremental evaluation (last_inserted_relation != NULL). */
     bool snapshot_tdd_eligible = (affected_mask == UINT64_MAX
-        && sess->num_workers > 1 && sess->tdd_workers
+        && sess->num_workers > 1
         && (sess->last_inserted_relation != NULL ||
         sess->total_iterations == 0));
     sess->tdd_decision_tracking_active = true;

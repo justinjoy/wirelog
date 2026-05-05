@@ -1633,6 +1633,12 @@ tdd_init_workers(wl_col_session_t *coord, uint32_t W)
 
     if (W == 0 || W > coord->num_workers)
         return EINVAL;
+    int ensure_rc = wl_columnar_session_ensure_workqueue(coord, W);
+    if (ensure_rc != 0)
+        return ensure_rc;
+    ensure_rc = wl_columnar_session_ensure_tdd_worker_slots(coord, W);
+    if (ensure_rc != 0)
+        return ensure_rc;
     coord->tdd_active_workers = W;
     tdd_record_active_workers(coord, W);
     uint32_t nrels = coord->nrels;
@@ -1765,6 +1771,12 @@ tdd_replicate_workers(wl_col_session_t *coord, uint32_t W)
 
     if (W == 0 || W > coord->num_workers)
         return EINVAL;
+    int ensure_rc = wl_columnar_session_ensure_workqueue(coord, W);
+    if (ensure_rc != 0)
+        return ensure_rc;
+    ensure_rc = wl_columnar_session_ensure_tdd_worker_slots(coord, W);
+    if (ensure_rc != 0)
+        return ensure_rc;
     coord->tdd_active_workers = W;
     tdd_record_active_workers(coord, W);
     uint32_t nrels = coord->nrels;
@@ -3638,6 +3650,12 @@ tdd_init_workers_hybrid(const wl_plan_stratum_t *sp, wl_col_session_t *coord,
 
     if (W == 0 || W > coord->num_workers)
         return EINVAL;
+    int ensure_rc = wl_columnar_session_ensure_workqueue(coord, W);
+    if (ensure_rc != 0)
+        return ensure_rc;
+    ensure_rc = wl_columnar_session_ensure_tdd_worker_slots(coord, W);
+    if (ensure_rc != 0)
+        return ensure_rc;
     coord->tdd_active_workers = W;
     tdd_record_active_workers(coord, W);
     uint32_t nrels = coord->nrels;
@@ -5560,7 +5578,7 @@ col_eval_stratum_tdd(const wl_plan_stratum_t *sp,
         return EINVAL;
 
     /* Single-worker fast path: zero overhead delegation */
-    if (coord->num_workers <= 1 || !coord->tdd_workers)
+    if (coord->num_workers <= 1)
         return col_eval_stratum(sp, coord, stratum_idx);
 
     if (!sp->is_recursive)

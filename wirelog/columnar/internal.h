@@ -776,7 +776,8 @@ typedef struct wl_col_session_t {
      * Configurable via WL_MAT_CACHE_EVICT_THRESHOLD_PERCENT env var [1,100],
      * default = 90% of limit */
     size_t cache_evict_threshold;
-    wl_work_queue_t *wq; /* reusable thread pool for K-fusion     */
+    wl_work_queue_t *wq; /* lazily sized reusable worker pool     */
+    uint32_t wq_workers; /* current thread count in wq            */
     /* Profiling counters (3B-003): accumulated across all strata/iters  */
     uint64_t
         consolidation_ns; /* time in col_op_consolidate_incremental_delta */
@@ -899,9 +900,9 @@ typedef struct wl_col_session_t {
     bool delta_seeded;
     /* Multi-worker support (issue #99).
      * Stored from col_session_create num_workers parameter as a maximum worker
-     * width. Adaptive TDD may dispatch fewer active workers for a stratum or
-     * sub-pass. When > 1, sess->wq is created at session init for parallel
-     * K-fusion. When == 1, K-fusion evaluates copies sequentially. */
+     * width. Adaptive TDD and K-fusion may dispatch fewer active workers for a
+     * stratum/operator. Workqueue threads and TDD worker slots are allocated
+     * lazily for the selected active width, so workers=N means "use up to N". */
     uint32_t num_workers;
     /* Dynamic join output limit (Issue #221).
      * Maximum output rows per single join operation. Computed at session init
@@ -997,10 +998,11 @@ typedef struct wl_col_session_t {
      * to prevent double-free of the coordinator's entries array. */
     wl_frontier_progress_t progress;
     /* Distributed stratum evaluator state (Issue #318).
-     * Worker sessions created once at col_session_create for multi-worker use.
-     * NULL when num_workers <= 1 (single-worker fast path).
-     * Owned by coordinator; worker sessions set tdd_workers = NULL. */
-    struct wl_col_session_t *tdd_workers; /* owned array [num_workers] */
+     * Worker session slots allocated lazily for the selected active width.
+     * NULL when no TDD stratum has used workers yet. Owned by coordinator;
+     * worker sessions set tdd_workers = NULL. */
+    struct wl_col_session_t *tdd_workers; /* owned array [tdd_workers_cap] */
+    uint32_t tdd_workers_cap;           /* allocated slots in tdd_workers */
     uint32_t tdd_workers_count;         /* number of initialized workers */
     uint32_t tdd_active_workers;        /* current adaptive TDD width */
     uint32_t tdd_last_active_workers;   /* last selected TDD width */
@@ -1626,6 +1628,12 @@ col_eval_stratum_multiworker(const wl_plan_stratum_t *sp,
 int
 col_eval_stratum_tdd(const wl_plan_stratum_t *sp,
     wl_col_session_t *coord, uint32_t stratum_idx);
+int
+wl_columnar_session_ensure_workqueue(wl_col_session_t *sess,
+    uint32_t active_workers);
+int
+wl_columnar_session_ensure_tdd_worker_slots(wl_col_session_t *sess,
+    uint32_t active_workers);
 bool
 tdd_stratum_has_idb_self_join(const wl_plan_stratum_t *sp);
 uint32_t
