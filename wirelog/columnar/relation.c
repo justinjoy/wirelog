@@ -53,6 +53,16 @@
 #define WL_PREFETCH_W(addr) ((void)(addr))
 #endif
 
+#ifdef WL_RADIX_BENCH
+static bool
+wl_columnar_relation_radix_bench_enabled(void)
+{
+    const char *env = getenv("WIRELOG_RADIX_BENCH_LOG");
+
+    return env && env[0] != '\0' && strcmp(env, "0") != 0;
+}
+#endif
+
 /* ---- COW helpers --------------------------------------------------------- */
 
 /*
@@ -1960,7 +1970,7 @@ radix_sort_k16(col_rel_t *r, uint32_t start_row, uint32_t nrows)
     free(count);
 #ifdef WL_RADIX_BENCH
     _tA = now_ns() - _t0;
-    {
+    if (wl_columnar_relation_radix_bench_enabled()) {
         uint64_t _tot = _tU + _tS + _tA;
         fprintf(stderr,
             "[radix-bench k=16] nrows=%u nc=%u pass=%u skip=%u "
@@ -2138,7 +2148,7 @@ col_rel_radix_sort(col_rel_t *r, uint32_t start_row, uint32_t nrows)
     free(bv_cache);
 #ifdef WL_RADIX_BENCH
     _tA = now_ns() - _t0;
-    {
+    if (wl_columnar_relation_radix_bench_enabled()) {
         uint64_t _tot = _tU + _tS + _tA;
         fprintf(stderr,
             "[radix-bench k=8] nrows=%u nc=%u pass=%u skip=%u "

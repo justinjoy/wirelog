@@ -224,7 +224,7 @@ test('bench_flowlog_tdd_bdx_json', bench_flowlog_json_py3,
      args: [
        bench_flowlog_tdd_json_validator[0],
        bench_flowlog.full_path(),
-       meson.project_source_root() / 'bench/data/graph_10.csv',
+       meson.project_source_root() / 'bench/data/graph_100.csv',
      ],
      depends: bench_flowlog,
      suite: 'bench',
