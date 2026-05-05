@@ -84,6 +84,42 @@ session_compound_max_epochs_from_env(void)
     return (uint32_t)v;
 }
 
+static int
+session_hash_result_or_fallback(wl_col_session_t *sess, int rc)
+{
+    if (rc == ENOMEM) {
+        session_rel_free_hash(sess);
+        return 0;
+    }
+    return rc;
+}
+
+static void
+session_invalidate_relation_caches(wl_col_session_t *sess, const char *name)
+{
+    col_session_invalidate_arrangements(&sess->base, name);
+    col_mat_cache_clear(&sess->mat_cache);
+
+    uint32_t out = 0;
+    for (uint32_t i = 0; i < sess->filt_cache_count; i++) {
+        col_filt_cache_entry_t *e = &sess->filt_cache[i];
+        if (strcmp(e->rel_name, name) == 0) {
+            free(e->rel_name);
+            free(e->filter_data);
+            if (e->filtered)
+                col_rel_destroy(e->filtered);
+            memset(e, 0, sizeof(*e));
+            continue;
+        }
+        if (out != i) {
+            sess->filt_cache[out] = sess->filt_cache[i];
+            memset(&sess->filt_cache[i], 0, sizeof(sess->filt_cache[i]));
+        }
+        out++;
+    }
+    sess->filt_cache_count = out;
+}
+
 int
 session_add_rel(wl_col_session_t *sess, col_rel_t *r)
 {
@@ -113,6 +149,29 @@ session_add_rel(wl_col_session_t *sess, col_rel_t *r)
         r->columns = heap_cols;
         r->arena_owned = false;
     }
+
+    for (uint32_t i = 0; i < sess->nrels; i++) {
+        if (sess->rels[i] && strcmp(sess->rels[i]->name, r->name) == 0) {
+            if (sess->rels[i] == r)
+                return 0;
+            session_invalidate_relation_caches(sess, r->name);
+            col_rel_destroy(sess->rels[i]);
+            sess->rels[i] = r;
+            return 0;
+        }
+    }
+
+    for (uint32_t i = 0; i < sess->nrels; i++) {
+        if (!sess->rels[i]) {
+            sess->rels[i] = r;
+            int hash_ret = session_hash_result_or_fallback(sess,
+                    session_rel_build_hash(sess));
+            if (hash_ret != 0)
+                return hash_ret;
+            return 0;
+        }
+    }
+
     if (sess->nrels >= sess->rel_cap) {
         uint32_t nc = sess->rel_cap ? sess->rel_cap * 2 : 16;
         col_rel_t **nr
@@ -128,7 +187,8 @@ session_add_rel(wl_col_session_t *sess, col_rel_t *r)
     /* Update hash table for O(1) lookup (Issue #281).
      * May rebuild if load factor exceeded or rebuild on first insert. */
     int hash_ret = session_rel_hash_insert(sess, idx);
-    if (hash_ret != 0 && hash_ret != ENOMEM)
+    hash_ret = session_hash_result_or_fallback(sess, hash_ret);
+    if (hash_ret != 0)
         return hash_ret;
     /* ENOMEM in hash insert is non-fatal; fallback to linear search in
      * session_find_rel. Continue adding relation. */
@@ -141,11 +201,10 @@ session_remove_rel(wl_col_session_t *sess, const char *name)
 {
     for (uint32_t i = 0; i < sess->nrels; i++) {
         if (sess->rels[i] && strcmp(sess->rels[i]->name, name) == 0) {
+            session_invalidate_relation_caches(sess, name);
             col_rel_destroy(sess->rels[i]);
             sess->rels[i] = NULL;
-            /* Update hash table: mark as removed (Issue #281).
-             * Chain walk will see NULL rels[i] and skip. */
-            session_rel_hash_remove(sess, i);
+            session_rel_free_hash(sess);
             return;
         }
     }

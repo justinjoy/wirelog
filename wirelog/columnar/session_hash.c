@@ -194,4 +194,5 @@ session_rel_free_hash(wl_col_session_t *sess)
     sess->rel_hash_head = NULL;
     sess->rel_hash_next = NULL;
     sess->rel_hash_nbuckets = 0;
+    sess->rel_hash_chain_cap = 0;
 }
