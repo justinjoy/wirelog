@@ -2470,6 +2470,27 @@ col_join_hash_rel_keys(const col_rel_t *rel, uint32_t row,
     const uint32_t *key_cols, uint32_t kc)
 {
     uint32_t h = 2166136261u;
+    if (kc == 1) {
+        uint64_t v = (uint64_t)rel->columns[key_cols[0]][row];
+        h ^= (uint32_t)(v & 0xffffffff);
+        h *= 16777619u;
+        h ^= (uint32_t)(v >> 32);
+        h *= 16777619u;
+        return h;
+    }
+    if (kc == 2) {
+        uint64_t v = (uint64_t)rel->columns[key_cols[0]][row];
+        h ^= (uint32_t)(v & 0xffffffff);
+        h *= 16777619u;
+        h ^= (uint32_t)(v >> 32);
+        h *= 16777619u;
+        v = (uint64_t)rel->columns[key_cols[1]][row];
+        h ^= (uint32_t)(v & 0xffffffff);
+        h *= 16777619u;
+        h ^= (uint32_t)(v >> 32);
+        h *= 16777619u;
+        return h;
+    }
     for (uint32_t i = 0; i < kc; i++) {
         uint64_t v = (uint64_t)rel->columns[key_cols[i]][row];
         h ^= (uint32_t)(v & 0xffffffff);
@@ -2485,6 +2506,11 @@ col_join_keys_match_rel(const col_rel_t *left, uint32_t lr,
     const uint32_t *lk, const col_rel_t *right, uint32_t rr,
     const uint32_t *rk, uint32_t kc)
 {
+    if (kc == 1)
+        return left->columns[lk[0]][lr] == right->columns[rk[0]][rr];
+    if (kc == 2)
+        return left->columns[lk[0]][lr] == right->columns[rk[0]][rr]
+               && left->columns[lk[1]][lr] == right->columns[rk[1]][rr];
     for (uint32_t k = 0; k < kc; k++)
         if (left->columns[lk[k]][lr] != right->columns[rk[k]][rr])
             return false;
@@ -3183,31 +3209,35 @@ col_op_antijoin(const wl_plan_op_t *op, eval_stack_t *stack,
         return ENOMEM;
     }
     for (uint32_t rr = 0; rr < right->nrows; rr++) {
-        int64_t rrow_buf[COL_STACK_MAX];
-        col_rel_row_copy_out(right, rr, rrow_buf);
-        const int64_t *rrow = rrow_buf;
-        uint32_t h = hash_int64_keys_fast(rrow, rk, kc) & (aj_nbuckets - 1);
+        uint32_t h = col_join_hash_rel_keys(right, rr, rk, kc)
+            & (aj_nbuckets - 1);
         aj_next[rr] = aj_head[h];
         aj_head[h] = rr + 1;
     }
     int aj_rc = 0;
+    int64_t *lrow_buf = (int64_t *)malloc(
+        sizeof(int64_t) * (left->ncols ? left->ncols : 1));
+    if (!lrow_buf) {
+        aj_rc = ENOMEM;
+        goto antijoin_done;
+    }
     for (uint32_t lr = 0; lr < left->nrows && aj_rc == 0; lr++) {
-        int64_t lrow_buf[COL_STACK_MAX];
-        col_rel_row_copy_out(left, lr, lrow_buf);
-        const int64_t *lrow = lrow_buf;
-        uint32_t h = hash_int64_keys_fast(lrow, lk, kc) & (aj_nbuckets - 1);
+        uint32_t h = col_join_hash_rel_keys(left, lr, lk, kc)
+            & (aj_nbuckets - 1);
         bool found = false;
         for (uint32_t e = aj_head[h]; e != 0 && !found; e = aj_next[e - 1]) {
             uint32_t rr = e - 1;
-            int64_t rrow_buf[COL_STACK_MAX];
-            col_rel_row_copy_out(right, rr, rrow_buf);
-            const int64_t *rrow = rrow_buf;
-            if (keys_match_fast(lrow, lk, rrow, rk, kc))
+            if (col_join_keys_match_rel(left, lr, lk, right, rr, rk, kc))
                 found = true;
         }
-        if (!found)
-            aj_rc = col_rel_append_row(out, lrow);
+        if (!found) {
+            for (uint32_t c = 0; c < left->ncols; c++)
+                lrow_buf[c] = left->columns[c][lr];
+            aj_rc = col_rel_append_row(out, lrow_buf);
+        }
     }
+    free(lrow_buf);
+antijoin_done:
     free(aj_head);
     free(aj_next);
     if (aj_rc != 0) {
@@ -3218,7 +3248,6 @@ col_op_antijoin(const wl_plan_op_t *op, eval_stack_t *stack,
             col_rel_destroy(left);
         return aj_rc;
     }
-
     free(lk);
     free(rk);
     if (left_e.owned)

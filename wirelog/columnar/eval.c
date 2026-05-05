@@ -4183,6 +4183,20 @@ tdd_choose_active_workers(const wl_plan_stratum_t *sp,
 
     if (replicate_mode && active > 8)
         active = 8;
+    if (!replicate_mode) {
+        uint32_t max_active = 32;
+        env = getenv("WIRELOG_TDD_MAX_ACTIVE_WORKERS");
+        if (env && env[0] != '\0') {
+            char *endp = NULL;
+            errno = 0;
+            unsigned long v = strtoul(env, &endp, 10);
+            if (endp != env && *endp == '\0' && errno != ERANGE && v > 0
+                && v <= UINT32_MAX)
+                max_active = (uint32_t)v;
+        }
+        if (active > max_active)
+            active = max_active;
+    }
     if (active < 1)
         active = 1;
     if (active > max_workers)
