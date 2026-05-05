@@ -43,6 +43,9 @@ wl_columnar_session_get_tdd_exchange_breakdown_stats(wl_session_t *sess,
     uint64_t *out_matrix_ns, uint64_t *out_coordinator_ns,
     uint64_t *out_scatter_ns, uint64_t *out_gather_ns,
     uint64_t *out_broadcast_ns);
+extern void
+wl_columnar_session_get_tdd_worker_width_stats(wl_session_t *sess,
+    uint32_t *out_last_active_workers, uint32_t *out_max_active_workers);
 
 /* ----------------------------------------------------------------
  * Global output format and per-run profiling accumulators (3B-003)
@@ -86,6 +89,8 @@ static uint64_t g_last_tdd_exchange_scatter_ns = 0;
 static uint64_t g_last_tdd_exchange_gather_ns = 0;
 static uint64_t g_last_tdd_exchange_broadcast_ns = 0;
 static uint64_t g_last_tdd_final_merge_ns = 0;
+static uint32_t g_last_tdd_active_workers = 0;
+static uint32_t g_last_tdd_max_active_workers = 0;
 
 #ifndef WITH_K_FUSION
 #define WITH_K_FUSION 1
@@ -365,6 +370,8 @@ run_pipeline_count(const char *source, uint32_t num_workers, int64_t *out_count,
         &g_last_tdd_exchange_coordinator_ns,
         &g_last_tdd_exchange_scatter_ns,
         &g_last_tdd_exchange_gather_ns, &g_last_tdd_exchange_broadcast_ns);
+    wl_columnar_session_get_tdd_worker_width_stats(sess,
+        &g_last_tdd_active_workers, &g_last_tdd_max_active_workers);
 
     wl_session_destroy(sess);
     wl_plan_free(plan);
@@ -1006,6 +1013,8 @@ run_tdd_bdx_pipeline(const int64_t *rows, uint32_t edge_count,
         &g_last_tdd_exchange_coordinator_ns,
         &g_last_tdd_exchange_scatter_ns,
         &g_last_tdd_exchange_gather_ns, &g_last_tdd_exchange_broadcast_ns);
+    wl_columnar_session_get_tdd_worker_width_stats(sess,
+        &g_last_tdd_active_workers, &g_last_tdd_max_active_workers);
 
     wl_session_destroy(sess);
     wl_plan_free(plan);
@@ -2974,6 +2983,9 @@ output_json_row(const char *wl_name, int32_t edges, uint32_t workers,
         ? 100.0 * tdd_phase_ns / (double)g_last_tdd_total_ns
         : 0.0;
     printf("  \"profiling_wall_ms\": %.3f,\n", g_last_wall_ms);
+    printf("  \"tdd_active_workers\": %u,\n", g_last_tdd_active_workers);
+    printf("  \"tdd_max_active_workers\": %u,\n",
+        g_last_tdd_max_active_workers);
     printf("  \"tdd_total_ms\": %.3f,\n",
         (double)g_last_tdd_total_ns / 1e6);
     printf("  \"tdd_total_pct\": %.1f,\n", tdd_total_pct);

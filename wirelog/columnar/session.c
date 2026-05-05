@@ -398,6 +398,26 @@ wl_columnar_session_get_tdd_exchange_breakdown_stats(wl_session_t *sess,
 }
 
 /*
+ * wl_columnar_session_get_tdd_worker_width_stats:
+ *
+ * Return adaptive TDD worker-width selections from the last snapshot.
+ * Hidden benchmark instrumentation hook; not part of the installed API.
+ */
+#if defined(__GNUC__) && __GNUC__ >= 4
+__attribute__((visibility("hidden")))
+#endif
+void
+wl_columnar_session_get_tdd_worker_width_stats(wl_session_t *sess,
+    uint32_t *out_last_active_workers, uint32_t *out_max_active_workers)
+{
+    wl_col_session_t *cs = COL_SESSION(sess);
+    if (out_last_active_workers)
+        *out_last_active_workers = cs->tdd_last_active_workers;
+    if (out_max_active_workers)
+        *out_max_active_workers = cs->tdd_max_active_workers;
+}
+
+/*
  * col_session_cleanup_old_data:
  *
  * Remove data that is entirely before the frontier (iteration, stratum).
@@ -1934,6 +1954,8 @@ col_session_snapshot(wl_session_t *session, wl_on_tuple_fn callback,
     sess->tdd_exchange_gather_ns = 0;
     sess->tdd_exchange_broadcast_ns = 0;
     sess->tdd_final_merge_ns = 0;
+    sess->tdd_last_active_workers = 0;
+    sess->tdd_max_active_workers = 0;
 
     /* Phase 4 incremental skip: when last_inserted_relation is set, only
      * re-evaluate strata that transitively depend on the inserted relation.
