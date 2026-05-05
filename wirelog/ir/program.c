@@ -1030,15 +1030,21 @@ static wirelog_ir_node_t *
 wrap_column_cmp_filter(wirelog_ir_node_t *child, uint32_t left_col,
     const wl_ir_expr_t *right_expr)
 {
-    wirelog_ir_node_t *filter = wl_ir_node_create(WIRELOG_IR_FILTER);
-    if (!filter)
+    if (!right_expr)
         return child;
+
+    wirelog_ir_node_t *filter = wl_ir_node_create(WIRELOG_IR_FILTER);
+    if (!filter) {
+        wl_ir_expr_free((wl_ir_expr_t *)right_expr);
+        return child;
+    }
 
     wl_ir_expr_t *cmp = wl_ir_expr_create(WL_IR_EXPR_CMP);
     wl_ir_expr_t *lhs = wl_ir_expr_create(WL_IR_EXPR_VAR);
     if (!cmp || !lhs) {
         wl_ir_expr_free(cmp);
         wl_ir_expr_free(lhs);
+        wl_ir_expr_free((wl_ir_expr_t *)right_expr);
         wl_ir_node_free(filter);
         return child;
     }
@@ -1304,6 +1310,105 @@ build_atom_scan(const wl_parser_ast_node_t *atom,
     return result;
 }
 
+static bool
+wl_ir_program_ast_is_constant(const wl_parser_ast_node_t *node)
+{
+    return node && (node->type == WL_PARSER_AST_NODE_INTEGER
+           || node->type == WL_PARSER_AST_NODE_STRING);
+}
+
+static bool
+wl_ir_program_extract_var_const_eq(const wl_parser_ast_node_t *node,
+    const char **out_var, const wl_parser_ast_node_t **out_const)
+{
+    if (!node || node->type != WL_PARSER_AST_NODE_COMPARISON
+        || node->cmp_op != WIRELOG_CMP_EQ || node->child_count < 2)
+        return false;
+
+    const wl_parser_ast_node_t *left = node->children[0];
+    const wl_parser_ast_node_t *right = node->children[1];
+    if (!left || !right)
+        return false;
+
+    if (left->type == WL_PARSER_AST_NODE_VARIABLE
+        && wl_ir_program_ast_is_constant(right)) {
+        *out_var = left->name;
+        *out_const = right;
+        return *out_var != NULL;
+    }
+
+    if (right->type == WL_PARSER_AST_NODE_VARIABLE
+        && wl_ir_program_ast_is_constant(left)) {
+        *out_var = right->name;
+        *out_const = left;
+        return *out_var != NULL;
+    }
+
+    return false;
+}
+
+static wl_ir_expr_t *
+wl_ir_program_constant_expr(const wl_parser_ast_node_t *node)
+{
+    if (!node)
+        return NULL;
+    if (node->type == WL_PARSER_AST_NODE_INTEGER) {
+        wl_ir_expr_t *expr = wl_ir_expr_create(WL_IR_EXPR_CONST_INT);
+        if (expr)
+            expr->int_value = node->int_value;
+        return expr;
+    }
+    if (node->type == WL_PARSER_AST_NODE_STRING) {
+        wl_ir_expr_t *expr = wl_ir_expr_create(WL_IR_EXPR_CONST_STR);
+        if (expr)
+            expr->str_value = strdup_safe(node->str_value);
+        return expr;
+    }
+    return NULL;
+}
+
+static void
+wl_ir_program_push_constant_filter_to_scan(wirelog_ir_node_t **scan,
+    char **vars, uint32_t var_count, const char *var_name,
+    const wl_parser_ast_node_t *constant)
+{
+    if (!scan || !*scan || !vars || !var_name || !constant)
+        return;
+
+    for (uint32_t i = 0; i < var_count; i++) {
+        if (!vars[i] || strcmp(vars[i], var_name) != 0)
+            continue;
+
+        wl_ir_expr_t *rhs = wl_ir_program_constant_expr(constant);
+        if (!rhs)
+            continue;
+        *scan = wrap_column_cmp_filter(*scan, i, rhs);
+    }
+}
+
+static void
+wl_ir_program_push_constant_filters(const wl_parser_ast_node_t *rule_node,
+    wirelog_ir_node_t **scans, char ***scan_vars, uint32_t *scan_vcounts,
+    uint32_t scan_count)
+{
+    if (!rule_node || !scans || !scan_vars || !scan_vcounts)
+        return;
+
+    for (uint32_t i = 1; i < rule_node->child_count; i++) {
+        const wl_parser_ast_node_t *body = rule_node->children[i];
+        const char *var_name = NULL;
+        const wl_parser_ast_node_t *constant = NULL;
+        if (!wl_ir_program_extract_var_const_eq(body, &var_name, &constant))
+            continue;
+
+        for (uint32_t scan_idx = 0; scan_idx < scan_count; scan_idx++) {
+            wl_ir_program_push_constant_filter_to_scan(&scans[scan_idx],
+                scan_vars[scan_idx], scan_vcounts[scan_idx], var_name,
+                constant);
+        }
+    }
+}
+
 /* ---- Single Rule Conversion ---- */
 
 static wirelog_ir_node_t *
@@ -1353,6 +1458,9 @@ convert_rule(const wl_parser_ast_node_t *rule_node,
             scan_count++;
         }
     }
+
+    wl_ir_program_push_constant_filters(rule_node, scans, scan_vars,
+        scan_vcounts, scan_count);
 
     /* ---- Step 2: JOIN across multiple scans ---- */
 

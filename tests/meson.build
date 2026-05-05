@@ -3335,6 +3335,23 @@ test_tdd_decision_stats_exe = executable(
 
 test('tdd_decision_stats', test_tdd_decision_stats_exe)
 
+test_constant_filter_pushdown_exe = executable(
+  'test_constant_filter_pushdown',
+  files('test_constant_filter_pushdown.c'),
+  backend_src,
+  parser_src,
+  ir_src,
+  optimizer_src,
+  arena_src,
+  io_src,
+  thread_src,
+  workqueue_src,
+  include_directories: [wirelog_inc, wirelog_src_inc],
+  dependencies: [nanoarrow_dep, threads_dep, xxhash_dep, mbedtls_dep, math_dep],
+)
+
+test('constant_filter_pushdown', test_constant_filter_pushdown_exe)
+
 # ============================================================================
 # Safe Worker Scaling Tests (Issue #409)
 # ============================================================================
