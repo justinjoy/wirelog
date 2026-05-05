@@ -2583,8 +2583,8 @@ col_op_join(const wl_plan_op_t *op, eval_stack_t *stack, wl_col_session_t *sess)
      * TDD workers (coordinator != NULL) skip this pre-join check (Issue #404):
      * returning empty results before row generation causes silent correctness
      * bugs — zero join output leads to premature fixed-point convergence.
-     * Workers still have in-loop backpressure + join_output_limit as safety
-     * nets.  Coordinator sessions retain full pre-join protection. */
+     * Workers still have in-loop backpressure + join_output_limit as hard
+     * safety nets.  Coordinator sessions retain full pre-join protection. */
     if (wl_mem_ledger_should_backpressure(&sess->mem_ledger,
         WL_MEM_SUBSYS_RELATION, 80)
         && !sess->coordinator) {
@@ -2703,26 +2703,15 @@ col_op_join(const wl_plan_op_t *op, eval_stack_t *stack, wl_col_session_t *sess)
         free(ht_head);
         free(ht_next);
         if (join_rc != 0) {
-            if (join_rc != EOVERFLOW) {
-                free(tmp);
-                col_rel_destroy(out);
-                free(lk);
-                free(rk);
-                if (left_e.owned)
-                    col_rel_destroy(left);
-                return join_rc;
-            }
-            /* Warn when a TDD worker truncates: silent truncation causes
-             * premature convergence and incorrect results (Issue #404). */
-            if (sess->coordinator) {
-                fprintf(stderr,
-                    "[wirelog] WARNING: join truncated on worker %u "
-                    "(limit=%llu, nrows=%u) — results may be incomplete\n",
-                    sess->worker_id,
-                    (unsigned long long)sess->join_output_limit,
-                    out->nrows);
-            }
-            join_rc = 0; /* soft truncation: push partial result below */
+            free(tmp);
+            col_rel_destroy(out);
+            free(lk);
+            free(rk);
+            if (right_filtered)
+                col_rel_destroy(right_filtered);
+            if (left_e.owned)
+                col_rel_destroy(left);
+            return join_rc;
         }
         WL_LOG(WL_LOG_SEC_JOIN, WL_LOG_DEBUG,
             "Unary join completed, out->nrows=%u",
@@ -2913,29 +2902,18 @@ col_op_join(const wl_plan_op_t *op, eval_stack_t *stack, wl_col_session_t *sess)
         free(ht_head_ep);
         free(ht_next_ep);
         if (join_rc != 0) {
-            if (join_rc != EOVERFLOW) {
-                WL_LOG(WL_LOG_SEC_JOIN, WL_LOG_DEBUG,
-                    "Merge-join failed with rc=%d, out->nrows=%u",
-                    join_rc, out->nrows);
-                free(tmp);
-                col_rel_destroy(out);
-                free(lk);
-                free(rk);
-                if (left_e.owned)
-                    col_rel_destroy(left);
-                return join_rc;
-            }
-            /* Warn when a TDD worker truncates: silent truncation causes
-             * premature convergence and incorrect results (Issue #404). */
-            if (sess->coordinator) {
-                fprintf(stderr,
-                    "[wirelog] WARNING: join truncated on worker %u "
-                    "(limit=%llu, nrows=%u) — results may be incomplete\n",
-                    sess->worker_id,
-                    (unsigned long long)sess->join_output_limit,
-                    out->nrows);
-            }
-            join_rc = 0; /* soft truncation: push partial result below */
+            WL_LOG(WL_LOG_SEC_JOIN, WL_LOG_DEBUG,
+                "Merge-join failed with rc=%d, out->nrows=%u",
+                join_rc, out->nrows);
+            free(tmp);
+            col_rel_destroy(out);
+            free(lk);
+            free(rk);
+            if (right_filtered)
+                col_rel_destroy(right_filtered);
+            if (left_e.owned)
+                col_rel_destroy(left);
+            return join_rc;
         }
         WL_LOG(WL_LOG_SEC_JOIN, WL_LOG_DEBUG, "Merge-join succeeded");
     }
@@ -5167,6 +5145,12 @@ col_op_k_fusion(const wl_plan_op_t *op, eval_stack_t *stack,
          * darr_* are zeroed: workers rebuild delta arrangements per-iteration. */
         worker_sess[d] = *sess;
         worker_sess[d].wq = NULL; /* prevent nested K-fusion from workers */
+        if (worker_sess[d].join_output_limit > 0 && live_count > 1) {
+            uint64_t per_branch =
+                worker_sess[d].join_output_limit / live_count;
+            worker_sess[d].join_output_limit =
+                per_branch > 0 ? per_branch : 1;
+        }
         /* NULL out owned resources before allocation so cleanup_wq is safe
          * even if we abort early (e.g. clone failure).  Each owned pointer
          * is replaced below; the parent session retains its own copies. */
@@ -5307,7 +5291,6 @@ col_op_k_fusion(const wl_plan_op_t *op, eval_stack_t *stack,
     for (uint32_t d = 0; d < live_count; d++) {
         if (workers[d].rc != 0) {
             rc = workers[d].rc;
-            eval_stack_drain(&workers[d].stack);
             goto cleanup_results;
         }
 
@@ -5397,6 +5380,7 @@ cleanup_results:
     for (uint32_t d = 0; d < live_count; d++) {
         if (results[d])
             col_rel_destroy(results[d]);
+        eval_stack_drain(&workers[d].stack);
     }
 
 cleanup_wq:
@@ -5410,6 +5394,7 @@ cleanup_wq:
      * Lock-free design: no synchronization needed because each worker owns
      * its isolated cache — no races at cleanup time. */
     for (uint32_t d = 0; d < live_count; d++) {
+        eval_stack_drain(&workers[d].stack);
         col_mat_cache_t *wc = &worker_sess[d].mat_cache;
         /* Issue #196: worker mat_cache starts empty (zeroed above), so ALL
          * entries were created by this worker — free from index 0. */
@@ -6246,17 +6231,17 @@ col_op_join_diff(const wl_plan_op_t *op, eval_stack_t *stack,
             }
         }
 
-        if (join_rc != 0 && join_rc != EOVERFLOW) {
+        if (join_rc != 0) {
             free(tmp);
             col_rel_destroy(out);
             free(lk);
             free(rk);
+            if (right_filtered)
+                col_rel_destroy(right_filtered);
             if (left_e.owned)
                 col_rel_destroy(left);
             return join_rc;
         }
-        if (join_rc == EOVERFLOW)
-            join_rc = 0; /* soft truncation */
     } else {
         /* Ephemeral hash table fallback (same as col_op_join) */
         uint32_t nbuckets_ep = next_pow2(right->nrows >
@@ -6306,17 +6291,17 @@ col_op_join_diff(const wl_plan_op_t *op, eval_stack_t *stack,
         }
         free(ht_head_ep);
         free(ht_next_ep);
-        if (join_rc != 0 && join_rc != EOVERFLOW) {
+        if (join_rc != 0) {
             free(tmp);
             col_rel_destroy(out);
             free(lk);
             free(rk);
+            if (right_filtered)
+                col_rel_destroy(right_filtered);
             if (left_e.owned)
                 col_rel_destroy(left);
             return join_rc;
         }
-        if (join_rc == EOVERFLOW)
-            join_rc = 0;
     }
 
     free(tmp);
