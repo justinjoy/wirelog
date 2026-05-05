@@ -51,6 +51,14 @@ collect_scans(wirelog_ir_node_t *node, wirelog_ir_node_t **out, uint32_t max)
 /* Internal: variable set operations                                        */
 /* ======================================================================== */
 
+static const wirelog_ir_node_t *
+wl_passes_jpp_data_node(const wirelog_ir_node_t *node)
+{
+    while (node && node->type == WIRELOG_IR_FILTER && node->child_count > 0)
+        node = node->children[0];
+    return node;
+}
+
 /*
  * Get the variable names for a SCAN node.
  * Returns column_names and sets *count.
@@ -58,6 +66,7 @@ collect_scans(wirelog_ir_node_t *node, wirelog_ir_node_t **out, uint32_t max)
 static char **
 scan_vars(const wirelog_ir_node_t *scan, uint32_t *count)
 {
+    scan = wl_passes_jpp_data_node(scan);
     if (!scan) {
         *count = 0;
         return NULL;
@@ -214,6 +223,7 @@ static bool
 scan_is_idb(const wirelog_ir_node_t *scan, const char *const *idb_names,
     uint32_t idb_count)
 {
+    scan = wl_passes_jpp_data_node(scan);
     if (!scan || !scan->relation_name || !idb_names)
         return false;
     for (uint32_t i = 0; i < idb_count; i++) {
