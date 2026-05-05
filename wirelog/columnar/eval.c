@@ -4106,6 +4106,61 @@ tdd_check_convergence(const col_eval_tdd_worker_ctx_t *ctxs, uint32_t W)
     return true;
 }
 
+static uint64_t
+tdd_estimate_stratum_work_rows(const wl_plan_stratum_t *sp,
+    wl_col_session_t *coord)
+{
+    uint64_t stratum_rows = 0;
+    for (uint32_t ri = 0; ri < sp->relation_count; ri++) {
+        col_rel_t *r = session_find_rel(coord, sp->relations[ri].name);
+        if (r)
+            stratum_rows += r->nrows;
+    }
+
+    uint64_t input_rows = 0;
+    for (uint32_t ri = 0; ri < coord->nrels; ri++) {
+        col_rel_t *r = coord->rels[ri];
+        if (r)
+            input_rows += r->nrows;
+    }
+    return input_rows > stratum_rows ? input_rows : stratum_rows;
+}
+
+static uint32_t
+tdd_choose_active_workers(const wl_plan_stratum_t *sp,
+    wl_col_session_t *coord, uint32_t max_workers, bool replicate_mode)
+{
+    if (max_workers <= 1)
+        return 1;
+
+    const char *env = getenv("WIRELOG_TDD_MIN_ROWS_PER_WORKER");
+    uint64_t rows_per_worker = 4096;
+    if (env && env[0] != '\0') {
+        char *endp = NULL;
+        errno = 0;
+        unsigned long long v = strtoull(env, &endp, 10);
+        if (endp != env && *endp == '\0' && errno != ERANGE && v > 0)
+            rows_per_worker = (uint64_t)v;
+    }
+
+    uint64_t rows = tdd_estimate_stratum_work_rows(sp, coord);
+    uint32_t active = 1;
+    if (rows > 0) {
+        uint64_t wanted = (rows + rows_per_worker - 1) / rows_per_worker;
+        if (wanted > UINT32_MAX)
+            wanted = UINT32_MAX;
+        active = (uint32_t)wanted;
+    }
+
+    if (replicate_mode && active > 8)
+        active = 8;
+    if (active < 1)
+        active = 1;
+    if (active > max_workers)
+        active = max_workers;
+    return active;
+}
+
 /*
  * bdx_hash_diff:
  * Remove from delta any row that already exists in base.  This exact
@@ -4818,6 +4873,7 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
         if (env && env[0] == '1')
             W = 1;
     }
+    W = tdd_choose_active_workers(sp, coord, W, replicate_mode);
 
     col_rel_t **owner_fallback_saved = NULL;
     bool owner_adaptive_fallback = false;
@@ -5377,6 +5433,10 @@ col_eval_stratum_tdd_nonrecursive(const wl_plan_stratum_t *sp,
 {
     uint32_t W = coord->num_workers;
     int rc;
+
+    W = tdd_choose_active_workers(sp, coord, W, false);
+    if (W <= 1)
+        return col_eval_stratum(sp, coord, stratum_idx);
 
     /* Phase 1: PARTITION — partition all coordinator relations to workers */
     rc = tdd_init_workers(coord, W);
