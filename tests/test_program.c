@@ -1355,13 +1355,20 @@ make_full_program(const char *source)
 }
 
 /* ======================================================================== */
-/* Phase 2B: Compound Column IR Lowering Tests (Issue #531/#539)            */
+/* Compound Column IR Lowering Tests (Issue #531/#539)                      */
 /*                                                                          */
-/* The parser does not yet accept "f/N inline" / "f/N side" syntax in       */
-/* .decl bodies, so these tests build a program with regular column types   */
-/* and then patch the relation's column metadata before convert_rules() to  */
-/* simulate compound declarations. This isolates the IR lowering path that  */
-/* runs inside build_atom_scan().                                           */
+/* These tests synthesize compound column metadata directly on              */
+/* wirelog_column_t before convert_rules() in order to isolate the IR       */
+/* lowering path that runs inside build_atom_scan(). The parser accepts     */
+/* the "f/N inline" / "f/N side" declaration syntax (see                    */
+/* test_parse_decl_compound_types in test_parser.c), but the synthetic      */
+/* helper is retained because several cases below need either:              */
+/*                                                                          */
+/*   - non-default inline_col_offset values that the parser's natural       */
+/*     prefix-sum (ir/program.c) does not produce for the test schema, or   */
+/*   - parser-unreachable states such as compound_arity = 0 or an           */
+/*     unknown compound_kind enum value, which exist solely to verify       */
+/*     build_atom_scan()'s defense against corrupt IR metadata.             */
 /* ======================================================================== */
 
 static void
