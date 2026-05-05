@@ -4885,6 +4885,15 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
             W = 1;
     }
     W = tdd_choose_active_workers(sp, coord, W, replicate_mode);
+    if (W <= 1 && (coord->last_inserted_relation != NULL
+        || coord->total_iterations == 0)) {
+        tdd_record_active_workers(coord, 1);
+        uint32_t saved_total_iterations = coord->total_iterations;
+        int seq_rc = col_eval_stratum(sp, coord, stratum_idx);
+        if (seq_rc == 0 && saved_total_iterations > 0)
+            coord->total_iterations += saved_total_iterations;
+        return seq_rc;
+    }
 
     col_rel_t **owner_fallback_saved = NULL;
     bool owner_adaptive_fallback = false;
