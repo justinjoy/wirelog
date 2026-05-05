@@ -32,6 +32,16 @@
  * acquire/release semantics. */
 typedef volatile uint64_t wl_atomic_u64;
 
+/* C11 atomic types/initializer used by the parallel keyed-join path.
+ * Field accesses are paired with the atomic_*_explicit shims below; for
+ * relaxed-order callers a volatile-qualified plain type is sufficient on
+ * the architectures MSVC targets (x86/x64/ARM64), and the shimmed
+ * fetch_add still routes through _InterlockedCompareExchange64 for the
+ * read-modify-write ops. */
+typedef volatile bool atomic_bool;
+typedef volatile uint_fast64_t atomic_uint_fast64_t;
+#define ATOMIC_VAR_INIT(x) (x)
+
 /* MSVC atomic macros using intrinsics that are guaranteed to exist */
 #define atomic_load_explicit(ptr, order) (*(ptr))
 #define atomic_store_explicit(ptr, val, order) (*(ptr) = (val))
@@ -61,14 +71,14 @@ wl_atomic_fetch_sub_internal(volatile __int64 *ptr, __int64 dec)
 }
 
 #define atomic_fetch_add_explicit(ptr, inc, order) \
-    wl_atomic_fetch_add_internal((volatile __int64 *)(ptr), (__int64)(inc))
+        wl_atomic_fetch_add_internal((volatile __int64 *)(ptr), (__int64)(inc))
 #define atomic_fetch_sub_explicit(ptr, dec, order) \
-    wl_atomic_fetch_sub_internal((volatile __int64 *)(ptr), (__int64)(dec))
+        wl_atomic_fetch_sub_internal((volatile __int64 *)(ptr), (__int64)(dec))
 #define atomic_compare_exchange_weak_explicit(ptr, expected, desired,        \
-                                              succ_order, fail_order)        \
-    (_InterlockedCompareExchange64((volatile __int64 *)(ptr),                \
-                                   (__int64)(desired), (__int64)*(expected)) \
-     == (__int64)*(expected))
+            succ_order, fail_order)        \
+        (_InterlockedCompareExchange64((volatile __int64 *)(ptr),                \
+        (__int64)(desired), (__int64)*(expected)) \
+        == (__int64)*(expected))
 
 /* Memory orders (ignored on MSVC - intrinsics always use acquire/release semantics) */
 #define memory_order_relaxed 0
@@ -207,7 +217,7 @@ wl_mem_ledger_subsys_over_budget(const wl_mem_ledger_t *ledger, int subsys);
  */
 bool
 wl_mem_ledger_should_backpressure(const wl_mem_ledger_t *ledger, int subsys,
-                                  uint32_t threshold_pct);
+    uint32_t threshold_pct);
 
 /*
  * wl_mem_ledger_bytes_remaining:
