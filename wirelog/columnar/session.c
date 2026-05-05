@@ -996,14 +996,10 @@ col_session_create(const wl_plan_t *plan, uint32_t num_workers,
                 uint32_t nw = sess->num_workers;
                 if (nw > 1) {
                     /* Issue #416 (lazy budget partitioning): coordinator
-                     * starts with the full budget so that single-threaded
-                     * strata (use_tdd=false) are not penalised by an
-                     * artificially low backpressure threshold.  The per-
-                     * party share is stored in tdd_budget_per_party and
-                     * applied to the coordinator lazily (on first worker
-                     * session init) only when workers are actually used.
-                     * This ensures W=N and W=1 produce identical results
-                     * for workloads where no stratum uses TDD. */
+                     * keeps the full budget so single-threaded strata
+                     * (use_tdd=false) are not penalised by an artificially
+                     * low backpressure threshold. Worker sessions receive a
+                     * per-party budget when they are actually used. */
                     sess->tdd_budget_per_party
                         = total / (uint64_t)(nw + 1);
                     budget = total;
@@ -1384,12 +1380,10 @@ col_worker_session_create(wl_col_session_t *coordinator,
     out_worker->last_removed_relation = NULL;
 
     /* Step 5: Initialize independent mem_ledger (avoid copying atomics).
-     * Issue #416 (lazy budget partitioning): if tdd_budget_per_party was
-     * set at session init, the coordinator started with the full budget so
-     * single-threaded strata are not penalised.  On the first worker init
-     * we lazily shrink the coordinator to its per-party share so that, once
-     * workers are live, aggregate memory usage stays within the 75%-RAM
-     * envelope (coordinator + W workers each hold tdd_budget_per_party). */
+     * Workers receive a per-party budget, but the coordinator keeps its
+     * original budget. W is an upper bound on active workers, and shrinking the
+     * coordinator permanently causes later sequential strata to trip
+     * backpressure under a stale worker-sized budget. */
     uint32_t active_workers = coordinator->tdd_active_workers > 0
         ? coordinator->tdd_active_workers : coordinator->num_workers;
     if (active_workers == 0)
@@ -1402,11 +1396,6 @@ col_worker_session_create(wl_col_session_t *coordinator,
             * (max_workers + 1)) / (uint64_t)(active_workers + 1);
         if (active_party_budget == 0)
             active_party_budget = coordinator->tdd_budget_per_party;
-        if (coordinator->tdd_workers_count == 0) {
-            /* First worker: shrink coordinator to its per-party share. */
-            atomic_store_explicit(&coordinator->mem_ledger.total_budget,
-                active_party_budget, memory_order_relaxed);
-        }
         worker_budget = active_party_budget;
     } else {
         worker_budget = atomic_load_explicit(
