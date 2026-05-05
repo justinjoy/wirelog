@@ -1172,6 +1172,89 @@ test_intern_after_step_succeeds(void)
     PASS();
 }
 
+static void
+test_delta_cb_multi_round_recursive_insert(void)
+{
+    TEST("delta_cb + recursive insert/step rounds produce expected deltas");
+
+    /* Issue #662: when wl_easy_set_delta_cb has installed a callback, a
+     * subsequent wl_easy_insert must take the same incremental path that
+     * wl_easy_remove already takes, so that arrangement caches are
+     * invalidated and the outer-epoch counter advances.  Without that
+     * symmetry, a second insert+step round on a recursive stratum either
+     * skips the new iteration (no delta surfaces) or trips the join over
+     * stale arrangements and the easy facade reports WIRELOG_ERR_EXEC. */
+    static const char *RECURSIVE_REACH_SRC
+        = ".decl edge(a: int64, b: int64)\n"
+        ".decl reach(a: int64, b: int64)\n"
+        "reach(A, B) :- edge(A, B).\n"
+        "reach(A, C) :- reach(A, B), edge(B, C).\n";
+
+    wl_easy_session_t *s = NULL;
+    if (wl_easy_open(RECURSIVE_REACH_SRC, &s) != WIRELOG_OK || !s) {
+        FAIL("open failed");
+        return;
+    }
+
+    delta_collector_t deltas;
+    memset(&deltas, 0, sizeof(deltas));
+    if (wl_easy_set_delta_cb(s, collect_delta, &deltas) != WIRELOG_OK) {
+        FAIL("set_delta_cb failed");
+        wl_easy_close(s);
+        return;
+    }
+
+    int64_t e12[2] = { 1, 2 };
+    if (wl_easy_insert(s, "edge", e12, 2) != WIRELOG_OK) {
+        FAIL("insert edge(1,2) failed");
+        wl_easy_close(s);
+        return;
+    }
+    if (wl_easy_step(s) != WIRELOG_OK) {
+        FAIL("first step returned non-OK");
+        wl_easy_close(s);
+        return;
+    }
+    int round1_count = deltas.count;
+    if (round1_count == 0) {
+        FAIL("first step produced no deltas");
+        wl_easy_close(s);
+        return;
+    }
+
+    int64_t e23[2] = { 2, 3 };
+    if (wl_easy_insert(s, "edge", e23, 2) != WIRELOG_OK) {
+        FAIL("insert edge(2,3) failed");
+        wl_easy_close(s);
+        return;
+    }
+    if (wl_easy_step(s) != WIRELOG_OK) {
+        FAIL("second step returned non-OK (issue #662 reproduction)");
+        wl_easy_close(s);
+        return;
+    }
+
+    /* The transitive consequence reach(1,3) must surface as a +1 delta
+     * during round 2.  A bug that suppresses the new iteration (stale
+     * outer_epoch) produces +reach(2,3) but not +reach(1,3); a bug that
+     * trips the join (stale arrangements) returns non-OK above. */
+    bool saw_reach_1_3 = false;
+    for (int i = round1_count; i < deltas.count; i++) {
+        if (strcmp(deltas.relations[i], "reach") == 0
+            && deltas.ncols[i] == 2 && deltas.rows[i][0] == 1
+            && deltas.rows[i][1] == 3 && deltas.diffs[i] == 1) {
+            saw_reach_1_3 = true;
+            break;
+        }
+    }
+    wl_easy_close(s);
+    if (!saw_reach_1_3) {
+        FAIL("expected +reach(1,3) delta in round 2 not seen");
+        return;
+    }
+    PASS();
+}
+
 /* ======================================================================== */
 /* Main                                                                     */
 /* ======================================================================== */
@@ -1208,6 +1291,7 @@ main(void)
     test_print_delta_abort_on_missed_symbol();
     test_cleanup_order_no_use_after_free();
     test_intern_after_step_succeeds();
+    test_delta_cb_multi_round_recursive_insert();
 
     printf("\nPassed: %d/%d\n", tests_passed, tests_run);
     printf("Failed: %d/%d\n", tests_failed, tests_run);
