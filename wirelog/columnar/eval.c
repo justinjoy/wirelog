@@ -1606,6 +1606,7 @@ tdd_cleanup_workers(wl_col_session_t *coord)
         memset(&coord->tdd_workers[w], 0, sizeof(wl_col_session_t));
     }
     coord->tdd_workers_count = 0;
+    coord->tdd_active_workers = 0;
 }
 
 /*
@@ -1618,11 +1619,13 @@ tdd_cleanup_workers(wl_col_session_t *coord)
  * On failure, any partially-created workers are destroyed.
  */
 static int
-tdd_init_workers(wl_col_session_t *coord)
+tdd_init_workers(wl_col_session_t *coord, uint32_t W)
 {
     tdd_cleanup_workers(coord);
 
-    uint32_t W = coord->num_workers;
+    if (W == 0 || W > coord->num_workers)
+        return EINVAL;
+    coord->tdd_active_workers = W;
     uint32_t nrels = coord->nrels;
 
     /* No relations: create empty worker sessions */
@@ -1747,11 +1750,13 @@ tdd_init_workers(wl_col_session_t *coord)
  * and 3-body recursive rules where IDB appears in the middle of the join.
  */
 static int
-tdd_replicate_workers(wl_col_session_t *coord)
+tdd_replicate_workers(wl_col_session_t *coord, uint32_t W)
 {
     tdd_cleanup_workers(coord);
 
-    uint32_t W = coord->num_workers;
+    if (W == 0 || W > coord->num_workers)
+        return EINVAL;
+    coord->tdd_active_workers = W;
     uint32_t nrels = coord->nrels;
 
     /* No relations: create empty worker sessions */
@@ -3617,11 +3622,13 @@ tdd_stratum_idb_self_join_exchange_aligned(const wl_plan_stratum_t *sp,
  */
 static int
 tdd_init_workers_hybrid(const wl_plan_stratum_t *sp, wl_col_session_t *coord,
-    bool partition_edb)
+    bool partition_edb, uint32_t W)
 {
     tdd_cleanup_workers(coord);
 
-    uint32_t W = coord->num_workers;
+    if (W == 0 || W > coord->num_workers)
+        return EINVAL;
+    coord->tdd_active_workers = W;
     uint32_t nrels = coord->nrels;
 
     if (nrels == 0) {
@@ -4823,9 +4830,9 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
     }
 
     if (replicate_mode)
-        rc = tdd_replicate_workers(coord);
+        rc = tdd_replicate_workers(coord, W);
     else
-        rc = tdd_init_workers_hybrid(sp, coord, true);
+        rc = tdd_init_workers_hybrid(sp, coord, true, W);
     if (rc != 0) {
         tdd_free_saved_coord_idb(sp, owner_fallback_saved);
         coord->tdd_total_ns += now_ns() - tdd_total_t0;
@@ -5372,7 +5379,7 @@ col_eval_stratum_tdd_nonrecursive(const wl_plan_stratum_t *sp,
     int rc;
 
     /* Phase 1: PARTITION — partition all coordinator relations to workers */
-    rc = tdd_init_workers(coord);
+    rc = tdd_init_workers(coord, W);
     if (rc != 0)
         return rc;
 

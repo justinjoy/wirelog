@@ -881,9 +881,10 @@ typedef struct wl_col_session_t {
      * instead of full re-derivation. Cleared after eval completes. */
     bool delta_seeded;
     /* Multi-worker support (issue #99).
-     * Stored from col_session_create num_workers parameter.
-     * When > 1, sess->wq is created at session init for parallel K-fusion.
-     * When == 1, K-fusion evaluates copies sequentially (no thread overhead). */
+     * Stored from col_session_create num_workers parameter as a maximum worker
+     * width. Adaptive TDD may dispatch fewer active workers for a stratum or
+     * sub-pass. When > 1, sess->wq is created at session init for parallel
+     * K-fusion. When == 1, K-fusion evaluates copies sequentially. */
     uint32_t num_workers;
     /* Dynamic join output limit (Issue #221).
      * Maximum output rows per single join operation. Computed at session init
@@ -984,6 +985,7 @@ typedef struct wl_col_session_t {
      * Owned by coordinator; worker sessions set tdd_workers = NULL. */
     struct wl_col_session_t *tdd_workers; /* owned array [num_workers] */
     uint32_t tdd_workers_count;         /* number of initialized workers */
+    uint32_t tdd_active_workers;        /* current adaptive TDD width */
     /* Per-party memory budget for TDD replicate-mode (Issue #416).
      * = total_ram*75% / (num_workers+1): the share that keeps aggregate
      * usage within 75% RAM when coordinator + W workers each hold a full
