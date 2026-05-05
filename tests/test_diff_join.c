@@ -48,6 +48,9 @@
 static int tests_passed = 0;
 static int tests_failed = 0;
 
+static col_rel_t *
+make_rel(const char *name, uint32_t ncols, const char *const *col_names);
+
 /* ========================================================================
  * Helpers
  * ======================================================================== */
@@ -65,6 +68,7 @@ make_mock_session(void)
 static void
 destroy_mock_session(wl_col_session_t *s)
 {
+    wl_workqueue_destroy(s->wq);
     for (uint32_t i = 0; i < s->nrels; i++) {
         col_rel_free_contents(s->rels[i]);
         free(s->rels[i]);
@@ -81,6 +85,90 @@ destroy_mock_session(wl_col_session_t *s)
     session_rel_free_hash(s);
     delta_pool_destroy(s->delta_pool);
     free(s);
+}
+
+static col_rel_t *
+make_large_left_rel(void)
+{
+    const char *cn[] = {"k", "v"};
+    col_rel_t *left = make_rel("left", 2, cn);
+    if (!left)
+        return NULL;
+    for (int64_t i = 0; i < 20000; i++) {
+        int64_t row[] = {i % 8, i};
+        if (col_rel_append_row(left, row) != 0) {
+            col_rel_destroy(left);
+            return NULL;
+        }
+    }
+    return left;
+}
+
+static col_rel_t *
+make_large_right_rel(void)
+{
+    const char *cn[] = {"k", "r"};
+    col_rel_t *right = make_rel("right", 2, cn);
+    if (!right)
+        return NULL;
+    for (int64_t k = 0; k < 8; k++) {
+        int64_t row1[] = {k, 100 + k};
+        int64_t row2[] = {k, 200 + k};
+        if (col_rel_append_row(right, row1) != 0
+            || col_rel_append_row(right, row2) != 0) {
+            col_rel_destroy(right);
+            return NULL;
+        }
+    }
+    return right;
+}
+
+static col_rel_t *
+run_standard_join(wl_col_session_t *sess, col_rel_t *left)
+{
+    wl_plan_op_t op = {0};
+    op.op = WL_PLAN_OP_JOIN;
+    op.right_relation = "right";
+    op.key_count = 1;
+    char *lkeys[] = {"k"};
+    char *rkeys[] = {"k"};
+    op.left_keys = (const char *const *)lkeys;
+    op.right_keys = (const char *const *)rkeys;
+    op.delta_mode = WL_DELTA_FORCE_FULL;
+
+    eval_stack_t stack;
+    eval_stack_init(&stack);
+    eval_stack_push(&stack, left, false);
+
+    int rc = col_op_join(&op, &stack, sess);
+    if (rc != 0)
+        return NULL;
+    eval_entry_t result = eval_stack_pop(&stack);
+    if (!result.owned)
+        return NULL;
+    return result.rel;
+}
+
+static col_rel_t *
+run_cross_join(wl_col_session_t *sess, col_rel_t *left)
+{
+    wl_plan_op_t op = {0};
+    op.op = WL_PLAN_OP_JOIN;
+    op.right_relation = "right";
+    op.key_count = 0;
+    op.delta_mode = WL_DELTA_FORCE_FULL;
+
+    eval_stack_t stack;
+    eval_stack_init(&stack);
+    eval_stack_push(&stack, left, false);
+
+    int rc = col_op_join(&op, &stack, sess);
+    if (rc != 0)
+        return NULL;
+    eval_entry_t result = eval_stack_pop(&stack);
+    if (!result.owned)
+        return NULL;
+    return result.rel;
 }
 
 static col_rel_t *
@@ -907,6 +995,94 @@ test_diff_arr_entry_cleanup(void)
     PASS;
 }
 
+static void
+test_direct_standard_join_matches_serial_with_workers(void)
+{
+    TEST("direct standard join matches serial output with workers");
+
+    wl_col_session_t *serial = make_mock_session();
+    wl_col_session_t *parallel = make_mock_session();
+    parallel->num_workers = 4;
+    parallel->wq = wl_workqueue_create(parallel->num_workers);
+    ASSERT_TRUE(parallel->wq != NULL, "workqueue create");
+
+    col_rel_t *serial_left = make_large_left_rel();
+    col_rel_t *parallel_left = make_large_left_rel();
+    col_rel_t *serial_right = make_large_right_rel();
+    col_rel_t *parallel_right = make_large_right_rel();
+    ASSERT_TRUE(serial_left && parallel_left && serial_right && parallel_right,
+        "relations allocated");
+    ASSERT_TRUE(session_add_rel(serial, serial_right) == 0,
+        "serial right registered");
+    ASSERT_TRUE(session_add_rel(parallel, parallel_right) == 0,
+        "parallel right registered");
+
+    col_rel_t *serial_out = run_standard_join(serial, serial_left);
+    col_rel_t *parallel_out = run_standard_join(parallel, parallel_left);
+    ASSERT_TRUE(serial_out && parallel_out, "join outputs");
+    ASSERT_TRUE(serial_out->nrows == parallel_out->nrows, "row count");
+    ASSERT_TRUE(serial_out->ncols == parallel_out->ncols, "column count");
+    for (uint32_t r = 0; r < serial_out->nrows; r++) {
+        for (uint32_t c = 0; c < serial_out->ncols; c++) {
+            ASSERT_TRUE(col_rel_get(serial_out, r, c)
+                == col_rel_get(parallel_out, r, c),
+                "worker-enabled output preserves deterministic row order");
+        }
+    }
+
+    col_rel_destroy(serial_out);
+    col_rel_destroy(parallel_out);
+    col_rel_destroy(serial_left);
+    col_rel_destroy(parallel_left);
+    destroy_mock_session(serial);
+    destroy_mock_session(parallel);
+    PASS;
+}
+
+static void
+test_parallel_cross_join_matches_serial(void)
+{
+    TEST("parallel cross join matches serial output");
+
+    wl_col_session_t *serial = make_mock_session();
+    wl_col_session_t *parallel = make_mock_session();
+    parallel->num_workers = 4;
+    parallel->wq = wl_workqueue_create(parallel->num_workers);
+    ASSERT_TRUE(parallel->wq != NULL, "workqueue create");
+
+    col_rel_t *serial_left = make_large_left_rel();
+    col_rel_t *parallel_left = make_large_left_rel();
+    col_rel_t *serial_right = make_large_right_rel();
+    col_rel_t *parallel_right = make_large_right_rel();
+    ASSERT_TRUE(serial_left && parallel_left && serial_right && parallel_right,
+        "relations allocated");
+    ASSERT_TRUE(session_add_rel(serial, serial_right) == 0,
+        "serial right registered");
+    ASSERT_TRUE(session_add_rel(parallel, parallel_right) == 0,
+        "parallel right registered");
+
+    col_rel_t *serial_out = run_cross_join(serial, serial_left);
+    col_rel_t *parallel_out = run_cross_join(parallel, parallel_left);
+    ASSERT_TRUE(serial_out && parallel_out, "join outputs");
+    ASSERT_TRUE(serial_out->nrows == parallel_out->nrows, "row count");
+    ASSERT_TRUE(serial_out->ncols == parallel_out->ncols, "column count");
+    for (uint32_t r = 0; r < serial_out->nrows; r++) {
+        for (uint32_t c = 0; c < serial_out->ncols; c++) {
+            ASSERT_TRUE(col_rel_get(serial_out, r, c)
+                == col_rel_get(parallel_out, r, c),
+                "parallel cross output preserves deterministic row order");
+        }
+    }
+
+    col_rel_destroy(serial_out);
+    col_rel_destroy(parallel_out);
+    col_rel_destroy(serial_left);
+    col_rel_destroy(parallel_left);
+    destroy_mock_session(serial);
+    destroy_mock_session(parallel);
+    PASS;
+}
+
 /* ========================================================================
  * MAIN
  * ======================================================================== */
@@ -932,6 +1108,8 @@ main(void)
     test_force_full_mode();
     test_delta_substitution();
     test_diff_arr_entry_cleanup();
+    test_direct_standard_join_matches_serial_with_workers();
+    test_parallel_cross_join_matches_serial();
 
     printf("\n=== Results: %d/%d passed ===\n",
         tests_passed, tests_passed + tests_failed);

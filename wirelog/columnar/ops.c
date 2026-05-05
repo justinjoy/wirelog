@@ -2109,6 +2109,235 @@ apply_right_filter_cached(wl_col_session_t *sess,
 
 /* --- JOIN ---------------------------------------------------------------- */
 
+#define WL_JOIN_PAR_MIN_LEFT_ROWS_DEFAULT 4096u
+
+static uint32_t
+col_join_parallel_min_left_rows(void)
+{
+    const char *env = getenv("WIRELOG_JOIN_PAR_MIN_LEFT_ROWS");
+    if (!env || env[0] == '\0')
+        return WL_JOIN_PAR_MIN_LEFT_ROWS_DEFAULT;
+
+    char *endp = NULL;
+    errno = 0;
+    unsigned long v = strtoul(env, &endp, 10);
+    if (endp == env || *endp != '\0' || errno == ERANGE || v > UINT32_MAX)
+        return WL_JOIN_PAR_MIN_LEFT_ROWS_DEFAULT;
+    return (uint32_t)v;
+}
+
+static bool
+col_join_should_parallelize_rows(const wl_col_session_t *sess,
+    const col_rel_t *left, const col_rel_t *right)
+{
+    if (!sess || !left || !right)
+        return false;
+    if (sess->coordinator || !sess->wq || sess->num_workers <= 1)
+        return false;
+    uint32_t min_left = col_join_parallel_min_left_rows();
+    if (min_left == 0)
+        min_left = 1;
+    return left->nrows >= min_left
+           && left->nrows >= sess->num_workers * min_left;
+}
+
+static bool
+col_join_should_parallelize_cross(const wl_col_session_t *sess,
+    const col_rel_t *left, const col_rel_t *right)
+{
+    if (!col_join_should_parallelize_rows(sess, left, right))
+        return false;
+    if (right->nrows != 0 && left->nrows > UINT64_MAX / right->nrows)
+        return false;
+    uint64_t total = (uint64_t)left->nrows * right->nrows;
+    return sess->join_output_limit == 0 || total < sess->join_output_limit;
+}
+
+static void
+col_join_attach_ledger(wl_col_session_t *sess, col_rel_t *rel)
+{
+    if (!sess || !rel || rel->mem_ledger)
+        return;
+    rel->mem_ledger = &sess->mem_ledger;
+    if (rel->capacity > 0 && rel->ncols > 0)
+        wl_mem_ledger_alloc(rel->mem_ledger, WL_MEM_SUBSYS_RELATION,
+            (uint64_t)rel->capacity * rel->ncols * sizeof(int64_t));
+}
+
+static int
+col_join_reserve_exact(col_rel_t *rel, uint32_t nrows)
+{
+    if (!rel)
+        return EINVAL;
+    if (nrows <= rel->capacity)
+        return 0;
+    uint32_t old_cap = rel->capacity;
+    if (col_columns_realloc(rel->columns, rel->ncols, nrows) != 0)
+        return ENOMEM;
+    rel->capacity = nrows;
+    if (rel->mem_ledger && rel->ncols > 0)
+        wl_mem_ledger_alloc(rel->mem_ledger, WL_MEM_SUBSYS_RELATION,
+            (uint64_t)(nrows - old_cap) * rel->ncols * sizeof(int64_t));
+    return 0;
+}
+
+typedef struct {
+    const col_rel_t *left;
+    const col_rel_t *right;
+    col_rel_t *out;
+    uint64_t begin;
+    uint64_t end;
+} col_join_cross_ctx_t;
+
+static void
+col_join_cross_fill_worker_fn(void *arg)
+{
+    col_join_cross_ctx_t *ctx = (col_join_cross_ctx_t *)arg;
+    const col_rel_t *left = ctx->left;
+    const col_rel_t *right = ctx->right;
+    col_rel_t *out = ctx->out;
+    uint64_t right_rows = right->nrows;
+
+    uint64_t oi = ctx->begin;
+    uint32_t lr = (uint32_t)(ctx->begin / right_rows);
+    uint32_t rpos = (uint32_t)(ctx->begin % right_rows);
+    while (oi < ctx->end) {
+        uint32_t rr = right->nrows - 1u - rpos;
+        for (uint32_t c = 0; c < left->ncols; c++)
+            out->columns[c][oi] = left->columns[c][lr];
+        for (uint32_t c = 0; c < right->ncols; c++)
+            out->columns[left->ncols + c][oi] = right->columns[c][rr];
+        oi++;
+        rpos++;
+        if (rpos == right->nrows) {
+            rpos = 0;
+            lr++;
+        }
+    }
+}
+
+static int
+col_join_parallel_cross(wl_col_session_t *sess, const col_rel_t *left,
+    const col_rel_t *right, col_rel_t **outp, int *out_overflow)
+{
+    if (!sess || !left || !right || !outp || !*outp)
+        return EINVAL;
+    if (!sess->wq || sess->num_workers <= 1 || right->nrows == 0)
+        return EINVAL;
+
+    uint64_t total = (uint64_t)left->nrows * (uint64_t)right->nrows;
+    uint64_t emit_total = total;
+    if (sess->join_output_limit > 0 && emit_total >= sess->join_output_limit) {
+        emit_total = sess->join_output_limit;
+        *out_overflow = 1;
+    }
+    if (emit_total > UINT32_MAX)
+        return ENOMEM;
+
+    uint32_t nrows = (uint32_t)emit_total;
+    col_rel_t *out = col_rel_new_auto("$join", left->ncols + right->ncols);
+    if (!out)
+        return ENOMEM;
+    col_join_attach_ledger(sess, out);
+    if (col_join_reserve_exact(out, nrows) != 0) {
+        col_rel_destroy(out);
+        return ENOMEM;
+    }
+    out->nrows = nrows;
+
+    uint32_t W = sess->num_workers;
+    col_join_cross_ctx_t *ctxs = (col_join_cross_ctx_t *)calloc(
+        W, sizeof(col_join_cross_ctx_t));
+    if (!ctxs) {
+        col_rel_destroy(out);
+        return ENOMEM;
+    }
+
+    uint64_t chunk = (emit_total + W - 1u) / W;
+    int rc = 0;
+    for (uint32_t w = 0; w < W; w++) {
+        uint64_t begin = (uint64_t)w * chunk;
+        uint64_t end = begin + chunk;
+        if (begin > emit_total)
+            begin = emit_total;
+        if (end > emit_total)
+            end = emit_total;
+        ctxs[w].left = left;
+        ctxs[w].right = right;
+        ctxs[w].out = out;
+        ctxs[w].begin = begin;
+        ctxs[w].end = end;
+        if (wl_workqueue_submit(sess->wq, col_join_cross_fill_worker_fn,
+            &ctxs[w]) != 0) {
+            rc = ENOMEM;
+            break;
+        }
+    }
+    wl_workqueue_wait_all(sess->wq);
+    free(ctxs);
+    if (rc != 0) {
+        col_rel_destroy(out);
+        return rc;
+    }
+
+    /* The placeholder $join relation was allocated before this fast path was
+     * selected and its initial capacity was never charged to the ledger. */
+    (*outp)->mem_ledger = NULL;
+    col_rel_destroy(*outp);
+    *outp = out;
+    return 0;
+}
+
+static uint32_t
+col_join_hash_rel_keys(const col_rel_t *rel, uint32_t row,
+    const uint32_t *key_cols, uint32_t kc)
+{
+    uint32_t h = 2166136261u;
+    for (uint32_t i = 0; i < kc; i++) {
+        uint64_t v = (uint64_t)rel->columns[key_cols[i]][row];
+        h ^= (uint32_t)(v & 0xffffffff);
+        h *= 16777619u;
+        h ^= (uint32_t)(v >> 32);
+        h *= 16777619u;
+    }
+    return h;
+}
+
+static bool
+col_join_keys_match_rel(const col_rel_t *left, uint32_t lr,
+    const uint32_t *lk, const col_rel_t *right, uint32_t rr,
+    const uint32_t *rk, uint32_t kc)
+{
+    for (uint32_t k = 0; k < kc; k++)
+        if (left->columns[lk[k]][lr] != right->columns[rk[k]][rr])
+            return false;
+    return true;
+}
+
+static int
+col_join_append_pair(col_rel_t *out, const col_rel_t *left, uint32_t lr,
+    const col_rel_t *right, uint32_t rr, int64_t *fallback_row)
+{
+    if (out->nrows < out->capacity) {
+        uint32_t out_row = out->nrows;
+        if (out->timestamps)
+            memset(&out->timestamps[out_row], 0,
+                sizeof(col_delta_timestamp_t));
+        for (uint32_t c = 0; c < left->ncols; c++)
+            out->columns[c][out_row] = left->columns[c][lr];
+        for (uint32_t c = 0; c < right->ncols; c++)
+            out->columns[left->ncols + c][out_row] = right->columns[c][rr];
+        out->nrows++;
+        return 0;
+    }
+
+    for (uint32_t c = 0; c < left->ncols; c++)
+        fallback_row[c] = left->columns[c][lr];
+    for (uint32_t c = 0; c < right->ncols; c++)
+        fallback_row[left->ncols + c] = right->columns[c][rr];
+    return col_rel_append_row(out, fallback_row);
+}
+
 int
 col_op_join(const wl_plan_op_t *op, eval_stack_t *stack, wl_col_session_t *sess)
 {
@@ -2524,11 +2753,8 @@ col_op_join(const wl_plan_op_t *op, eval_stack_t *stack, wl_col_session_t *sess)
                 "Ephemeral hash table created - nbuckets=%u",
                 nbuckets_ep);
             for (uint32_t rr = 0; rr < right->nrows; rr++) {
-                int64_t rrow_buf[COL_STACK_MAX];
-                col_rel_row_copy_out(right, rr, rrow_buf);
-                const int64_t *rrow = rrow_buf;
-                uint32_t h
-                    = hash_int64_keys_fast(rrow, rk, kc) & (nbuckets_ep - 1);
+                uint32_t h = col_join_hash_rel_keys(right, rr, rk, kc)
+                    & (nbuckets_ep - 1);
                 ht_next_ep[rr] = ht_head_ep[h];
                 ht_head_ep[h] = rr + 1; /* 1-based; 0 = end of chain */
             }
@@ -2556,31 +2782,69 @@ col_op_join(const wl_plan_op_t *op, eval_stack_t *stack, wl_col_session_t *sess)
         }
 
         int join_rc = 0;
-        for (uint32_t lr = 0; lr < left->nrows && join_rc == 0; lr++) {
-            int64_t lrow_buf[COL_STACK_MAX];
-            col_rel_row_copy_out(left, lr, lrow_buf);
-            const int64_t *lrow = lrow_buf;
-
-            if (arr) {
-                /* Arrangement probe: fill key_row at right-side positions. */
-                for (uint32_t k = 0; k < kc; k++)
-                    key_row[rk[k]] = lrow[lk[k]];
-                uint32_t rr = col_arrangement_find_first(arr, right->columns,
-                        right->ncols, key_row);
-                while (rr != UINT32_MAX && join_rc == 0) {
-                    int64_t rrow_buf[COL_STACK_MAX];
-                    col_rel_row_copy_out(right, rr, rrow_buf);
-                    const int64_t *rrow = rrow_buf;
-                    /* Verify key match: find_next may return collision rows. */
-                    if (keys_match_fast(lrow, lk, rrow, rk, kc)) {
-                        memcpy(tmp, lrow, sizeof(int64_t) * left->ncols);
-                        memcpy(tmp + left->ncols, rrow,
-                            sizeof(int64_t) * right->ncols);
-                        join_rc = col_rel_append_row(out, tmp);
+        int join_overflow = 0;
+        if (kc == 0 && col_join_should_parallelize_cross(sess, left, right)) {
+            join_rc = col_join_parallel_cross(sess, left, right, &out,
+                    &join_overflow);
+            if (join_rc == EINVAL)
+                join_rc = 0;
+            else if (join_rc == 0 && join_overflow)
+                join_rc = EOVERFLOW;
+        } else for (uint32_t lr = 0; lr < left->nrows && join_rc == 0; lr++) {
+                if (arr) {
+                    /* Arrangement probe: fill key_row at right-side positions. */
+                    for (uint32_t k = 0; k < kc; k++)
+                        key_row[rk[k]] = left->columns[lk[k]][lr];
+                    uint32_t rr = col_arrangement_find_first(arr,
+                            right->columns,
+                            right->ncols, key_row);
+                    while (rr != UINT32_MAX && join_rc == 0) {
+                        /* Verify key match: find_next may return collision rows. */
+                        if (col_join_keys_match_rel(left, lr, lk, right, rr, rk,
+                            kc)) {
+                            join_rc = col_join_append_pair(out, left, lr, right,
+                                    rr, tmp);
+                            if (join_rc != 0) {
+                                fprintf(stderr,
+                                    "ERROR: col_rel_append_row failed in "
+                                    "arrangement probe with rc=%d\n",
+                                    join_rc);
+                                break;
+                            }
+                            if ((sess->join_output_limit > 0
+                                && out->nrows >= sess->join_output_limit)
+                                || (out->nrows % 10000 == 0 && out->nrows > 0
+                                && wl_mem_ledger_should_backpressure(
+                                    &sess->mem_ledger, WL_MEM_SUBSYS_RELATION,
+                                    80))) {
+                                fprintf(
+                                    stderr,
+                                    "join output limit reached: %u rows "
+                                    "(limit=%llu)\n",
+                                    out->nrows,
+                                    (unsigned long long)sess->join_output_limit);
+                                join_rc = EOVERFLOW;
+                            }
+                        }
+                        rr = col_arrangement_find_next(arr, rr);
+                    }
+                } else {
+                    /* Ephemeral hash probe. */
+                    uint32_t h = col_join_hash_rel_keys(left, lr, lk, kc)
+                        & (nbuckets_ep - 1);
+                    for (uint32_t e = ht_head_ep[h]; e != 0;
+                        e = ht_next_ep[e - 1]) {
+                        uint32_t rr = e - 1;
+                        if (!col_join_keys_match_rel(left, lr, lk, right, rr,
+                            rk,
+                            kc))
+                            continue;
+                        join_rc = col_join_append_pair(out, left, lr, right, rr,
+                                tmp);
                         if (join_rc != 0) {
                             fprintf(stderr,
-                                "ERROR: col_rel_append_row failed in "
-                                "arrangement probe with rc=%d\n",
+                                "ERROR: col_rel_append_row failed in ephemeral "
+                                "hash probe with rc=%d\n",
                                 join_rc);
                             break;
                         }
@@ -2590,57 +2854,17 @@ col_op_join(const wl_plan_op_t *op, eval_stack_t *stack, wl_col_session_t *sess)
                             && wl_mem_ledger_should_backpressure(
                                 &sess->mem_ledger, WL_MEM_SUBSYS_RELATION,
                                 80))) {
-                            fprintf(
-                                stderr,
+                            fprintf(stderr,
                                 "join output limit reached: %u rows "
                                 "(limit=%llu)\n",
                                 out->nrows,
                                 (unsigned long long)sess->join_output_limit);
                             join_rc = EOVERFLOW;
+                            break;
                         }
-                    }
-                    rr = col_arrangement_find_next(arr, rr);
-                }
-            } else {
-                /* Ephemeral hash probe. */
-                uint32_t h
-                    = hash_int64_keys_fast(lrow, lk, kc) & (nbuckets_ep - 1);
-                for (uint32_t e = ht_head_ep[h]; e != 0;
-                    e = ht_next_ep[e - 1]) {
-                    uint32_t rr = e - 1;
-                    int64_t rrow_buf[COL_STACK_MAX];
-                    col_rel_row_copy_out(right, rr, rrow_buf);
-                    const int64_t *rrow = rrow_buf;
-                    if (!keys_match_fast(lrow, lk, rrow, rk, kc))
-                        continue;
-                    memcpy(tmp, lrow, sizeof(int64_t) * left->ncols);
-                    memcpy(tmp + left->ncols, rrow,
-                        sizeof(int64_t) * right->ncols);
-                    join_rc = col_rel_append_row(out, tmp);
-                    if (join_rc != 0) {
-                        fprintf(stderr,
-                            "ERROR: col_rel_append_row failed in ephemeral "
-                            "hash probe with rc=%d\n",
-                            join_rc);
-                        break;
-                    }
-                    if ((sess->join_output_limit > 0
-                        && out->nrows >= sess->join_output_limit)
-                        || (out->nrows % 10000 == 0 && out->nrows > 0
-                        && wl_mem_ledger_should_backpressure(
-                            &sess->mem_ledger, WL_MEM_SUBSYS_RELATION,
-                            80))) {
-                        fprintf(stderr,
-                            "join output limit reached: %u rows "
-                            "(limit=%llu)\n",
-                            out->nrows,
-                            (unsigned long long)sess->join_output_limit);
-                        join_rc = EOVERFLOW;
-                        break;
                     }
                 }
             }
-        }
 
         WL_LOG(WL_LOG_SEC_JOIN, WL_LOG_DEBUG,
             "Merge-join loop completed, out->nrows=%u, rc=%d",
