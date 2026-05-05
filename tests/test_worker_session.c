@@ -878,6 +878,214 @@ test_shared_view_relation_destroy(void)
     return 0;
 }
 
+static int
+test_session_add_rel_replaces_by_name(void)
+{
+    TEST("session_add_rel replaces same-name relation");
+
+    wl_plan_t *plan = NULL;
+    wirelog_program_t *prog = NULL;
+    wl_col_session_t *coord = make_coordinator(&plan, &prog);
+    if (!coord) {
+        FAIL("coordinator creation");
+        return 1;
+    }
+
+    col_rel_t *old_edge = session_find_rel(coord, "edge");
+    if (!old_edge) {
+        cleanup_coordinator(coord, plan, prog);
+        FAIL("edge relation missing");
+        return 1;
+    }
+    uint32_t nrels_before = coord->nrels;
+
+    col_rel_t *replacement = col_rel_new_auto("edge", 2);
+    if (!replacement) {
+        cleanup_coordinator(coord, plan, prog);
+        FAIL("replacement allocation");
+        return 1;
+    }
+    int64_t row[] = { 42, 99 };
+    if (col_rel_append_row(replacement, row) != 0) {
+        col_rel_destroy(replacement);
+        cleanup_coordinator(coord, plan, prog);
+        FAIL("replacement row append");
+        return 1;
+    }
+
+    if (session_add_rel(coord, replacement) != 0) {
+        col_rel_destroy(replacement);
+        cleanup_coordinator(coord, plan, prog);
+        FAIL("replace relation");
+        return 1;
+    }
+
+    col_rel_t *found = session_find_rel(coord, "edge");
+    int ok = coord->nrels == nrels_before && found == replacement
+        && found->nrows == 1 && found->columns[0][0] == 42
+        && found->columns[1][0] == 99;
+
+    cleanup_coordinator(coord, plan, prog);
+
+    if (!ok) {
+        FAIL("same-name relation was not replaced");
+        return 1;
+    }
+    PASS();
+    return 0;
+}
+
+static int
+test_session_add_rel_reuses_removed_slot(void)
+{
+    TEST("session_add_rel reuses removed relation slot");
+
+    wl_plan_t *plan = NULL;
+    wirelog_program_t *prog = NULL;
+    wl_col_session_t *coord = make_coordinator(&plan, &prog);
+    if (!coord) {
+        FAIL("coordinator creation");
+        return 1;
+    }
+
+    col_rel_t *edge = session_find_rel(coord, "edge");
+    if (!edge) {
+        cleanup_coordinator(coord, plan, prog);
+        FAIL("initial relation lookup");
+        return 1;
+    }
+
+    col_rel_t *temp = col_rel_new_auto("$d$path", 2);
+    if (!temp) {
+        cleanup_coordinator(coord, plan, prog);
+        FAIL("temp relation allocation");
+        return 1;
+    }
+    if (session_add_rel(coord, temp) != 0) {
+        col_rel_destroy(temp);
+        cleanup_coordinator(coord, plan, prog);
+        FAIL("temp relation add");
+        return 1;
+    }
+
+    uint32_t nrels_before = coord->nrels;
+    session_remove_rel(coord, "$d$path");
+    if (session_find_rel(coord, "$d$path") != NULL) {
+        cleanup_coordinator(coord, plan, prog);
+        FAIL("removed relation still found");
+        return 1;
+    }
+
+    col_rel_t *replacement = col_rel_new_auto("$d$path", 2);
+    if (!replacement) {
+        cleanup_coordinator(coord, plan, prog);
+        FAIL("replacement allocation");
+        return 1;
+    }
+
+    if (session_add_rel(coord, replacement) != 0) {
+        col_rel_destroy(replacement);
+        cleanup_coordinator(coord, plan, prog);
+        FAIL("hole reuse add");
+        return 1;
+    }
+
+    col_rel_t *found = session_find_rel(coord, "$d$path");
+    int ok = coord->nrels == nrels_before && found == replacement
+        && session_find_rel(coord, "edge") == edge;
+
+    for (int i = 0; i < 8 && ok; i++) {
+        session_remove_rel(coord, "$d$path");
+        col_rel_t *next = col_rel_new_auto("$d$path", 2);
+        if (!next) {
+            ok = 0;
+            break;
+        }
+        if (session_add_rel(coord, next) != 0) {
+            col_rel_destroy(next);
+            ok = 0;
+            break;
+        }
+        ok = coord->nrels == nrels_before
+            && session_find_rel(coord, "$d$path") == next
+            && session_find_rel(coord, "edge") == edge;
+    }
+
+    cleanup_coordinator(coord, plan, prog);
+
+    if (!ok) {
+        FAIL("removed slot was not reused safely");
+        return 1;
+    }
+    PASS();
+    return 0;
+}
+
+static int
+test_session_add_rel_invalidates_filter_cache(void)
+{
+    TEST("session_add_rel invalidates filtered relation cache");
+
+    wl_plan_t *plan = NULL;
+    wirelog_program_t *prog = NULL;
+    wl_col_session_t *coord = make_coordinator(&plan, &prog);
+    if (!coord) {
+        FAIL("coordinator creation");
+        return 1;
+    }
+
+    coord->filt_cache = (col_filt_cache_entry_t *)calloc(
+        1, sizeof(col_filt_cache_entry_t));
+    if (!coord->filt_cache) {
+        cleanup_coordinator(coord, plan, prog);
+        FAIL("filter cache allocation");
+        return 1;
+    }
+    coord->filt_cache_cap = 1;
+    coord->filt_cache_count = 1;
+    coord->filt_cache[0].rel_name = (char *)malloc(5);
+    coord->filt_cache[0].filter_data = (uint8_t *)malloc(1);
+    coord->filt_cache[0].filtered = col_rel_new_auto("$rfilter_cache", 2);
+    if (!coord->filt_cache[0].rel_name
+        || !coord->filt_cache[0].filter_data
+        || !coord->filt_cache[0].filtered) {
+        cleanup_coordinator(coord, plan, prog);
+        FAIL("filter cache entry allocation");
+        return 1;
+    }
+    memcpy(coord->filt_cache[0].rel_name, "edge", 5);
+    coord->filt_cache[0].filter_data[0] = 7;
+    coord->filt_cache[0].filter_size = 1;
+    coord->filt_cache[0].filter_hash = 123;
+    coord->filt_cache[0].source_nrows = 1;
+
+    col_rel_t *replacement = col_rel_new_auto("edge", 2);
+    if (!replacement) {
+        cleanup_coordinator(coord, plan, prog);
+        FAIL("replacement allocation");
+        return 1;
+    }
+
+    if (session_add_rel(coord, replacement) != 0) {
+        col_rel_destroy(replacement);
+        cleanup_coordinator(coord, plan, prog);
+        FAIL("replace relation");
+        return 1;
+    }
+
+    int ok = coord->filt_cache_count == 0
+        && session_find_rel(coord, "edge") == replacement;
+
+    cleanup_coordinator(coord, plan, prog);
+
+    if (!ok) {
+        FAIL("filtered relation cache was not invalidated");
+        return 1;
+    }
+    PASS();
+    return 0;
+}
+
 /* ======================================================================== */
 /* Issue #535: RDF Named-Graph column propagation tests                     */
 /* ======================================================================== */
@@ -1138,6 +1346,9 @@ main(void)
     test_invalid_args();
     test_hash_table_independent();
     test_shared_view_relation_destroy();
+    test_session_add_rel_replaces_by_name();
+    test_session_add_rel_reuses_removed_slot();
+    test_session_add_rel_invalidates_filter_cache();
     test_join_output_limit_scaling();
     test_rdf_graph_column_propagates_to_col_rel();
     test_rdf_no_graph_column_defaults_to_false();
