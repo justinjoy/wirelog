@@ -306,6 +306,73 @@ test_parse_decl_compound_rejects_inline_overflow(void)
     PASS();
 }
 
+static void
+test_parse_decl_compound_issue_660(void)
+{
+    TEST("compound declaration regression from issue #660");
+    PARSE(".decl event(id: int64, payload: point/2 inline)\n"
+        ".decl x_values(id: int64, x: int64)\n"
+        "x_values(id, x) :- event(id, point(x, _)).");
+    ASSERT_PARSED();
+    /* program must have at least 3 children: two .decl nodes and one rule */
+    if (program->child_count < 3) {
+        char buf[80];
+        snprintf(buf, sizeof(buf),
+            "expected at least 3 top-level children, got %u",
+            program->child_count);
+        CLEANUP();
+        FAIL(buf);
+        return;
+    }
+    /* first .decl is 'event'; its second column child must have type_name "point/2 inline" */
+    {
+        const wl_parser_ast_node_t *decl_event = child(program, 0);
+        /* locate the column child whose name is 'payload' */
+        uint32_t i;
+        for (i = 0; i < decl_event->child_count; i++) {
+            const wl_parser_ast_node_t *col = child(decl_event, i);
+            if (col->type_name
+                && strcmp(col->type_name, "point/2 inline") == 0)
+                goto found_inline;
+        }
+        CLEANUP();
+        FAIL(
+            "no column with type_name \"point/2 inline\" found in .decl event");
+        return;
+found_inline:;
+    }
+    CLEANUP();
+    PASS();
+}
+
+static void
+test_parse_decl_compound_side_modifier(void)
+{
+    TEST("compound declaration side modifier");
+    PARSE(".decl record(id: int64, tag: scope/1 side)");
+    ASSERT_PARSED();
+    if (program->child_count < 1) {
+        CLEANUP();
+        FAIL("expected at least 1 top-level child");
+        return;
+    }
+    {
+        const wl_parser_ast_node_t *decl_record = child(program, 0);
+        uint32_t i;
+        for (i = 0; i < decl_record->child_count; i++) {
+            const wl_parser_ast_node_t *col = child(decl_record, i);
+            if (col->type_name && strcmp(col->type_name, "scope/1 side") == 0)
+                goto found_side;
+        }
+        CLEANUP();
+        FAIL("no column with type_name \"scope/1 side\" found in .decl record");
+        return;
+found_side:;
+    }
+    CLEANUP();
+    PASS();
+}
+
 /* ======================================================================== */
 /* Parser: Input/Output/PrintSize Directives                                */
 /* ======================================================================== */
@@ -1860,6 +1927,8 @@ main(void)
     test_parse_decl_compound_rejects_bad_modifier();
     test_parse_decl_compound_rejects_glued_modifier();
     test_parse_decl_compound_rejects_inline_overflow();
+    test_parse_decl_compound_issue_660();
+    test_parse_decl_compound_side_modifier();
 
     printf("\n--- Directives ---\n");
     test_parse_input_directive();
