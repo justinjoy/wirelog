@@ -1189,11 +1189,15 @@ compose_join_projection(wl_plan_op_t *join, const wl_plan_op_t *map)
 
     for (uint32_t i = 0; i < map->project_count; i++) {
         uint32_t idx = map->project_indices[i];
-        if (join->project_count > 0 && join->project_indices)
-            indices[i] = idx < join->project_count
-                ? join->project_indices[idx] : UINT32_MAX;
-        else
+        if (join->project_count > 0 && join->project_indices) {
+            if (idx >= join->project_count) {
+                free(indices);
+                return -1;
+            }
+            indices[i] = join->project_indices[idx];
+        } else {
             indices[i] = idx;
+        }
     }
 
     free((void *)join->project_indices);
