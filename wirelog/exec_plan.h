@@ -316,7 +316,8 @@ wl_plan_op_is_universal(wl_plan_op_type_t op)
  *   MAP:         project_indices, project_count  (and/or map_exprs)
  *   FILTER:      filter_expr
  *   JOIN:        right_relation, right_filter_expr, left_keys, right_keys,
- *                key_count
+ *                key_count, optional project_indices/project_count for
+ *                projection-only JOIN->MAP fusion
  *   ANTIJOIN:    right_relation, right_filter_expr, left_keys, right_keys,
  *                key_count
  *   REDUCE:      agg_fn, group_by_indices, group_by_count

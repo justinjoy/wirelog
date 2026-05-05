@@ -135,6 +135,43 @@ fpga_rowset_append_rows(fpga_rowset_t *rs, const int64_t *data,
     return 0;
 }
 
+static uint32_t
+fpga_join_output_width(const fpga_rowset_t *left, const fpga_rowset_t *right,
+    const wl_plan_op_t *op)
+{
+    return (op && op->project_count > 0 && op->project_indices)
+        ? op->project_count : left->ncols + right->ncols;
+}
+
+static int64_t
+fpga_join_pair_value(const fpga_rowset_t *left, const int64_t *lrow,
+    const fpga_rowset_t *right, const int64_t *rrow, uint32_t idx)
+{
+    if (idx < left->ncols)
+        return lrow[idx];
+    idx -= left->ncols;
+    return idx < right->ncols ? rrow[idx] : 0;
+}
+
+static uint32_t
+fpga_join_project_pair(const fpga_rowset_t *left, const int64_t *lrow,
+    const fpga_rowset_t *right, const int64_t *rrow, const wl_plan_op_t *op,
+    int64_t *out, uint32_t out_cap)
+{
+    uint32_t ci = 0;
+    if (op->project_count > 0 && op->project_indices) {
+        for (uint32_t c = 0; c < op->project_count && ci < out_cap; c++)
+            out[ci++] = fpga_join_pair_value(left, lrow, right, rrow,
+                    op->project_indices[c]);
+        return ci;
+    }
+    for (uint32_t c = 0; c < left->ncols && ci < out_cap; c++)
+        out[ci++] = lrow[c];
+    for (uint32_t c = 0; c < right->ncols && ci < out_cap; c++)
+        out[ci++] = rrow[c];
+    return ci;
+}
+
 static const int64_t *
 fpga_rowset_row(const fpga_rowset_t *rs, uint32_t idx)
 {
@@ -513,8 +550,10 @@ fpga_eval_ops(wl_fpga_session_t *s, const wl_plan_op_t *ops, uint32_t op_count)
             if (op->right_relation)
                 rrel = fpga_find_rel(s, op->right_relation);
             fpga_rowset_t result;
-            uint32_t out_cols = left.ncols
-                + (rrel ? rrel->rows.ncols : 0);
+            uint32_t out_cols = rrel
+                ? fpga_join_output_width(&left, &rrel->rows, op)
+                : ((op->project_count > 0 && op->project_indices)
+                    ? op->project_count : left.ncols);
             fpga_rowset_init(&result, out_cols);
             if (rrel && op->key_count > 0) {
                 for (uint32_t li = 0; li < left.nrows; li++) {
@@ -549,15 +588,9 @@ fpga_eval_ops(wl_fpga_session_t *s, const wl_plan_op_t *ops, uint32_t op_count)
                                 rrow, rrel->rows.ncols))
                                 continue;
                         }
-                        /* Concatenate left + right */
                         int64_t combined[128];
-                        uint32_t ci = 0;
-                        for (uint32_t c = 0; c < left.ncols && ci < 128;
-                            c++)
-                            combined[ci++] = lrow[c];
-                        for (uint32_t c = 0;
-                            c < rrel->rows.ncols && ci < 128; c++)
-                            combined[ci++] = rrow[c];
+                        uint32_t ci = fpga_join_project_pair(&left, lrow,
+                                &rrel->rows, rrow, op, combined, 128);
                         fpga_rowset_append(&result, combined, ci);
                     }
                 }

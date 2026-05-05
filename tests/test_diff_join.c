@@ -150,6 +150,95 @@ run_standard_join(wl_col_session_t *sess, col_rel_t *left)
 }
 
 static col_rel_t *
+run_projected_join(wl_col_session_t *sess, col_rel_t *left, bool diff)
+{
+    wl_plan_op_t op = {0};
+    op.op = WL_PLAN_OP_JOIN;
+    op.right_relation = "right";
+    op.key_count = 1;
+    char *lkeys[] = {"k"};
+    char *rkeys[] = {"k"};
+    uint32_t project_indices[] = {1, 3};
+    op.left_keys = (const char *const *)lkeys;
+    op.right_keys = (const char *const *)rkeys;
+    op.project_indices = project_indices;
+    op.project_count = 2;
+    op.delta_mode = WL_DELTA_FORCE_FULL;
+
+    eval_stack_t stack;
+    eval_stack_init(&stack);
+    eval_stack_push(&stack, left, false);
+
+    int rc = diff ? col_op_join_diff(&op, &stack, sess)
+                  : col_op_join(&op, &stack, sess);
+    if (rc != 0)
+        return NULL;
+    eval_entry_t result = eval_stack_pop(&stack);
+    if (!result.owned)
+        return NULL;
+    return result.rel;
+}
+
+static col_rel_t *
+run_projected_join_with_indices(wl_col_session_t *sess, col_rel_t *left,
+    const uint32_t *project_indices, uint32_t project_count, bool materialized)
+{
+    wl_plan_op_t op = {0};
+    op.op = WL_PLAN_OP_JOIN;
+    op.right_relation = "right";
+    op.key_count = 1;
+    char *lkeys[] = {"k"};
+    char *rkeys[] = {"k"};
+    op.left_keys = (const char *const *)lkeys;
+    op.right_keys = (const char *const *)rkeys;
+    op.project_indices = project_indices;
+    op.project_count = project_count;
+    op.delta_mode = WL_DELTA_FORCE_FULL;
+    op.materialized = materialized;
+
+    eval_stack_t stack;
+    eval_stack_init(&stack);
+    eval_stack_push(&stack, left, false);
+
+    int rc = col_op_join(&op, &stack, sess);
+    if (rc != 0)
+        return NULL;
+    eval_entry_t result = eval_stack_pop(&stack);
+    if (!result.owned)
+        return NULL;
+    return result.rel;
+}
+
+static col_rel_t *
+run_projected_unary_join(wl_col_session_t *sess, col_rel_t *left)
+{
+    wl_plan_op_t op = {0};
+    op.op = WL_PLAN_OP_JOIN;
+    op.right_relation = "right";
+    op.key_count = 1;
+    char *lkeys[] = {"k"};
+    char *rkeys[] = {"k"};
+    uint32_t project_indices[] = {1, 2};
+    op.left_keys = (const char *const *)lkeys;
+    op.right_keys = (const char *const *)rkeys;
+    op.project_indices = project_indices;
+    op.project_count = 2;
+    op.delta_mode = WL_DELTA_FORCE_FULL;
+
+    eval_stack_t stack;
+    eval_stack_init(&stack);
+    eval_stack_push(&stack, left, false);
+
+    int rc = col_op_join(&op, &stack, sess);
+    if (rc != 0)
+        return NULL;
+    eval_entry_t result = eval_stack_pop(&stack);
+    if (!result.owned)
+        return NULL;
+    return result.rel;
+}
+
+static col_rel_t *
 run_cross_join(wl_col_session_t *sess, col_rel_t *left)
 {
     wl_plan_op_t op = {0};
@@ -169,6 +258,57 @@ run_cross_join(wl_col_session_t *sess, col_rel_t *left)
     if (!result.owned)
         return NULL;
     return result.rel;
+}
+
+static col_rel_t *
+make_project_left_rel(void)
+{
+    const char *cn[] = {"k", "v"};
+    col_rel_t *left = make_rel("left", 2, cn);
+    if (!left)
+        return NULL;
+    int64_t row1[] = {1, 10};
+    int64_t row2[] = {2, 20};
+    if (col_rel_append_row(left, row1) != 0
+        || col_rel_append_row(left, row2) != 0) {
+        col_rel_destroy(left);
+        return NULL;
+    }
+    return left;
+}
+
+static col_rel_t *
+make_project_right_rel(void)
+{
+    const char *cn[] = {"k", "r"};
+    col_rel_t *right = make_rel("right", 2, cn);
+    if (!right)
+        return NULL;
+    int64_t row1[] = {1, 100};
+    int64_t row2[] = {2, 200};
+    if (col_rel_append_row(right, row1) != 0
+        || col_rel_append_row(right, row2) != 0) {
+        col_rel_destroy(right);
+        return NULL;
+    }
+    return right;
+}
+
+static col_rel_t *
+make_project_unary_right_rel(void)
+{
+    const char *cn[] = {"k"};
+    col_rel_t *right = make_rel("right", 1, cn);
+    if (!right)
+        return NULL;
+    int64_t row1[] = {1};
+    int64_t row2[] = {2};
+    if (col_rel_append_row(right, row1) != 0
+        || col_rel_append_row(right, row2) != 0) {
+        col_rel_destroy(right);
+        return NULL;
+    }
+    return right;
 }
 
 static col_rel_t *
@@ -996,6 +1136,121 @@ test_diff_arr_entry_cleanup(void)
 }
 
 static void
+test_projected_join_emits_projected_columns(void)
+{
+    TEST("projected join emits projected columns");
+
+    wl_col_session_t *sess = make_mock_session();
+    col_rel_t *left = make_project_left_rel();
+    col_rel_t *right = make_project_right_rel();
+    ASSERT_TRUE(left && right, "relations allocated");
+    ASSERT_TRUE(session_add_rel(sess, right) == 0, "right registered");
+
+    col_rel_t *out = run_projected_join(sess, left, false);
+    ASSERT_TRUE(out != NULL, "projected join output");
+    ASSERT_TRUE(out->ncols == 2, "projected column count");
+    ASSERT_TRUE(out->nrows == 2, "projected row count");
+    int64_t expected1[] = {10, 100};
+    int64_t expected2[] = {20, 200};
+    ASSERT_TRUE(output_contains_row(out, expected1), "contains first row");
+    ASSERT_TRUE(output_contains_row(out, expected2), "contains second row");
+
+    col_rel_destroy(out);
+    col_rel_destroy(left);
+    destroy_mock_session(sess);
+    PASS;
+}
+
+static void
+test_projected_diff_join_emits_projected_columns(void)
+{
+    TEST("projected diff join emits projected columns");
+
+    wl_col_session_t *sess = make_mock_session();
+    col_rel_t *left = make_project_left_rel();
+    col_rel_t *right = make_project_right_rel();
+    ASSERT_TRUE(left && right, "relations allocated");
+    ASSERT_TRUE(session_add_rel(sess, right) == 0, "right registered");
+
+    col_rel_t *out = run_projected_join(sess, left, true);
+    ASSERT_TRUE(out != NULL, "projected diff join output");
+    ASSERT_TRUE(out->ncols == 2, "projected column count");
+    ASSERT_TRUE(out->nrows == 2, "projected row count");
+    int64_t expected1[] = {10, 100};
+    int64_t expected2[] = {20, 200};
+    ASSERT_TRUE(output_contains_row(out, expected1), "contains first row");
+    ASSERT_TRUE(output_contains_row(out, expected2), "contains second row");
+
+    col_rel_destroy(out);
+    col_rel_destroy(left);
+    destroy_mock_session(sess);
+    PASS;
+}
+
+static void
+test_projected_unary_join_emits_projected_columns(void)
+{
+    TEST("projected unary join emits projected columns");
+
+    wl_col_session_t *sess = make_mock_session();
+    col_rel_t *left = make_project_left_rel();
+    col_rel_t *right = make_project_unary_right_rel();
+    ASSERT_TRUE(left && right, "relations allocated");
+    ASSERT_TRUE(session_add_rel(sess, right) == 0, "right registered");
+
+    col_rel_t *out = run_projected_unary_join(sess, left);
+    ASSERT_TRUE(out != NULL, "projected unary join output");
+    ASSERT_TRUE(out->ncols == 2, "projected column count");
+    ASSERT_TRUE(out->nrows == 2, "projected row count");
+    int64_t expected1[] = {10, 1};
+    int64_t expected2[] = {20, 2};
+    ASSERT_TRUE(output_contains_row(out, expected1), "contains first row");
+    ASSERT_TRUE(output_contains_row(out, expected2), "contains second row");
+
+    col_rel_destroy(out);
+    col_rel_destroy(left);
+    destroy_mock_session(sess);
+    PASS;
+}
+
+static void
+test_projected_materialized_join_does_not_reuse_wrong_shape(void)
+{
+    TEST("projected materialized join does not reuse wrong shape");
+
+    wl_col_session_t *sess = make_mock_session();
+    col_rel_t *left1 = make_project_left_rel();
+    col_rel_t *left2 = make_project_left_rel();
+    col_rel_t *right = make_project_right_rel();
+    ASSERT_TRUE(left1 && left2 && right, "relations allocated");
+    ASSERT_TRUE(session_add_rel(sess, right) == 0, "right registered");
+
+    uint32_t first_projection[] = {1, 3};
+    col_rel_t *out1 = run_projected_join_with_indices(sess, left1,
+            first_projection, 2, true);
+    ASSERT_TRUE(out1 != NULL, "first projected materialized join output");
+    ASSERT_TRUE(out1->ncols == 2, "first projected column count");
+
+    uint32_t second_projection[] = {3};
+    col_rel_t *out2 = run_projected_join_with_indices(sess, left2,
+            second_projection, 1, true);
+    ASSERT_TRUE(out2 != NULL, "second projected materialized join output");
+    ASSERT_TRUE(out2->ncols == 1, "second projected column count");
+    ASSERT_TRUE(out2->nrows == 2, "second projected row count");
+    int64_t expected1[] = {100};
+    int64_t expected2[] = {200};
+    ASSERT_TRUE(output_contains_row(out2, expected1), "contains first row");
+    ASSERT_TRUE(output_contains_row(out2, expected2), "contains second row");
+
+    col_rel_destroy(out1);
+    col_rel_destroy(out2);
+    col_rel_destroy(left1);
+    col_rel_destroy(left2);
+    destroy_mock_session(sess);
+    PASS;
+}
+
+static void
 test_direct_standard_join_matches_serial_with_workers(void)
 {
     TEST("direct standard join matches serial output with workers");
@@ -1108,6 +1363,10 @@ main(void)
     test_force_full_mode();
     test_delta_substitution();
     test_diff_arr_entry_cleanup();
+    test_projected_join_emits_projected_columns();
+    test_projected_diff_join_emits_projected_columns();
+    test_projected_unary_join_emits_projected_columns();
+    test_projected_materialized_join_does_not_reuse_wrong_shape();
     test_direct_standard_join_matches_serial_with_workers();
     test_parallel_cross_join_matches_serial();
 

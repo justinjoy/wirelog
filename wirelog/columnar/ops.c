@@ -2185,9 +2185,29 @@ typedef struct {
     const col_rel_t *left;
     const col_rel_t *right;
     col_rel_t *out;
+    const uint32_t *project_indices;
+    uint32_t project_count;
     uint64_t begin;
     uint64_t end;
 } col_join_cross_ctx_t;
+
+static uint32_t
+col_join_output_width(const col_rel_t *left, const col_rel_t *right,
+    const wl_plan_op_t *op)
+{
+    return (op && op->project_count > 0 && op->project_indices)
+        ? op->project_count : left->ncols + right->ncols;
+}
+
+static int64_t
+col_join_pair_value(const col_rel_t *left, uint32_t lr, const col_rel_t *right,
+    uint32_t rr, uint32_t idx)
+{
+    if (idx < left->ncols)
+        return left->columns[idx][lr];
+    idx -= left->ncols;
+    return idx < right->ncols ? right->columns[idx][rr] : 0;
+}
 
 static void
 col_join_cross_fill_worker_fn(void *arg)
@@ -2203,10 +2223,16 @@ col_join_cross_fill_worker_fn(void *arg)
     uint32_t rpos = (uint32_t)(ctx->begin % right_rows);
     while (oi < ctx->end) {
         uint32_t rr = right->nrows - 1u - rpos;
-        for (uint32_t c = 0; c < left->ncols; c++)
-            out->columns[c][oi] = left->columns[c][lr];
-        for (uint32_t c = 0; c < right->ncols; c++)
-            out->columns[left->ncols + c][oi] = right->columns[c][rr];
+        if (ctx->project_count > 0 && ctx->project_indices) {
+            for (uint32_t c = 0; c < ctx->project_count; c++)
+                out->columns[c][oi] = col_join_pair_value(left, lr, right, rr,
+                        ctx->project_indices[c]);
+        } else {
+            for (uint32_t c = 0; c < left->ncols; c++)
+                out->columns[c][oi] = left->columns[c][lr];
+            for (uint32_t c = 0; c < right->ncols; c++)
+                out->columns[left->ncols + c][oi] = right->columns[c][rr];
+        }
         oi++;
         rpos++;
         if (rpos == right->nrows) {
@@ -2218,7 +2244,8 @@ col_join_cross_fill_worker_fn(void *arg)
 
 static int
 col_join_parallel_cross(wl_col_session_t *sess, const col_rel_t *left,
-    const col_rel_t *right, col_rel_t **outp, int *out_overflow)
+    const col_rel_t *right, const wl_plan_op_t *op, col_rel_t **outp,
+    int *out_overflow)
 {
     if (!sess || !left || !right || !outp || !*outp)
         return EINVAL;
@@ -2235,7 +2262,8 @@ col_join_parallel_cross(wl_col_session_t *sess, const col_rel_t *left,
         return ENOMEM;
 
     uint32_t nrows = (uint32_t)emit_total;
-    col_rel_t *out = col_rel_new_auto("$join", left->ncols + right->ncols);
+    col_rel_t *out = col_rel_new_auto("$join",
+            col_join_output_width(left, right, op));
     if (!out)
         return ENOMEM;
     col_join_attach_ledger(sess, out);
@@ -2265,6 +2293,8 @@ col_join_parallel_cross(wl_col_session_t *sess, const col_rel_t *left,
         ctxs[w].left = left;
         ctxs[w].right = right;
         ctxs[w].out = out;
+        ctxs[w].project_indices = op ? op->project_indices : NULL;
+        ctxs[w].project_count = op ? op->project_count : 0;
         ctxs[w].begin = begin;
         ctxs[w].end = end;
         if (wl_workqueue_submit(sess->wq, col_join_cross_fill_worker_fn,
@@ -2316,25 +2346,39 @@ col_join_keys_match_rel(const col_rel_t *left, uint32_t lr,
 
 static int
 col_join_append_pair(col_rel_t *out, const col_rel_t *left, uint32_t lr,
-    const col_rel_t *right, uint32_t rr, int64_t *fallback_row)
+    const col_rel_t *right, uint32_t rr, const uint32_t *project_indices,
+    uint32_t project_count, int64_t *fallback_row)
 {
     if (out->nrows < out->capacity) {
         uint32_t out_row = out->nrows;
         if (out->timestamps)
             memset(&out->timestamps[out_row], 0,
                 sizeof(col_delta_timestamp_t));
-        for (uint32_t c = 0; c < left->ncols; c++)
-            out->columns[c][out_row] = left->columns[c][lr];
-        for (uint32_t c = 0; c < right->ncols; c++)
-            out->columns[left->ncols + c][out_row] = right->columns[c][rr];
+        if (project_count > 0 && project_indices) {
+            for (uint32_t c = 0; c < project_count; c++)
+                out->columns[c][out_row] = col_join_pair_value(left, lr, right,
+                        rr, project_indices[c]);
+        } else {
+            for (uint32_t c = 0; c < left->ncols; c++)
+                out->columns[c][out_row] = left->columns[c][lr];
+            for (uint32_t c = 0; c < right->ncols; c++)
+                out->columns[left->ncols + c][out_row]
+                    = right->columns[c][rr];
+        }
         out->nrows++;
         return 0;
     }
 
-    for (uint32_t c = 0; c < left->ncols; c++)
-        fallback_row[c] = left->columns[c][lr];
-    for (uint32_t c = 0; c < right->ncols; c++)
-        fallback_row[left->ncols + c] = right->columns[c][rr];
+    if (project_count > 0 && project_indices) {
+        for (uint32_t c = 0; c < project_count; c++)
+            fallback_row[c] = col_join_pair_value(left, lr, right, rr,
+                    project_indices[c]);
+    } else {
+        for (uint32_t c = 0; c < left->ncols; c++)
+            fallback_row[c] = left->columns[c][lr];
+        for (uint32_t c = 0; c < right->ncols; c++)
+            fallback_row[left->ncols + c] = right->columns[c][rr];
+    }
     return col_rel_append_row(out, fallback_row);
 }
 
@@ -2355,9 +2399,10 @@ col_op_join(const wl_plan_op_t *op, eval_stack_t *stack, wl_col_session_t *sess)
         /* If right relation doesn't exist, join produces empty result (cross-product with nothing).
          * Similar to ANTIJOIN logic (which keeps all left rows on missing right).
          * This can occur in generated plans where optional relations may not exist. */
+        uint32_t empty_cols = (op->project_count > 0 && op->project_indices)
+            ? op->project_count : left_e.rel->ncols;
         col_rel_t *out = col_rel_pool_new_auto(sess->delta_pool,
-                sess->eval_arena, "$join_empty",
-                left_e.rel->ncols);
+                sess->eval_arena, "$join_empty", empty_cols);
         if (!out) {
             if (left_e.owned)
                 col_rel_destroy(left_e.rel);
@@ -2403,7 +2448,7 @@ col_op_join(const wl_plan_op_t *op, eval_stack_t *stack, wl_col_session_t *sess)
              * FORCE_DELTA required but delta absent/empty. Short-circuit to
              * empty result — this rule copy produces no tuples from this
              * permutation (correct semi-naive, issue #85). */
-            uint32_t ocols = left_e.rel->ncols + right->ncols;
+            uint32_t ocols = col_join_output_width(left_e.rel, right, op);
             if (left_e.owned)
                 col_rel_destroy(left_e.rel);
             col_rel_t *empty = col_rel_new_auto("$join_empty", ocols);
@@ -2479,7 +2524,8 @@ col_op_join(const wl_plan_op_t *op, eval_stack_t *stack, wl_col_session_t *sess)
      * Works with both stable (borrowed) and worker-owned relations since
      * the cache key is based on content hash, not ownership. This enables
      * cache reuse in K-fusion worker sessions, eliminating redundant joins. */
-    if (op->materialized) {
+    bool projected_join = op->project_count > 0 && op->project_indices;
+    if (op->materialized && !projected_join) {
         col_rel_t *cached
             = col_mat_cache_lookup(&sess->mat_cache, left_e.rel, right);
         if (cached) {
@@ -2512,9 +2558,7 @@ col_op_join(const wl_plan_op_t *op, eval_stack_t *stack, wl_col_session_t *sess)
         rk[k] = (ri >= 0) ? (uint32_t)ri : 0;
     }
 
-    /* Output: all left cols + all right cols (including key duplication).
-     * Downstream MAP will project the desired output columns. */
-    uint32_t ocols = left->ncols + right->ncols;
+    uint32_t ocols = col_join_output_width(left, right, op);
     col_rel_t *out = col_rel_pool_new_auto(sess->delta_pool, sess->eval_arena,
             "$join", ocols);
     if (!out) {
@@ -2609,10 +2653,7 @@ col_op_join(const wl_plan_op_t *op, eval_stack_t *stack, wl_col_session_t *sess)
         /* Probe: iterate non-unary side, test membership in hash set. */
         int join_rc = 0;
         for (uint32_t pr = 0; pr < probe->nrows && join_rc == 0; pr++) {
-            int64_t prow_buf[COL_STACK_MAX];
-            col_rel_row_copy_out(probe, pr, prow_buf);
-            const int64_t *prow = prow_buf;
-            int64_t pkey = prow[probe_kcol];
+            int64_t pkey = probe->columns[probe_kcol][pr];
             /* Inline FNV-1a hash for single int64 value */
             uint32_t h = 2166136261u;
             uint64_t v = (uint64_t)pkey;
@@ -2628,17 +2669,10 @@ col_op_join(const wl_plan_op_t *op, eval_stack_t *stack, wl_col_session_t *sess)
                     = col_rel_get(build, bi, build_kcol);
                 if (pkey != bkey)
                     continue;
-                /* Match: emit output in [left cols | right cols] order. */
-                if (right_is_unary) {
-                    /* probe=left, build=right: [prow | bkey] */
-                    memcpy(tmp, prow, sizeof(int64_t) * probe->ncols);
-                    tmp[probe->ncols] = bkey;
-                } else {
-                    /* probe=right, build=left: [bkey | prow] */
-                    tmp[0] = bkey;
-                    memcpy(tmp + 1, prow, sizeof(int64_t) * probe->ncols);
-                }
-                join_rc = col_rel_append_row(out, tmp);
+                uint32_t lr = right_is_unary ? pr : bi;
+                uint32_t rr = right_is_unary ? bi : pr;
+                join_rc = col_join_append_pair(out, left, lr, right, rr,
+                        op->project_indices, op->project_count, tmp);
                 if (join_rc != 0) {
                     fprintf(stderr,
                         "ERROR: col_rel_append_row failed with rc=%d at "
@@ -2784,7 +2818,7 @@ col_op_join(const wl_plan_op_t *op, eval_stack_t *stack, wl_col_session_t *sess)
         int join_rc = 0;
         int join_overflow = 0;
         if (kc == 0 && col_join_should_parallelize_cross(sess, left, right)) {
-            join_rc = col_join_parallel_cross(sess, left, right, &out,
+            join_rc = col_join_parallel_cross(sess, left, right, op, &out,
                     &join_overflow);
             if (join_rc == EINVAL)
                 join_rc = 0;
@@ -2803,7 +2837,8 @@ col_op_join(const wl_plan_op_t *op, eval_stack_t *stack, wl_col_session_t *sess)
                         if (col_join_keys_match_rel(left, lr, lk, right, rr, rk,
                             kc)) {
                             join_rc = col_join_append_pair(out, left, lr, right,
-                                    rr, tmp);
+                                    rr, op->project_indices, op->project_count,
+                                    tmp);
                             if (join_rc != 0) {
                                 fprintf(stderr,
                                     "ERROR: col_rel_append_row failed in "
@@ -2840,7 +2875,7 @@ col_op_join(const wl_plan_op_t *op, eval_stack_t *stack, wl_col_session_t *sess)
                             kc))
                             continue;
                         join_rc = col_join_append_pair(out, left, lr, right, rr,
-                                tmp);
+                                op->project_indices, op->project_count, tmp);
                         if (join_rc != 0) {
                             fprintf(stderr,
                                 "ERROR: col_rel_append_row failed in ephemeral "
@@ -2909,14 +2944,15 @@ col_op_join(const wl_plan_op_t *op, eval_stack_t *stack, wl_col_session_t *sess)
     /* Propagate delta flag: result is a delta if left was delta OR we used
      * right-delta. This ensures subsequent JOINs in the same rule plan know
      * whether to apply right-delta (they should NOT if we already used one). */
-    bool result_is_delta = left_e.is_delta || used_right_delta;
+    bool result_is_delta = projected_join ? false
+        : (left_e.is_delta || used_right_delta);
 
     /* Populate materialization cache when hint is set.
      * Works with both stable and worker-owned relations.
      * Cache takes ownership of out; we push a borrowed reference.
      * This enables K-fusion workers to cache and reuse intermediate joins,
      * reducing redundant computation across the K worker copies. */
-    if (op->materialized) {
+    if (op->materialized && !projected_join) {
         col_mat_cache_insert(&sess->mat_cache, left, right, out);
 #ifdef WL_PROFILE
         if (out->nrows == 0)
@@ -5974,9 +6010,10 @@ col_op_join_diff(const wl_plan_op_t *op, eval_stack_t *stack,
 
     col_rel_t *right = session_find_rel(sess, op->right_relation);
     if (!right) {
+        uint32_t empty_cols = (op->project_count > 0 && op->project_indices)
+            ? op->project_count : left_e.rel->ncols;
         col_rel_t *out = col_rel_pool_new_auto(sess->delta_pool,
-                sess->eval_arena,
-                "$join_diff_empty", left_e.rel->ncols);
+                sess->eval_arena, "$join_diff_empty", empty_cols);
         if (!out) {
             if (left_e.owned)
                 col_rel_destroy(left_e.rel);
@@ -6006,7 +6043,7 @@ col_op_join_diff(const wl_plan_op_t *op, eval_stack_t *stack,
             used_right_delta = true;
         } else if (sess->current_iteration > 0 || sess->delta_seeded
             || sess->retraction_seeded) {
-            uint32_t ocols = left_e.rel->ncols + right->ncols;
+            uint32_t ocols = col_join_output_width(left_e.rel, right, op);
             if (left_e.owned)
                 col_rel_destroy(left_e.rel);
             col_rel_t *empty = col_rel_new_auto("$join_diff_empty", ocols);
@@ -6075,7 +6112,8 @@ col_op_join_diff(const wl_plan_op_t *op, eval_stack_t *stack,
     }
 
     /* Materialization cache check */
-    if (op->materialized) {
+    bool projected_join = op->project_count > 0 && op->project_indices;
+    if (op->materialized && !projected_join) {
         col_rel_t *cached
             = col_mat_cache_lookup(&sess->mat_cache, left_e.rel, right);
         if (cached)
@@ -6104,7 +6142,7 @@ col_op_join_diff(const wl_plan_op_t *op, eval_stack_t *stack,
         rk[k] = (ri >= 0) ? (uint32_t)ri : 0;
     }
 
-    uint32_t ocols = left->ncols + right->ncols;
+    uint32_t ocols = col_join_output_width(left, right, op);
     col_rel_t *out = col_rel_pool_new_auto(sess->delta_pool, sess->eval_arena,
             "$join_diff", ocols);
     if (!out) {
@@ -6155,10 +6193,7 @@ col_op_join_diff(const wl_plan_op_t *op, eval_stack_t *stack,
         uint32_t indexed = darr->indexed_rows;
         uint32_t nbk = darr->nbuckets;
         for (uint32_t rr = indexed; rr < right->nrows; rr++) {
-            int64_t rrow_buf[COL_STACK_MAX];
-            col_rel_row_copy_out(right, rr, rrow_buf);
-            const int64_t *rrow = rrow_buf;
-            uint32_t h = hash_int64_keys_fast(rrow, rk, kc) & (nbk - 1);
+            uint32_t h = col_join_hash_rel_keys(right, rr, rk, kc) & (nbk - 1);
             darr->ht_next[rr] = darr->ht_head[h];
             darr->ht_head[h] = rr + 1; /* 1-based; 0 = end of chain */
         }
@@ -6167,22 +6202,14 @@ col_op_join_diff(const wl_plan_op_t *op, eval_stack_t *stack,
 
         /* Probe left against the persistent diff arrangement hash table */
         for (uint32_t lr = 0; lr < left->nrows && join_rc == 0; lr++) {
-            int64_t lrow_buf[COL_STACK_MAX];
-            col_rel_row_copy_out(left, lr, lrow_buf);
-            const int64_t *lrow = lrow_buf;
-            uint32_t h = hash_int64_keys_fast(lrow, lk, kc) & (nbk - 1);
+            uint32_t h = col_join_hash_rel_keys(left, lr, lk, kc) & (nbk - 1);
             for (uint32_t e = darr->ht_head[h]; e != 0;
                 e = darr->ht_next[e - 1]) {
                 uint32_t rr = e - 1;
-                int64_t rrow_buf[COL_STACK_MAX];
-                col_rel_row_copy_out(right, rr, rrow_buf);
-                const int64_t *rrow = rrow_buf;
-                if (!keys_match_fast(lrow, lk, rrow, rk, kc))
+                if (!col_join_keys_match_rel(left, lr, lk, right, rr, rk, kc))
                     continue;
-                memcpy(tmp, lrow, sizeof(int64_t) * left->ncols);
-                memcpy(tmp + left->ncols, rrow,
-                    sizeof(int64_t) * right->ncols);
-                join_rc = col_rel_append_row(out, tmp);
+                join_rc = col_join_append_pair(out, left, lr, right, rr,
+                        op->project_indices, op->project_count, tmp);
                 if (join_rc != 0)
                     break;
                 if ((sess->join_output_limit > 0
@@ -6227,32 +6254,21 @@ col_op_join_diff(const wl_plan_op_t *op, eval_stack_t *stack,
             return ENOMEM;
         }
         for (uint32_t rr = 0; rr < right->nrows; rr++) {
-            int64_t rrow_buf[COL_STACK_MAX];
-            col_rel_row_copy_out(right, rr, rrow_buf);
-            const int64_t *rrow = rrow_buf;
-            uint32_t h
-                = hash_int64_keys_fast(rrow, rk, kc) & (nbuckets_ep - 1);
+            uint32_t h = col_join_hash_rel_keys(right, rr, rk, kc)
+                & (nbuckets_ep - 1);
             ht_next_ep[rr] = ht_head_ep[h];
             ht_head_ep[h] = rr + 1;
         }
         for (uint32_t lr = 0; lr < left->nrows && join_rc == 0; lr++) {
-            int64_t lrow_buf[COL_STACK_MAX];
-            col_rel_row_copy_out(left, lr, lrow_buf);
-            const int64_t *lrow = lrow_buf;
-            uint32_t h
-                = hash_int64_keys_fast(lrow, lk, kc) & (nbuckets_ep - 1);
+            uint32_t h = col_join_hash_rel_keys(left, lr, lk, kc)
+                & (nbuckets_ep - 1);
             for (uint32_t e = ht_head_ep[h]; e != 0;
                 e = ht_next_ep[e - 1]) {
                 uint32_t rr = e - 1;
-                int64_t rrow_buf[COL_STACK_MAX];
-                col_rel_row_copy_out(right, rr, rrow_buf);
-                const int64_t *rrow = rrow_buf;
-                if (!keys_match_fast(lrow, lk, rrow, rk, kc))
+                if (!col_join_keys_match_rel(left, lr, lk, right, rr, rk, kc))
                     continue;
-                memcpy(tmp, lrow, sizeof(int64_t) * left->ncols);
-                memcpy(tmp + left->ncols, rrow,
-                    sizeof(int64_t) * right->ncols);
-                join_rc = col_rel_append_row(out, tmp);
+                join_rc = col_join_append_pair(out, left, lr, right, rr,
+                        op->project_indices, op->project_count, tmp);
                 if (join_rc != 0)
                     break;
                 if ((sess->join_output_limit > 0
@@ -6283,11 +6299,12 @@ col_op_join_diff(const wl_plan_op_t *op, eval_stack_t *stack,
     free(tmp);
     free(lk);
     free(rk);
-    bool result_is_delta = left_e.is_delta || used_right_delta;
+    bool result_is_delta = projected_join ? false
+        : (left_e.is_delta || used_right_delta);
 
     /* Materialization cache: insert BEFORE destroying left, because
      * col_mat_cache_key_content dereferences left to compute content hash. */
-    if (op->materialized) {
+    if (op->materialized && !projected_join) {
         col_mat_cache_insert(&sess->mat_cache, left, right, out);
         if (left_e.owned)
             col_rel_destroy(left);

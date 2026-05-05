@@ -1143,6 +1143,127 @@ free_op(wl_plan_op_t *op)
     }
 }
 
+static bool
+map_op_is_pure_projection(const wl_plan_op_t *op)
+{
+    if (!op || op->op != WL_PLAN_OP_MAP || op->project_count == 0
+        || !op->project_indices)
+        return false;
+    if (!op->map_exprs || op->map_expr_count == 0)
+        return true;
+
+    if (op->map_expr_count != op->project_count)
+        return false;
+    for (uint32_t i = 0; i < op->map_expr_count; i++) {
+        const wl_plan_expr_buffer_t *expr = &op->map_exprs[i];
+        if (!expr->data || expr->size == 0)
+            continue;
+        if (expr->size < 4 || expr->data[0] != WL_PLAN_EXPR_VAR)
+            return false;
+        uint16_t len;
+        memcpy(&len, expr->data + 1, sizeof(len));
+        if ((uint32_t)len + 3u != expr->size || len <= 3)
+            return false;
+        if (expr->data[3] != 'c' || expr->data[4] != 'o'
+            || expr->data[5] != 'l')
+            return false;
+        uint32_t col = 0;
+        for (uint32_t p = 6; p < expr->size; p++) {
+            if (!isdigit((unsigned char)expr->data[p]))
+                return false;
+            col = col * 10u + (uint32_t)(expr->data[p] - '0');
+        }
+        if (col != op->project_indices[i])
+            return false;
+    }
+    return true;
+}
+
+static int
+compose_join_projection(wl_plan_op_t *join, const wl_plan_op_t *map)
+{
+    uint32_t *indices = (uint32_t *)malloc(map->project_count
+            * sizeof(uint32_t));
+    if (!indices)
+        return -1;
+
+    for (uint32_t i = 0; i < map->project_count; i++) {
+        uint32_t idx = map->project_indices[i];
+        if (join->project_count > 0 && join->project_indices)
+            indices[i] = idx < join->project_count
+                ? join->project_indices[idx] : UINT32_MAX;
+        else
+            indices[i] = idx;
+    }
+
+    free((void *)join->project_indices);
+    join->project_indices = indices;
+    join->project_count = map->project_count;
+    join->materialized = false;
+    return 0;
+}
+
+static int
+rewrite_join_project_fusion_ops(wl_plan_op_t *ops, uint32_t *op_count)
+{
+    if (!ops || !op_count)
+        return 0;
+
+    uint32_t i = 0;
+    while (i + 1 < *op_count) {
+        wl_plan_op_t *join = &ops[i];
+        wl_plan_op_t *map = &ops[i + 1];
+        if (join->op != WL_PLAN_OP_JOIN || !map_op_is_pure_projection(map)) {
+            i++;
+            continue;
+        }
+
+        if (compose_join_projection(join, map) != 0)
+            return -1;
+
+        free_op(map);
+        for (uint32_t j = i + 1; j + 1 < *op_count; j++)
+            ops[j] = ops[j + 1];
+        memset(&ops[*op_count - 1], 0, sizeof(wl_plan_op_t));
+        (*op_count)--;
+    }
+    return 0;
+}
+
+static int
+rewrite_join_project_fusion(wl_plan_t *plan)
+{
+    if (!plan)
+        return 0;
+
+    wl_plan_stratum_t *strata = (wl_plan_stratum_t *)plan->strata;
+    for (uint32_t s = 0; s < plan->stratum_count; s++) {
+        wl_plan_stratum_t *stratum = &strata[s];
+        wl_plan_relation_t *relations
+            = (wl_plan_relation_t *)stratum->relations;
+        for (uint32_t r = 0; r < stratum->relation_count; r++) {
+            wl_plan_relation_t *rel = &relations[r];
+            wl_plan_op_t *ops = (wl_plan_op_t *)rel->ops;
+            if (rewrite_join_project_fusion_ops(ops, &rel->op_count) != 0)
+                return -1;
+#if ENABLE_K_FUSION
+            for (uint32_t i = 0; i < rel->op_count; i++) {
+                if (ops[i].op != WL_PLAN_OP_K_FUSION || !ops[i].opaque_data)
+                    continue;
+                wl_plan_op_k_fusion_t *meta
+                    = (wl_plan_op_k_fusion_t *)ops[i].opaque_data;
+                for (uint32_t d = 0; d < meta->k; d++) {
+                    if (rewrite_join_project_fusion_ops(meta->k_ops[d],
+                        &meta->k_op_counts[d]) != 0)
+                        return -1;
+                }
+            }
+#endif
+        }
+    }
+    return 0;
+}
+
 /* ======================================================================== */
 /* Multi-Way Delta Expansion (Semi-Naive K-Atom Rewriting with CSE Hints)   */
 /* ======================================================================== */
@@ -2624,6 +2745,10 @@ wl_plan_from_program(const struct wirelog_program *prog, wl_plan_t **out)
      * materialization hints to avoid the regression seen without CSE. */
     rewrite_lftj_chains(plan);
     rewrite_multiway_delta(plan);
+    if (rewrite_join_project_fusion(plan) != 0) {
+        wl_plan_free(plan);
+        return -1;
+    }
     rewrite_insert_exchanges(plan);
 
     *out = plan;
