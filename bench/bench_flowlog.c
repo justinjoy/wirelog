@@ -46,6 +46,12 @@ wl_columnar_session_get_tdd_exchange_breakdown_stats(wl_session_t *sess,
 extern void
 wl_columnar_session_get_tdd_worker_width_stats(wl_session_t *sess,
     uint32_t *out_last_active_workers, uint32_t *out_max_active_workers);
+extern void
+wl_columnar_session_get_tdd_decision_stats(wl_session_t *sess,
+    uint32_t *out_recursive_strata, uint32_t *out_executed_strata,
+    uint32_t *out_fallback_strata, uint32_t *out_snapshot_ineligible,
+    uint32_t *out_no_exchange, uint32_t *out_unsafe_plan,
+    uint32_t *out_adaptive_workers, const char **out_last_fallback_reason);
 
 /* ----------------------------------------------------------------
  * Global output format and per-run profiling accumulators (3B-003)
@@ -91,6 +97,14 @@ static uint64_t g_last_tdd_exchange_broadcast_ns = 0;
 static uint64_t g_last_tdd_final_merge_ns = 0;
 static uint32_t g_last_tdd_active_workers = 0;
 static uint32_t g_last_tdd_max_active_workers = 0;
+static uint32_t g_last_tdd_recursive_strata = 0;
+static uint32_t g_last_tdd_executed_strata = 0;
+static uint32_t g_last_tdd_fallback_strata = 0;
+static uint32_t g_last_tdd_fallback_snapshot_ineligible = 0;
+static uint32_t g_last_tdd_fallback_no_exchange = 0;
+static uint32_t g_last_tdd_fallback_unsafe_plan = 0;
+static uint32_t g_last_tdd_fallback_adaptive_workers = 0;
+static const char *g_last_tdd_fallback_reason = "none";
 
 #ifndef WITH_K_FUSION
 #define WITH_K_FUSION 1
@@ -372,6 +386,15 @@ run_pipeline_count(const char *source, uint32_t num_workers, int64_t *out_count,
         &g_last_tdd_exchange_gather_ns, &g_last_tdd_exchange_broadcast_ns);
     wl_columnar_session_get_tdd_worker_width_stats(sess,
         &g_last_tdd_active_workers, &g_last_tdd_max_active_workers);
+    wl_columnar_session_get_tdd_decision_stats(sess,
+        &g_last_tdd_recursive_strata,
+        &g_last_tdd_executed_strata,
+        &g_last_tdd_fallback_strata,
+        &g_last_tdd_fallback_snapshot_ineligible,
+        &g_last_tdd_fallback_no_exchange,
+        &g_last_tdd_fallback_unsafe_plan,
+        &g_last_tdd_fallback_adaptive_workers,
+        &g_last_tdd_fallback_reason);
 
     wl_session_destroy(sess);
     wl_plan_free(plan);
@@ -1015,6 +1038,15 @@ run_tdd_bdx_pipeline(const int64_t *rows, uint32_t edge_count,
         &g_last_tdd_exchange_gather_ns, &g_last_tdd_exchange_broadcast_ns);
     wl_columnar_session_get_tdd_worker_width_stats(sess,
         &g_last_tdd_active_workers, &g_last_tdd_max_active_workers);
+    wl_columnar_session_get_tdd_decision_stats(sess,
+        &g_last_tdd_recursive_strata,
+        &g_last_tdd_executed_strata,
+        &g_last_tdd_fallback_strata,
+        &g_last_tdd_fallback_snapshot_ineligible,
+        &g_last_tdd_fallback_no_exchange,
+        &g_last_tdd_fallback_unsafe_plan,
+        &g_last_tdd_fallback_adaptive_workers,
+        &g_last_tdd_fallback_reason);
 
     wl_session_destroy(sess);
     wl_plan_free(plan);
@@ -2986,6 +3018,21 @@ output_json_row(const char *wl_name, int32_t edges, uint32_t workers,
     printf("  \"tdd_active_workers\": %u,\n", g_last_tdd_active_workers);
     printf("  \"tdd_max_active_workers\": %u,\n",
         g_last_tdd_max_active_workers);
+    printf("  \"tdd_recursive_strata\": %u,\n",
+        g_last_tdd_recursive_strata);
+    printf("  \"tdd_executed_strata\": %u,\n",
+        g_last_tdd_executed_strata);
+    printf("  \"tdd_fallback_strata\": %u,\n",
+        g_last_tdd_fallback_strata);
+    printf("  \"tdd_fallback_reason\": \"%s\",\n",
+        g_last_tdd_fallback_reason);
+    printf("  \"tdd_fallback_reasons\": {\"snapshot_ineligible\": %u, "
+        "\"no_exchange\": %u, \"unsafe_plan\": %u, "
+        "\"adaptive_workers\": %u},\n",
+        g_last_tdd_fallback_snapshot_ineligible,
+        g_last_tdd_fallback_no_exchange,
+        g_last_tdd_fallback_unsafe_plan,
+        g_last_tdd_fallback_adaptive_workers);
     printf("  \"tdd_total_ms\": %.3f,\n",
         (double)g_last_tdd_total_ns / 1e6);
     printf("  \"tdd_total_pct\": %.1f,\n", tdd_total_pct);

@@ -3318,6 +3318,23 @@ test_tdd_multiworker_exe = executable(
 
 test('tdd_multiworker', test_tdd_multiworker_exe)
 
+test_tdd_decision_stats_exe = executable(
+  'test_tdd_decision_stats',
+  files('test_tdd_decision_stats.c'),
+  backend_src,
+  parser_src,
+  ir_src,
+  optimizer_src,
+  arena_src,
+  io_src,
+  thread_src,
+  workqueue_src,
+  include_directories: [wirelog_inc, wirelog_src_inc],
+  dependencies: [nanoarrow_dep, threads_dep, xxhash_dep, mbedtls_dep, math_dep],
+)
+
+test('tdd_decision_stats', test_tdd_decision_stats_exe)
+
 # ============================================================================
 # Safe Worker Scaling Tests (Issue #409)
 # ============================================================================
