@@ -19,6 +19,24 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _WIN32
+static int
+wl_test_setenv_(const char *name, const char *value, int overwrite)
+{
+    (void)overwrite;
+    return _putenv_s(name, (value && *value) ? value : "1");
+}
+
+static int
+wl_test_unsetenv_(const char *name)
+{
+    return _putenv_s(name, "");
+}
+
+#  define setenv   wl_test_setenv_
+#  define unsetenv wl_test_unsetenv_
+#endif
+
 extern void
 wl_columnar_session_get_tdd_decision_stats(wl_session_t *sess,
     uint32_t *out_recursive_strata, uint32_t *out_executed_strata,

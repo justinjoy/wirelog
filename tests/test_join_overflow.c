@@ -24,6 +24,24 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#ifdef _WIN32
+static int
+wl_test_setenv_(const char *name, const char *value, int overwrite)
+{
+    (void)overwrite;
+    return _putenv_s(name, (value && *value) ? value : "1");
+}
+
+static int
+wl_test_unsetenv_(const char *name)
+{
+    return _putenv_s(name, "");
+}
+
+#  define setenv   wl_test_setenv_
+#  define unsetenv wl_test_unsetenv_
+#endif
+
 static int tests_run = 0;
 static int tests_passed = 0;
 static int tests_failed = 0;
