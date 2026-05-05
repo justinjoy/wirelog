@@ -1056,8 +1056,10 @@ col_op_variable(const wl_plan_op_t *op, eval_stack_t *stack,
     /* WL_DELTA_AUTO: use delta if strictly smaller than full relation.
      * Exception: inside a TDD worker sub-pass the broadcast $d$<rel> may be
      * >= the local partition, so we must use it whenever it is non-empty. */
-    bool use_delta = (delta && delta->nrows > 0
-        && (delta->nrows < full_rel->nrows || sess->tdd_subpass_active));
+    bool use_delta = delta && (((delta->nrows > 0
+        && delta->nrows < full_rel->nrows) || (delta->nrows > 0
+        && sess->tdd_subpass_active)) || (sess->tdd_outbound_only_active
+        && sess->current_iteration > 0));
     col_rel_t *rel = use_delta ? delta : full_rel;
     /* push borrowed reference - session owns the relation */
     return eval_stack_push_delta(stack, rel, false, use_delta);
@@ -2184,13 +2186,18 @@ col_op_join(const wl_plan_op_t *op, eval_stack_t *stack, wl_col_session_t *sess)
             return push_rc;
         }
         /* else: iteration 0 — no deltas yet, fall through to full right */
-    } else if (op->delta_mode != WL_DELTA_FORCE_FULL && !left_e.is_delta
-        && op->right_relation) {
+    } else if (op->delta_mode != WL_DELTA_FORCE_FULL && op->right_relation
+        && (!left_e.is_delta || (sess->tdd_outbound_only_active
+        && sess->current_iteration > 0))) {
         /* AUTO: original heuristic */
         char rdname[256];
         snprintf(rdname, sizeof(rdname), "$d$%s", op->right_relation);
         col_rel_t *rdelta = session_find_rel(sess, rdname);
-        if (rdelta && rdelta->nrows > 0 && rdelta->nrows < right->nrows) {
+        if (rdelta && (((rdelta->nrows > 0
+            && rdelta->nrows < right->nrows) || (rdelta->nrows > 0
+            && sess->tdd_subpass_active))
+            || (sess->tdd_outbound_only_active
+            && sess->current_iteration > 0))) {
             right = rdelta;
             used_right_delta = true;
         }
@@ -5786,12 +5793,17 @@ col_op_join_diff(const wl_plan_op_t *op, eval_stack_t *stack,
                 col_rel_destroy(empty);
             return push_rc;
         }
-    } else if (op->delta_mode != WL_DELTA_FORCE_FULL && !left_e.is_delta
-        && op->right_relation) {
+    } else if (op->delta_mode != WL_DELTA_FORCE_FULL && op->right_relation
+        && (!left_e.is_delta || (sess->tdd_outbound_only_active
+        && sess->current_iteration > 0))) {
         char rdname[256];
         snprintf(rdname, sizeof(rdname), "$d$%s", op->right_relation);
         col_rel_t *rdelta = session_find_rel(sess, rdname);
-        if (rdelta && rdelta->nrows > 0 && rdelta->nrows < right->nrows) {
+        if (rdelta && (((rdelta->nrows > 0
+            && rdelta->nrows < right->nrows) || (rdelta->nrows > 0
+            && sess->tdd_subpass_active))
+            || (sess->tdd_outbound_only_active
+            && sess->current_iteration > 0))) {
             right = rdelta;
             used_right_delta = true;
         }

@@ -2034,14 +2034,17 @@ col_session_snapshot(wl_session_t *session, wl_on_tuple_fn callback,
              * the full join), which is worse than single-threaded. */
             if (recursive_has_exchange) {
                 if (!tdd_stratum_has_idb_self_join(rsp)) {
-                    /* Category A: no IDB-IDB joins.  TDD would fall into
-                     * replicate_mode (all workers receive the full dataset;
-                     * no work is partitioned → zero speedup).  With W>1,
-                     * memory backpressure inside each worker truncates joins
-                     * earlier than a single-threaded coordinator would,
-                     * causing fewer derived facts and a tuple count
-                     * discrepancy vs W=1 (Issue #416 residual).
-                     * recursive_tdd_safe stays false → single-threaded. */
+                    /* Category A: no IDB-IDB joins.  Owner-partitioned TDD is
+                     * correct only when every recursive IDB probe uses the
+                     * relation's EXCHANGE key.  Rules that consume the same
+                     * IDB through multiple key columns (e.g. DOOP SubtypeOf's
+                     * array component rule) require cross-owner access and
+                     * must stay single-threaded for now. */
+                    recursive_tdd_safe =
+                        stratum_max_idb_body_atoms(rsp) <= 1
+                        && tdd_stratum_exchange_keys_are_multi_column(rsp)
+                        && tdd_stratum_single_idb_join_keys_exchange_aligned(
+                        rsp);
                 } else if (tdd_stratum_idb_self_join_exchange_aligned(
                         rsp, sess)) {
                     /* Category B: IDB-IDB joins are exchange-aligned. */
