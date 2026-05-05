@@ -2164,6 +2164,23 @@ col_join_attach_ledger(wl_col_session_t *sess, col_rel_t *rel)
             (uint64_t)rel->capacity * rel->ncols * sizeof(int64_t));
 }
 
+static bool
+col_join_output_limit_reached(wl_col_session_t *sess, const col_rel_t *out)
+{
+    if (!sess)
+        return false;
+    uint64_t limit = sess->join_output_shared_count
+        ? sess->join_output_shared_limit : sess->join_output_limit;
+    if (limit == 0)
+        return false;
+    if (sess->join_output_shared_count) {
+        uint64_t n = atomic_fetch_add_explicit(
+            sess->join_output_shared_count, 1, memory_order_relaxed) + 1;
+        return n >= limit;
+    }
+    return out && out->nrows >= limit;
+}
+
 static int
 col_join_reserve_exact(col_rel_t *rel, uint32_t nrows)
 {
@@ -2857,8 +2874,7 @@ col_op_join(const wl_plan_op_t *op, eval_stack_t *stack, wl_col_session_t *sess)
                         join_rc);
                     break;
                 }
-                if ((sess->join_output_limit > 0
-                    && out->nrows >= sess->join_output_limit)
+                if (col_join_output_limit_reached(sess, out)
                     || (out->nrows % 10000 == 0 && out->nrows > 0
                     && wl_mem_ledger_should_backpressure(
                         &sess->mem_ledger, WL_MEM_SUBSYS_RELATION, 80))) {
@@ -3012,8 +3028,7 @@ col_op_join(const wl_plan_op_t *op, eval_stack_t *stack, wl_col_session_t *sess)
                                     join_rc);
                                 break;
                             }
-                            if ((sess->join_output_limit > 0
-                                && out->nrows >= sess->join_output_limit)
+                            if (col_join_output_limit_reached(sess, out)
                                 || (out->nrows % 10000 == 0 && out->nrows > 0
                                 && wl_mem_ledger_should_backpressure(
                                     &sess->mem_ledger, WL_MEM_SUBSYS_RELATION,
@@ -3049,8 +3064,7 @@ col_op_join(const wl_plan_op_t *op, eval_stack_t *stack, wl_col_session_t *sess)
                                 join_rc);
                             break;
                         }
-                        if ((sess->join_output_limit > 0
-                            && out->nrows >= sess->join_output_limit)
+                        if (col_join_output_limit_reached(sess, out)
                             || (out->nrows % 10000 == 0 && out->nrows > 0
                             && wl_mem_ledger_should_backpressure(
                                 &sess->mem_ledger, WL_MEM_SUBSYS_RELATION,
@@ -6543,8 +6557,7 @@ col_op_join_diff(const wl_plan_op_t *op, eval_stack_t *stack,
                         op->project_indices, op->project_count, tmp);
                 if (join_rc != 0)
                     break;
-                if ((sess->join_output_limit > 0
-                    && out->nrows >= sess->join_output_limit)
+                if (col_join_output_limit_reached(sess, out)
                     || (out->nrows % 10000 == 0 && out->nrows > 0
                     && wl_mem_ledger_should_backpressure(
                         &sess->mem_ledger, WL_MEM_SUBSYS_RELATION, 80))) {
@@ -6602,8 +6615,7 @@ col_op_join_diff(const wl_plan_op_t *op, eval_stack_t *stack,
                         op->project_indices, op->project_count, tmp);
                 if (join_rc != 0)
                     break;
-                if ((sess->join_output_limit > 0
-                    && out->nrows >= sess->join_output_limit)
+                if (col_join_output_limit_reached(sess, out)
                     || (out->nrows % 10000 == 0 && out->nrows > 0
                     && wl_mem_ledger_should_backpressure(
                         &sess->mem_ledger, WL_MEM_SUBSYS_RELATION, 80))) {

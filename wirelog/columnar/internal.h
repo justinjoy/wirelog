@@ -909,6 +909,11 @@ typedef struct wl_col_session_t {
      * based on available physical memory, num_workers, and estimated row width.
      * 0 = disabled (no limit). Overridable via WIRELOG_JOIN_OUTPUT_LIMIT env var. */
     uint64_t join_output_limit;
+    /* Shared join-output counter for relation-level TDD workers. Borrowed from
+     * the coordinator while a single non-recursive relation plan is running;
+     * NULL uses the session-local join_output_limit semantics. */
+    atomic_uint_fast64_t *join_output_shared_count;
+    uint64_t join_output_shared_limit;
     /* Monotone property tracking (issue #105).
      * stratum_is_monotone[si] = true if stratum si only derives facts
      * (no deletion via negation/antijoin/subtraction). Used for DRedL-style
