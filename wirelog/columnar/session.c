@@ -210,6 +210,108 @@ session_remove_rel(wl_col_session_t *sess, const char *name)
     }
 }
 
+typedef struct wl_columnar_session_tdd_decision {
+    bool use_tdd;
+    wl_columnar_internal_tdd_fallback_reason_t fallback_reason;
+} wl_columnar_session_tdd_decision_t;
+
+static const char *
+wl_columnar_session_tdd_fallback_reason_name(
+    wl_columnar_internal_tdd_fallback_reason_t reason)
+{
+    switch (reason) {
+    case WL_COLUMNAR_INTERNAL_TDD_FALLBACK_NONE:
+        return "none";
+    case WL_COLUMNAR_INTERNAL_TDD_FALLBACK_NON_RECURSIVE:
+        return "non_recursive";
+    case WL_COLUMNAR_INTERNAL_TDD_FALLBACK_SNAPSHOT_INELIGIBLE:
+        return "snapshot_ineligible";
+    case WL_COLUMNAR_INTERNAL_TDD_FALLBACK_NO_EXCHANGE:
+        return "no_exchange";
+    case WL_COLUMNAR_INTERNAL_TDD_FALLBACK_UNSAFE_PLAN:
+        return "unsafe_plan";
+    case WL_COLUMNAR_INTERNAL_TDD_FALLBACK_ADAPTIVE_WORKERS:
+        return "adaptive_workers";
+    case WL_COLUMNAR_INTERNAL_TDD_FALLBACK_REASON_COUNT:
+        break;
+    }
+    return "unknown";
+}
+
+static bool
+wl_columnar_session_tdd_stratum_has_exchange(const wl_plan_stratum_t *sp)
+{
+    for (uint32_t ri = 0; ri < sp->relation_count; ri++) {
+        const wl_plan_relation_t *rp = &sp->relations[ri];
+        for (uint32_t oi = 0; oi < rp->op_count; oi++) {
+            if (rp->ops[oi].op == WL_PLAN_OP_EXCHANGE)
+                return true;
+        }
+    }
+    return false;
+}
+
+static bool
+wl_columnar_session_tdd_stratum_is_safe(const wl_plan_stratum_t *sp,
+    wl_col_session_t *sess)
+{
+    /* TDD is only beneficial for recursive strata when there is no
+     * IDB self-join OR the IDB self-join is exchange-aligned.  A
+     * non-aligned self-join forces replicate_mode (all W workers do
+     * the full join), which is worse than single-threaded. */
+    if (!tdd_stratum_has_idb_self_join(sp)) {
+        /* Category A: no IDB-IDB joins.  Owner-partitioned TDD is
+         * correct only when every recursive IDB probe uses the
+         * relation's EXCHANGE key.  Rules that consume the same IDB
+         * through multiple key columns require cross-owner access and
+         * must stay single-threaded for now. */
+        return stratum_max_idb_body_atoms(sp) <= 1
+               && tdd_stratum_exchange_keys_are_multi_column(sp)
+               && tdd_stratum_single_idb_join_keys_exchange_aligned(sp);
+    }
+    if (tdd_stratum_idb_self_join_exchange_aligned(sp, sess))
+        return true;
+
+    /* Category C: non-aligned IDB-IDB joins. BDX mode is only correct for
+     * rules with at most 2 IDB body atoms. */
+    return stratum_max_idb_body_atoms(sp) <= 2;
+}
+
+static wl_columnar_session_tdd_decision_t
+wl_columnar_session_tdd_plan_stratum(const wl_plan_stratum_t *sp,
+    wl_col_session_t *sess,
+    bool snapshot_tdd_eligible)
+{
+    wl_columnar_session_tdd_decision_t decision = {
+        .use_tdd = false,
+        .fallback_reason = WL_COLUMNAR_INTERNAL_TDD_FALLBACK_NONE,
+    };
+
+    if (!sp->is_recursive) {
+        decision.fallback_reason =
+            WL_COLUMNAR_INTERNAL_TDD_FALLBACK_NON_RECURSIVE;
+        return decision;
+    }
+    if (!snapshot_tdd_eligible) {
+        decision.fallback_reason =
+            WL_COLUMNAR_INTERNAL_TDD_FALLBACK_SNAPSHOT_INELIGIBLE;
+        return decision;
+    }
+    if (!wl_columnar_session_tdd_stratum_has_exchange(sp)) {
+        decision.fallback_reason =
+            WL_COLUMNAR_INTERNAL_TDD_FALLBACK_NO_EXCHANGE;
+        return decision;
+    }
+    if (!wl_columnar_session_tdd_stratum_is_safe(sp, sess)) {
+        decision.fallback_reason =
+            WL_COLUMNAR_INTERNAL_TDD_FALLBACK_UNSAFE_PLAN;
+        return decision;
+    }
+
+    decision.use_tdd = true;
+    return decision;
+}
+
 /* Operator implementations moved to columnar/ops.c;
  * evaluator functions moved to columnar/eval.c;
  * declarations in columnar/internal.h. */
@@ -415,6 +517,57 @@ wl_columnar_session_get_tdd_worker_width_stats(wl_session_t *sess,
         *out_last_active_workers = cs->tdd_last_active_workers;
     if (out_max_active_workers)
         *out_max_active_workers = cs->tdd_max_active_workers;
+}
+
+/*
+ * wl_columnar_session_get_tdd_decision_stats:
+ *
+ * Return TDD planner decisions from the last snapshot.  Recursive strata are
+ * planned TDD-first; fallback counters explain why K-fusion/serial evaluation
+ * was used instead.
+ */
+#if defined(__GNUC__) && __GNUC__ >= 4
+__attribute__((visibility("hidden")))
+#endif
+void
+wl_columnar_session_get_tdd_decision_stats(wl_session_t *sess,
+    uint32_t *out_recursive_strata, uint32_t *out_executed_strata,
+    uint32_t *out_fallback_strata, uint32_t *out_snapshot_ineligible,
+    uint32_t *out_no_exchange, uint32_t *out_unsafe_plan,
+    uint32_t *out_adaptive_workers, const char **out_last_fallback_reason)
+{
+    wl_col_session_t *cs = COL_SESSION(sess);
+    if (out_recursive_strata)
+        *out_recursive_strata = cs->tdd_recursive_strata;
+    if (out_executed_strata)
+        *out_executed_strata = cs->tdd_executed_strata;
+    if (out_fallback_strata)
+        *out_fallback_strata = cs->tdd_fallback_strata;
+    if (out_snapshot_ineligible) {
+        *out_snapshot_ineligible =
+            cs->tdd_fallback_reason_counts[
+            WL_COLUMNAR_INTERNAL_TDD_FALLBACK_SNAPSHOT_INELIGIBLE];
+    }
+    if (out_no_exchange) {
+        *out_no_exchange =
+            cs->tdd_fallback_reason_counts[
+            WL_COLUMNAR_INTERNAL_TDD_FALLBACK_NO_EXCHANGE];
+    }
+    if (out_unsafe_plan) {
+        *out_unsafe_plan =
+            cs->tdd_fallback_reason_counts[
+            WL_COLUMNAR_INTERNAL_TDD_FALLBACK_UNSAFE_PLAN];
+    }
+    if (out_adaptive_workers) {
+        *out_adaptive_workers =
+            cs->tdd_fallback_reason_counts[
+            WL_COLUMNAR_INTERNAL_TDD_FALLBACK_ADAPTIVE_WORKERS];
+    }
+    if (out_last_fallback_reason) {
+        *out_last_fallback_reason =
+            wl_columnar_session_tdd_fallback_reason_name(
+            cs->tdd_last_fallback_reason);
+    }
 }
 
 /*
@@ -1956,6 +2109,13 @@ col_session_snapshot(wl_session_t *session, wl_on_tuple_fn callback,
     sess->tdd_final_merge_ns = 0;
     sess->tdd_last_active_workers = 0;
     sess->tdd_max_active_workers = 0;
+    sess->tdd_recursive_strata = 0;
+    sess->tdd_executed_strata = 0;
+    sess->tdd_fallback_strata = 0;
+    memset(sess->tdd_fallback_reason_counts, 0,
+        sizeof(sess->tdd_fallback_reason_counts));
+    sess->tdd_last_fallback_reason = WL_COLUMNAR_INTERNAL_TDD_FALLBACK_NONE;
+    sess->tdd_decision_tracking_active = false;
 
     /* Phase 4 incremental skip: when last_inserted_relation is set, only
      * re-evaluate strata that transitively depend on the inserted relation.
@@ -2089,79 +2249,30 @@ col_session_snapshot(wl_session_t *session, wl_on_tuple_fn callback,
         && sess->num_workers > 1 && sess->tdd_workers
         && (sess->last_inserted_relation != NULL ||
         sess->total_iterations == 0));
+    sess->tdd_decision_tracking_active = true;
     for (uint32_t si = 0; si < plan->stratum_count; si++) {
         if ((affected_mask & ((uint64_t)1 << si)) == 0)
             continue;
-        /* Issue #361, #388, #372: TDD hybrid init partitions IDB by hash key.
-         * Recursive strata with EXCHANGE ops can use TDD when:
-         *   (a) no IDB self-join exists (safe to partition without replication), OR
-         *   (b) IDB self-join is exchange-aligned (join key == EXCHANGE key, so
-         *       each worker can serve joins locally with delta broadcast).
-         * Strata with non-exchange-aligned IDB self-joins (e.g. TC r(x,z):-r(x,y),
-         * r(y,z) where join key col1≠partition key col0) or without EXCHANGE ops
-         * fall back to single-threaded to avoid cross-partition data unavailability
-         * or W-fold redundant work in replicate_mode. */
-        bool recursive_has_exchange = false;
-        bool recursive_tdd_safe = false; /* default: no TDD for recursive */
+        wl_columnar_session_tdd_decision_t tdd_decision =
+            wl_columnar_session_tdd_plan_stratum(&plan->strata[si], sess,
+                snapshot_tdd_eligible);
+        bool use_tdd = tdd_decision.use_tdd;
         if (plan->strata[si].is_recursive) {
-            const wl_plan_stratum_t *rsp = &plan->strata[si];
-            for (uint32_t ri = 0;
-                ri < rsp->relation_count && !recursive_has_exchange; ri++) {
-                const wl_plan_relation_t *rp = &rsp->relations[ri];
-                for (uint32_t oi = 0; oi < rp->op_count; oi++) {
-                    if (rp->ops[oi].op == WL_PLAN_OP_EXCHANGE) {
-                        recursive_has_exchange = true;
-                        break;
-                    }
-                }
-            }
-            /* TDD is only beneficial for recursive strata when there is no
-             * IDB self-join OR the IDB self-join is exchange-aligned.  A
-             * non-aligned self-join forces replicate_mode (all W workers do
-             * the full join), which is worse than single-threaded. */
-            if (recursive_has_exchange) {
-                if (!tdd_stratum_has_idb_self_join(rsp)) {
-                    /* Category A: no IDB-IDB joins.  Owner-partitioned TDD is
-                     * correct only when every recursive IDB probe uses the
-                     * relation's EXCHANGE key.  Rules that consume the same
-                     * IDB through multiple key columns (e.g. DOOP SubtypeOf's
-                     * array component rule) require cross-owner access and
-                     * must stay single-threaded for now. */
-                    recursive_tdd_safe =
-                        stratum_max_idb_body_atoms(rsp) <= 1
-                        && tdd_stratum_exchange_keys_are_multi_column(rsp)
-                        && tdd_stratum_single_idb_join_keys_exchange_aligned(
-                        rsp);
-                } else if (tdd_stratum_idb_self_join_exchange_aligned(
-                        rsp, sess)) {
-                    /* Category B: IDB-IDB joins are exchange-aligned. */
-                    recursive_tdd_safe = true;
-                } else {
-                    /* Category C: non-aligned IDB-IDB joins.
-                     * BDX mode is only correct for rules with at most
-                     * 2 IDB body atoms (see design doc for proof). */
-                    uint32_t max_atoms =
-                        stratum_max_idb_body_atoms(rsp);
-                    if (max_atoms <= 2) {
-                        recursive_tdd_safe = true;
-                    }
-                    /* else: >2 IDB body atoms, fall back to
-                     * single-threaded (recursive_tdd_safe stays false) */
+            sess->tdd_recursive_strata++;
+            if (use_tdd) {
+                sess->tdd_executed_strata++;
+            } else {
+                wl_columnar_internal_tdd_fallback_reason_t reason =
+                    tdd_decision.fallback_reason;
+                sess->tdd_fallback_strata++;
+                sess->tdd_last_fallback_reason = reason;
+                if (reason > WL_COLUMNAR_INTERNAL_TDD_FALLBACK_NONE
+                    && reason <
+                    WL_COLUMNAR_INTERNAL_TDD_FALLBACK_REASON_COUNT) {
+                    sess->tdd_fallback_reason_counts[reason]++;
                 }
             }
         }
-        /* Issue #416: Non-recursive strata are always evaluated
-         * single-threaded.  col_eval_stratum_tdd_nonrecursive uses
-         * tdd_init_workers which partitions ALL relations (EDB and IDB)
-         * by col0.  Any rule whose join key is not col0 — the common
-         * case for DOOP preprocessing strata — loses cross-partition
-         * tuples, producing fewer derived facts that feed into recursive
-         * strata and causing W>1 to produce fewer final tuples than W=1
-         * (empirically: ~8.5% fewer for the DOOP benchmark). */
-        bool use_tdd = snapshot_tdd_eligible
-            && (plan->strata[si].is_recursive
-                ? (recursive_has_exchange && recursive_tdd_safe)
-                : false); /* Issue #416: non-recursive always single-threaded */
         /* Issue #390: Correctness oracle — compare TDD vs single-threaded
          * tuple counts for recursive strata.  Enabled via env var.
          * Debug-only; never runs in production.
@@ -2303,11 +2414,13 @@ col_session_snapshot(wl_session_t *session, wl_on_tuple_fn callback,
                     sess->rels[out++] = sess->rels[in];
             }
             sess->nrels = out;
+            sess->tdd_decision_tracking_active = false;
             return rc;
         }
         if (sess->eval_arena)
             wl_arena_reset(sess->eval_arena);
     }
+    sess->tdd_decision_tracking_active = false;
 
     /* Reset after successful eval so next plain snapshot runs all strata */
     sess->last_inserted_relation = NULL;

@@ -117,6 +117,16 @@ now_ns(void)
  * available physical memory (see wl_col_session_t.join_output_limit). */
 #define COL_JOIN_OUTPUT_LIMIT_DEFAULT (50u * 1000u * 1000u) /* 50M rows */
 
+typedef enum wl_columnar_internal_tdd_fallback_reason {
+    WL_COLUMNAR_INTERNAL_TDD_FALLBACK_NONE = 0,
+    WL_COLUMNAR_INTERNAL_TDD_FALLBACK_NON_RECURSIVE,
+    WL_COLUMNAR_INTERNAL_TDD_FALLBACK_SNAPSHOT_INELIGIBLE,
+    WL_COLUMNAR_INTERNAL_TDD_FALLBACK_NO_EXCHANGE,
+    WL_COLUMNAR_INTERNAL_TDD_FALLBACK_UNSAFE_PLAN,
+    WL_COLUMNAR_INTERNAL_TDD_FALLBACK_ADAPTIVE_WORKERS,
+    WL_COLUMNAR_INTERNAL_TDD_FALLBACK_REASON_COUNT
+} wl_columnar_internal_tdd_fallback_reason_t;
+
 /* ======================================================================== */
 /* Column-Major Allocation Helpers (Phase C, Issue #332)                    */
 /* ======================================================================== */
@@ -862,6 +872,13 @@ typedef struct wl_col_session_t {
     uint64_t tdd_exchange_gather_ns;
     uint64_t tdd_exchange_broadcast_ns;
     uint64_t tdd_final_merge_ns;
+    uint32_t tdd_recursive_strata;
+    uint32_t tdd_executed_strata;
+    uint32_t tdd_fallback_strata;
+    uint32_t tdd_fallback_reason_counts[
+        WL_COLUMNAR_INTERNAL_TDD_FALLBACK_REASON_COUNT];
+    wl_columnar_internal_tdd_fallback_reason_t tdd_last_fallback_reason;
+    bool tdd_decision_tracking_active;
     /* Phase 4: tracks which relation was just inserted via
      * col_session_insert_incremental, enables affected-stratum skip
      * optimization. Borrowed pointer; lifetime: until next session_step.
