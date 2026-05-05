@@ -1255,6 +1255,171 @@ test_delta_cb_multi_round_recursive_insert(void)
     PASS();
 }
 
+/* Issue #665: a 5-relation conjunctive rule was reported to surface
+* WIRELOG_ERR_EXEC from wl_easy_step when the EDB prerequisites were
+* inserted across separate epochs and only some were present at step time.
+* PR #663 (Closes #662) made col_session_insert reroute to the incremental
+* path under an installed delta callback; that reroute also covers the
+* partial-conjunction shape from #665.  Pin the shape and the per-epoch
+* delta semantics so future refactors do not silently regress it. */
+static const char *ISSUE_665_PROGRAM_SRC
+    = ".decl grant(user: symbol, perm: symbol)\n"
+    ".decl principal_state(user: symbol, state: symbol)\n"
+    ".decl session_state(scope: symbol, state: symbol)\n"
+    ".decl session_active(state: symbol)\n"
+    ".decl perm_state(user: symbol, perm: symbol, scope: symbol, "
+    "state: symbol)\n"
+    ".decl allow_bool(user: symbol, perm: symbol, scope: symbol)\n"
+    "allow_bool(U, P, S) :-\n"
+    "    grant(U, P),\n"
+    "    principal_state(U, \"authenticated\"),\n"
+    "    session_state(S, ST),\n"
+    "    session_active(ST),\n"
+    "    perm_state(U, P, S, \"armed\").\n";
+
+static int
+count_allow_bool_added(const delta_collector_t *deltas, int from)
+{
+    int hits = 0;
+    for (int i = from; i < deltas->count; i++) {
+        if (strcmp(deltas->relations[i], "allow_bool") == 0
+            && deltas->diffs[i] == 1)
+            hits++;
+    }
+    return hits;
+}
+
+static bool
+drive_issue_665_partial_conjunction(wl_easy_session_t *s)
+{
+    delta_collector_t deltas;
+    memset(&deltas, 0, sizeof(deltas));
+    if (wl_easy_set_delta_cb(s, collect_delta, &deltas) != WIRELOG_OK)
+        return false;
+
+    /* Step 1: only grant present. allow_bool requires four more EDB legs;
+     * the partial-prereq step must succeed and emit no allow_bool delta. */
+    if (wl_easy_insert_sym(s, "grant", "u", "p", (const char *)NULL)
+        != WIRELOG_OK)
+        return false;
+    if (wl_easy_step(s) != WIRELOG_OK)
+        return false;
+    if (count_allow_bool_added(&deltas, 0) != 0)
+        return false;
+    int after_grant = deltas.count;
+
+    /* Step 2: add principal_state with the literal "authenticated". */
+    if (wl_easy_insert_sym(s, "principal_state", "u", "authenticated",
+        (const char *)NULL)
+        != WIRELOG_OK)
+        return false;
+    if (wl_easy_step(s) != WIRELOG_OK)
+        return false;
+    if (count_allow_bool_added(&deltas, after_grant) != 0)
+        return false;
+    int after_principal = deltas.count;
+
+    /* Step 3: session_state(S, ST) — still missing session_active and
+     * perm_state, so the join body is unsatisfied. */
+    if (wl_easy_insert_sym(s, "session_state", "s", "st", (const char *)NULL)
+        != WIRELOG_OK)
+        return false;
+    if (wl_easy_step(s) != WIRELOG_OK)
+        return false;
+    if (count_allow_bool_added(&deltas, after_principal) != 0)
+        return false;
+    int after_session = deltas.count;
+
+    /* Step 4: session_active(ST) — perm_state still missing. */
+    if (wl_easy_insert_sym(s, "session_active", "st", (const char *)NULL)
+        != WIRELOG_OK)
+        return false;
+    if (wl_easy_step(s) != WIRELOG_OK)
+        return false;
+    if (count_allow_bool_added(&deltas, after_session) != 0)
+        return false;
+    int after_active = deltas.count;
+
+    /* Step 5: perm_state(U, P, S, "armed") completes the conjunction.
+     * Exactly one +allow_bool("u","p","s") must surface. */
+    if (wl_easy_insert_sym(s, "perm_state", "u", "p", "s", "armed",
+        (const char *)NULL)
+        != WIRELOG_OK)
+        return false;
+    if (wl_easy_step(s) != WIRELOG_OK)
+        return false;
+    if (count_allow_bool_added(&deltas, after_active) != 1)
+        return false;
+
+    /* Verify the bound row matches the inputs we interned through the
+     * insert_sym helper: allow_bool(u, p, s). */
+    int64_t u = wl_easy_intern(s, "u");
+    int64_t p = wl_easy_intern(s, "p");
+    int64_t scope = wl_easy_intern(s, "s");
+    if (u < 0 || p < 0 || scope < 0)
+        return false;
+    bool matched = false;
+    for (int i = after_active; i < deltas.count; i++) {
+        if (strcmp(deltas.relations[i], "allow_bool") != 0
+            || deltas.diffs[i] != 1)
+            continue;
+        if (deltas.ncols[i] == 3 && deltas.rows[i][0] == u
+            && deltas.rows[i][1] == p && deltas.rows[i][2] == scope) {
+            matched = true;
+            break;
+        }
+    }
+    return matched;
+}
+
+static void
+test_issue_665_partial_conjunction_default_workers(void)
+{
+    TEST("issue 665: partial conjunctive EDB updates step OK across epochs");
+
+    wl_easy_session_t *s = NULL;
+    if (wl_easy_open(ISSUE_665_PROGRAM_SRC, &s) != WIRELOG_OK || !s) {
+        FAIL("open failed");
+        return;
+    }
+    bool ok = drive_issue_665_partial_conjunction(s);
+    wl_easy_close(s);
+    if (!ok) {
+        FAIL("partial-prereq step regressed");
+        return;
+    }
+    PASS();
+}
+
+static void
+test_issue_665_partial_conjunction_multi_worker(void)
+{
+    /* Singleton EDBs sit below the parallel keyed-join activation
+     * threshold (col_join_should_parallelize_rows requires nrows >=
+     * num_workers * WIRELOG_JOIN_PAR_MIN_LEFT_ROWS), so the joins still
+     * run on the sequential path.  This variant locks the multi-worker
+     * session plumbing — worker pool creation under an installed delta
+     * callback, dispatch handoff, teardown — against the same per-epoch
+     * delta contract that the default-workers test pins. */
+    TEST("issue 665: partial conjunctive shape stable on num_workers=4");
+
+    wl_easy_open_opts_t opts = WL_EASY_OPEN_OPTS_INIT;
+    opts.num_workers = 4;
+    wl_easy_session_t *s = NULL;
+    if (wl_easy_open_opts(ISSUE_665_PROGRAM_SRC, &opts, &s) != WIRELOG_OK
+        || !s) {
+        FAIL("open_opts failed");
+        return;
+    }
+    bool ok = drive_issue_665_partial_conjunction(s);
+    wl_easy_close(s);
+    if (!ok) {
+        FAIL("partial-prereq step regressed under multi-worker");
+        return;
+    }
+    PASS();
+}
+
 /* ======================================================================== */
 /* Main                                                                     */
 /* ======================================================================== */
@@ -1292,6 +1457,8 @@ main(void)
     test_cleanup_order_no_use_after_free();
     test_intern_after_step_succeeds();
     test_delta_cb_multi_round_recursive_insert();
+    test_issue_665_partial_conjunction_default_workers();
+    test_issue_665_partial_conjunction_multi_worker();
 
     printf("\nPassed: %d/%d\n", tests_passed, tests_run);
     printf("Failed: %d/%d\n", tests_failed, tests_run);
