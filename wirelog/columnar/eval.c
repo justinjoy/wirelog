@@ -24,6 +24,9 @@
 #include <string.h>
 #include <xxhash.h>
 
+#define TDD_OWNER_FALLBACK_MIN_ITER 31u
+#define TDD_OWNER_FALLBACK_DELTA_ROWS 512u
+
 /* ======================================================================== */
 /* Hash-Set Dedup for TDD Workers (Issue #361)                               */
 /* ======================================================================== */
@@ -101,6 +104,21 @@ dedup_set_insert(col_rel_t *r, uint64_t h)
     r->dedup_slots[pos] = h;
     r->dedup_count++;
     return true;
+}
+
+static inline bool
+dedup_set_contains(const col_rel_t *r, uint64_t h)
+{
+    if (!r || !r->dedup_slots || r->dedup_cap == 0)
+        return false;
+    uint32_t mask = r->dedup_cap - 1;
+    uint32_t pos = (uint32_t)(h & mask);
+    while (r->dedup_slots[pos] != 0) {
+        if (r->dedup_slots[pos] == h)
+            return true;
+        pos = (pos + 1) & mask;
+    }
+    return false;
 }
 
 /* Initialize dedup set from existing rows [0..nrows). */
@@ -1843,6 +1861,31 @@ tdd_replicate_workers(wl_col_session_t *coord)
  *      exchange; deltas are heap-allocated (col_rel_new_like) so they
  *      remain valid across delta_pool_reset.
  */
+static void tdd_dedup_rel(col_rel_t *r);
+static int bdx_hash_diff(col_rel_t *delta, const col_rel_t *base);
+static int tdd_hashset_diff(col_rel_t *delta, const col_rel_t *base);
+static int
+tdd_worker_publish_delta(col_eval_tdd_worker_ctx_t *ctx,
+    wl_col_session_t *sess, col_rel_t *delta, uint32_t rel_idx,
+    uint32_t eff_iter);
+
+static int
+tdd_install_empty_delta_on_workers(wl_col_session_t *coord,
+    const char *dname, uint32_t ncols, uint32_t W)
+{
+    for (uint32_t w = 0; w < W; w++) {
+        col_rel_t *empty = col_rel_new_auto(dname, ncols);
+        if (!empty)
+            return ENOMEM;
+        int rc = session_add_rel(&coord->tdd_workers[w], empty);
+        if (rc != 0) {
+            col_rel_destroy(empty);
+            return rc;
+        }
+    }
+    return 0;
+}
+
 static void
 tdd_worker_subpass_fn(void *arg)
 {
@@ -1870,7 +1913,9 @@ tdd_worker_subpass_fn(void *arg)
      * a TDD worker sub-pass.  Broadcast $d$<rel> may be >= local partition
      * size, so the normal "delta < full" guard must be bypassed. */
     bool saved_tdd_subpass = sess->tdd_subpass_active;
+    bool saved_outbound_only = sess->tdd_outbound_only_active;
     sess->tdd_subpass_active = true;
+    sess->tdd_outbound_only_active = ctx->outbound_only;
     sess->current_iteration = eff_iter;
 
     /* Free per-sub-pass delta arrangements (eval.c:429) */
@@ -1889,6 +1934,7 @@ tdd_worker_subpass_fn(void *arg)
         if (all_empty) {
             ctx->all_empty_delta = true;
             sess->tdd_subpass_active = saved_tdd_subpass;
+            sess->tdd_outbound_only_active = saved_outbound_only;
             sess->diff_operators_active = saved_diff;
             TDD_WORKER_RETURN();
         }
@@ -1899,6 +1945,7 @@ tdd_worker_subpass_fn(void *arg)
     if (!snap) {
         ctx->rc = ENOMEM;
         sess->tdd_subpass_active = saved_tdd_subpass;
+        sess->tdd_outbound_only_active = saved_outbound_only;
         sess->diff_operators_active = saved_diff;
         TDD_WORKER_RETURN();
     }
@@ -1906,6 +1953,8 @@ tdd_worker_subpass_fn(void *arg)
         col_rel_t *r = session_find_rel(sess, sp->relations[ri].name);
         snap[ri] = r ? r->nrows : 0;
     }
+
+    bool any_new = false;
 
     /* Evaluate all relation plans (eval.c:505-604) */
     for (uint32_t ri = 0; ri < nrels; ri++) {
@@ -1923,6 +1972,7 @@ tdd_worker_subpass_fn(void *arg)
             ctx->rc = rc;
             free(snap);
             sess->tdd_subpass_active = saved_tdd_subpass;
+            sess->tdd_outbound_only_active = saved_outbound_only;
             sess->diff_operators_active = saved_diff;
             TDD_WORKER_RETURN();
         }
@@ -1940,6 +1990,76 @@ tdd_worker_subpass_fn(void *arg)
         }
 
         col_rel_t *target = session_find_rel(sess, rp->name);
+        if (ctx->outbound_only) {
+            const char *dname = sp->relations[ri].delta_name;
+            col_rel_t *delta = col_rel_new_like(dname, result.rel);
+            if (!delta) {
+                if (result.owned)
+                    col_rel_destroy(result.rel);
+                ctx->rc = ENOMEM;
+                free(snap);
+                sess->tdd_subpass_active = saved_tdd_subpass;
+                sess->tdd_outbound_only_active = saved_outbound_only;
+                sess->diff_operators_active = saved_diff;
+                TDD_WORKER_RETURN();
+            }
+            int rc = col_rel_append_all(delta, result.rel, sess->eval_arena);
+            if (result.owned)
+                col_rel_destroy(result.rel);
+            if (rc != 0) {
+                col_rel_destroy(delta);
+                ctx->rc = rc;
+                free(snap);
+                sess->tdd_subpass_active = saved_tdd_subpass;
+                sess->tdd_outbound_only_active = saved_outbound_only;
+                sess->diff_operators_active = saved_diff;
+                TDD_WORKER_RETURN();
+            }
+            if (target && target->nrows > 0) {
+                rc = bdx_hash_diff(delta, target);
+                if (rc != 0) {
+                    col_rel_destroy(delta);
+                    ctx->rc = rc;
+                    free(snap);
+                    sess->tdd_subpass_active = saved_tdd_subpass;
+                    sess->tdd_outbound_only_active = saved_outbound_only;
+                    sess->diff_operators_active = saved_diff;
+                    TDD_WORKER_RETURN();
+                }
+            }
+            if (sess->coordinator && delta->nrows > 0) {
+                col_rel_t *coord_target = session_find_rel(
+                    sess->coordinator, rp->name);
+                if (coord_target && coord_target->nrows > 0) {
+                    rc = tdd_hashset_diff(delta, coord_target);
+                    if (rc != 0) {
+                        col_rel_destroy(delta);
+                        ctx->rc = rc;
+                        free(snap);
+                        sess->tdd_subpass_active = saved_tdd_subpass;
+                        sess->tdd_outbound_only_active = saved_outbound_only;
+                        sess->diff_operators_active = saved_diff;
+                        TDD_WORKER_RETURN();
+                    }
+                }
+            }
+            if (delta->nrows > 1)
+                tdd_dedup_rel(delta);
+            bool produced = delta->nrows > 0;
+            rc = tdd_worker_publish_delta(ctx, sess, delta, ri, eff_iter);
+            if (rc != 0) {
+                ctx->rc = rc;
+                free(snap);
+                sess->tdd_subpass_active = saved_tdd_subpass;
+                sess->tdd_outbound_only_active = saved_outbound_only;
+                sess->diff_operators_active = saved_diff;
+                TDD_WORKER_RETURN();
+            }
+            if (produced)
+                any_new = true;
+            continue;
+        }
+
         if (!target) {
             col_rel_t *copy;
             if (result.owned) {
@@ -1951,6 +2071,7 @@ tdd_worker_subpass_fn(void *arg)
                     ctx->rc = ENOMEM;
                     free(snap);
                     sess->tdd_subpass_active = saved_tdd_subpass;
+                    sess->tdd_outbound_only_active = saved_outbound_only;
                     sess->diff_operators_active = saved_diff;
                     TDD_WORKER_RETURN();
                 }
@@ -1962,6 +2083,7 @@ tdd_worker_subpass_fn(void *arg)
                     ctx->rc = ENOMEM;
                     free(snap);
                     sess->tdd_subpass_active = saved_tdd_subpass;
+                    sess->tdd_outbound_only_active = saved_outbound_only;
                     sess->diff_operators_active = saved_diff;
                     TDD_WORKER_RETURN();
                 }
@@ -1971,6 +2093,7 @@ tdd_worker_subpass_fn(void *arg)
                     ctx->rc = rc;
                     free(snap);
                     sess->tdd_subpass_active = saved_tdd_subpass;
+                    sess->tdd_outbound_only_active = saved_outbound_only;
                     sess->diff_operators_active = saved_diff;
                     TDD_WORKER_RETURN();
                 }
@@ -1981,6 +2104,7 @@ tdd_worker_subpass_fn(void *arg)
                 ctx->rc = rc;
                 free(snap);
                 sess->tdd_subpass_active = saved_tdd_subpass;
+                sess->tdd_outbound_only_active = saved_outbound_only;
                 sess->diff_operators_active = saved_diff;
                 TDD_WORKER_RETURN();
             }
@@ -1994,6 +2118,7 @@ tdd_worker_subpass_fn(void *arg)
                     ctx->rc = rc;
                     free(snap);
                     sess->tdd_subpass_active = saved_tdd_subpass;
+                    sess->tdd_outbound_only_active = saved_outbound_only;
                     sess->diff_operators_active = saved_diff;
                     TDD_WORKER_RETURN();
                 }
@@ -2005,6 +2130,7 @@ tdd_worker_subpass_fn(void *arg)
                 ctx->rc = rc;
                 free(snap);
                 sess->tdd_subpass_active = saved_tdd_subpass;
+                sess->tdd_outbound_only_active = saved_outbound_only;
                 sess->diff_operators_active = saved_diff;
                 TDD_WORKER_RETURN();
             }
@@ -2026,7 +2152,6 @@ tdd_worker_subpass_fn(void *arg)
 
     /* Consolidate + produce deltas (eval.c:621-713).
      * Use col_rel_new_like (heap) so deltas survive delta_pool_reset. */
-    bool any_new = false;
     for (uint32_t ri = 0; ri < nrels; ri++) {
         col_rel_t *r = session_find_rel(sess, sp->relations[ri].name);
         if (!r || snap[ri] >= r->nrows)
@@ -2040,6 +2165,7 @@ tdd_worker_subpass_fn(void *arg)
             ctx->rc = ENOMEM;
             free(snap);
             sess->tdd_subpass_active = saved_tdd_subpass;
+            sess->tdd_outbound_only_active = saved_outbound_only;
             sess->diff_operators_active = saved_diff;
             TDD_WORKER_RETURN();
         }
@@ -2057,6 +2183,7 @@ tdd_worker_subpass_fn(void *arg)
                 ctx->rc = ENOMEM;
                 free(snap);
                 sess->tdd_subpass_active = saved_tdd_subpass;
+                sess->tdd_outbound_only_active = saved_outbound_only;
                 sess->diff_operators_active = saved_diff;
                 TDD_WORKER_RETURN();
             }
@@ -2096,6 +2223,7 @@ tdd_worker_subpass_fn(void *arg)
             ctx->rc = rc2;
             free(snap);
             sess->tdd_subpass_active = saved_tdd_subpass;
+            sess->tdd_outbound_only_active = saved_outbound_only;
             sess->diff_operators_active = saved_diff;
             TDD_WORKER_RETURN();
         }
@@ -2109,6 +2237,7 @@ tdd_worker_subpass_fn(void *arg)
                 ctx->rc = ENOMEM;
                 free(snap);
                 sess->tdd_subpass_active = saved_tdd_subpass;
+                sess->tdd_outbound_only_active = saved_outbound_only;
                 sess->diff_operators_active = saved_diff;
                 TDD_WORKER_RETURN();
             }
@@ -2129,6 +2258,7 @@ tdd_worker_subpass_fn(void *arg)
                     ctx->rc = ENOMEM;
                     free(snap);
                     sess->tdd_subpass_active = saved_tdd_subpass;
+                    sess->tdd_outbound_only_active = saved_outbound_only;
                     sess->diff_operators_active = saved_diff;
                     TDD_WORKER_RETURN();
                 }
@@ -2148,6 +2278,7 @@ tdd_worker_subpass_fn(void *arg)
                     ctx->rc = ENOMEM;
                     free(snap);
                     sess->tdd_subpass_active = saved_tdd_subpass;
+                    sess->tdd_outbound_only_active = saved_outbound_only;
                     sess->diff_operators_active = saved_diff;
                     TDD_WORKER_RETURN();
                 }
@@ -2175,6 +2306,7 @@ tdd_worker_subpass_fn(void *arg)
 
     ctx->any_new = any_new;
     sess->tdd_subpass_active = saved_tdd_subpass;
+    sess->tdd_outbound_only_active = saved_outbound_only;
     sess->diff_operators_active = saved_diff;
     ctx->runtime_ns = now_ns() - worker_t0;
 #undef TDD_WORKER_RETURN
@@ -2516,6 +2648,44 @@ tdd_preregister_idb_on_workers(const wl_plan_stratum_t *sp,
 /* Forward declaration — defined below tdd_exchange_deltas. */
 static int tdd_broadcast_deltas(const wl_plan_stratum_t *sp,
     wl_col_session_t *coord, col_eval_tdd_worker_ctx_t *ctxs, uint32_t W);
+static void tdd_dedup_rel(col_rel_t *r);
+static int bdx_hash_diff(col_rel_t *delta, const col_rel_t *base);
+
+static int
+tdd_worker_publish_delta(col_eval_tdd_worker_ctx_t *ctx,
+    wl_col_session_t *sess, col_rel_t *delta, uint32_t rel_idx,
+    uint32_t eff_iter)
+{
+    if (delta->nrows == 0) {
+        col_rel_destroy(delta);
+        return 0;
+    }
+
+    delta->timestamps = (col_delta_timestamp_t *)calloc(
+        delta->nrows, sizeof(col_delta_timestamp_t));
+    if (!delta->timestamps) {
+        col_rel_destroy(delta);
+        return ENOMEM;
+    }
+    for (uint32_t ti = 0; ti < delta->nrows; ti++) {
+        delta->timestamps[ti].iteration = eff_iter;
+        delta->timestamps[ti].stratum = ctx->stratum_idx;
+        delta->timestamps[ti].worker = (uint16_t)sess->worker_id;
+        delta->timestamps[ti].multiplicity = 1;
+    }
+
+    if (sess->coordinator && sess->coordinator->delta_queue) {
+        int rc = wl_mpsc_enqueue(sess->coordinator->delta_queue,
+                sess->worker_id, delta, ctx->stratum_idx, rel_idx);
+        if (rc != 0) {
+            col_rel_destroy(delta);
+            return ENOMEM;
+        }
+    } else {
+        ctx->delta_rels[rel_idx] = delta;
+    }
+    return 0;
+}
 
 /*
  * tdd_broadcast_relation_delta:
@@ -3064,6 +3234,164 @@ stratum_max_idb_body_atoms(const wl_plan_stratum_t *sp)
     return max_count;
 }
 
+static uint32_t
+tdd_parse_col_index(const char *key)
+{
+    if (!key || key[0] != 'c' || key[1] != 'o' || key[2] != 'l')
+        return UINT32_MAX;
+    char *end = NULL;
+    unsigned long v = strtoul(key + 3, &end, 10);
+    if (end == key + 3 || *end != '\0' || v > UINT32_MAX)
+        return UINT32_MAX;
+    return (uint32_t)v;
+}
+
+static bool
+tdd_find_relation_exchange_key(const wl_plan_stratum_t *sp, const char *name,
+    const uint32_t **key_cols, uint32_t *key_count)
+{
+    *key_cols = NULL;
+    *key_count = 0;
+    for (uint32_t ri = 0; ri < sp->relation_count; ri++) {
+        if (strcmp(sp->relations[ri].name, name) != 0)
+            continue;
+        for (uint32_t oi = 0; oi < sp->relations[ri].op_count; oi++) {
+            if (sp->relations[ri].ops[oi].op != WL_PLAN_OP_EXCHANGE)
+                continue;
+            const wl_plan_op_exchange_t *meta =
+                (const wl_plan_op_exchange_t *)
+                sp->relations[ri].ops[oi].opaque_data;
+            if (!meta || !meta->key_col_idxs || meta->key_col_count == 0)
+                return false;
+            *key_cols = meta->key_col_idxs;
+            *key_count = meta->key_col_count;
+            return true;
+        }
+        return false;
+    }
+    return false;
+}
+
+static bool
+tdd_key_names_match_exchange(const char *const *keys, uint32_t key_count,
+    const uint32_t *exchange_cols, uint32_t exchange_count)
+{
+    if (!keys || !exchange_cols || key_count == 0
+        || key_count != exchange_count)
+        return false;
+    for (uint32_t k = 0; k < key_count; k++) {
+        uint32_t idx = tdd_parse_col_index(keys[k]);
+        if (idx == UINT32_MAX)
+            return false;
+        bool found = false;
+        for (uint32_t x = 0; x < exchange_count; x++) {
+            if (exchange_cols[x] == idx) {
+                found = true;
+                break;
+            }
+        }
+        if (!found)
+            return false;
+    }
+    return true;
+}
+
+static bool
+tdd_ops_single_idb_keys_exchange_aligned(const wl_plan_op_t *ops,
+    uint32_t op_count, const wl_plan_stratum_t *sp)
+{
+    bool stack_has_idb = false;
+    const char *stack_idb_name = NULL;
+
+    for (uint32_t oi = 0; oi < op_count; oi++) {
+        const wl_plan_op_t *op = &ops[oi];
+        if (op->op == WL_PLAN_OP_VARIABLE) {
+            if (is_stratum_idb(sp, op->relation_name)) {
+                stack_has_idb = true;
+                stack_idb_name = op->relation_name;
+            } else {
+                stack_has_idb = false;
+                stack_idb_name = NULL;
+            }
+        } else if (op->op == WL_PLAN_OP_JOIN && op->right_relation) {
+            bool right_idb = is_stratum_idb(sp, op->right_relation);
+            if (stack_has_idb && stack_idb_name) {
+                const uint32_t *xkey = NULL;
+                uint32_t xkey_count = 0;
+                if (!tdd_find_relation_exchange_key(sp, stack_idb_name,
+                    &xkey, &xkey_count))
+                    return false;
+                if (!tdd_key_names_match_exchange(op->left_keys,
+                    op->key_count, xkey, xkey_count))
+                    return false;
+            }
+            if (right_idb) {
+                const uint32_t *xkey = NULL;
+                uint32_t xkey_count = 0;
+                if (!tdd_find_relation_exchange_key(sp, op->right_relation,
+                    &xkey, &xkey_count))
+                    return false;
+                if (!tdd_key_names_match_exchange(op->right_keys,
+                    op->key_count, xkey, xkey_count))
+                    return false;
+                stack_has_idb = true;
+                stack_idb_name = op->right_relation;
+            }
+        }
+    }
+    return true;
+}
+
+bool
+tdd_stratum_single_idb_join_keys_exchange_aligned(
+    const wl_plan_stratum_t *sp)
+{
+    if (tdd_stratum_has_idb_self_join(sp))
+        return false;
+
+    for (uint32_t ri = 0; ri < sp->relation_count; ri++) {
+        const wl_plan_relation_t *rel = &sp->relations[ri];
+
+        if (!tdd_ops_single_idb_keys_exchange_aligned(
+                rel->ops, rel->op_count, sp))
+            return false;
+
+        for (uint32_t oi = 0; oi < rel->op_count; oi++) {
+            if (rel->ops[oi].op == WL_PLAN_OP_K_FUSION
+                && rel->ops[oi].opaque_data) {
+                const wl_plan_op_k_fusion_t *kf =
+                    (const wl_plan_op_k_fusion_t *)rel->ops[oi].opaque_data;
+                for (uint32_t ki = 0; ki < kf->k; ki++) {
+                    if (!tdd_ops_single_idb_keys_exchange_aligned(
+                            kf->k_ops[ki], kf->k_op_counts[ki], sp))
+                        return false;
+                }
+            }
+        }
+    }
+    return true;
+}
+
+bool
+tdd_stratum_exchange_keys_are_multi_column(const wl_plan_stratum_t *sp)
+{
+    bool saw_exchange = false;
+    for (uint32_t ri = 0; ri < sp->relation_count; ri++) {
+        for (uint32_t oi = 0; oi < sp->relations[ri].op_count; oi++) {
+            if (sp->relations[ri].ops[oi].op != WL_PLAN_OP_EXCHANGE)
+                continue;
+            const wl_plan_op_exchange_t *meta =
+                (const wl_plan_op_exchange_t *)
+                sp->relations[ri].ops[oi].opaque_data;
+            if (!meta || meta->key_col_count < 2)
+                return false;
+            saw_exchange = true;
+            break;
+        }
+    }
+    return saw_exchange;
+}
+
 /*
  * tdd_stratum_has_idb_self_join:
  * Returns true if any rule in the stratum has a JOIN where BOTH the left
@@ -3288,7 +3616,8 @@ tdd_stratum_idb_self_join_exchange_aligned(const wl_plan_stratum_t *sp,
  * The hash-partitioned delta exchange maintains the partition invariant.
  */
 static int
-tdd_init_workers_hybrid(const wl_plan_stratum_t *sp, wl_col_session_t *coord)
+tdd_init_workers_hybrid(const wl_plan_stratum_t *sp, wl_col_session_t *coord,
+    bool partition_edb)
 {
     tdd_cleanup_workers(coord);
 
@@ -3331,24 +3660,26 @@ tdd_init_workers_hybrid(const wl_plan_stratum_t *sp, wl_col_session_t *coord)
     const uint32_t *edb_part_keys = NULL;
     uint32_t edb_part_key_count = 0;
 
-    for (uint32_t ri = 0; ri < sp->relation_count; ri++) {
-        for (uint32_t oi = 0; oi < sp->relations[ri].op_count; oi++) {
-            if (sp->relations[ri].ops[oi].op == WL_PLAN_OP_EXCHANGE) {
-                const wl_plan_op_exchange_t *meta =
-                    (const wl_plan_op_exchange_t *)
-                    sp->relations[ri].ops[oi].opaque_data;
-                if (meta && meta->edb_rel_name
-                    && meta->edb_key_col_idxs
-                    && meta->edb_key_col_count > 0) {
-                    edb_part_name = meta->edb_rel_name;
-                    edb_part_keys = meta->edb_key_col_idxs;
-                    edb_part_key_count = meta->edb_key_col_count;
+    if (partition_edb) {
+        for (uint32_t ri = 0; ri < sp->relation_count; ri++) {
+            for (uint32_t oi = 0; oi < sp->relations[ri].op_count; oi++) {
+                if (sp->relations[ri].ops[oi].op == WL_PLAN_OP_EXCHANGE) {
+                    const wl_plan_op_exchange_t *meta =
+                        (const wl_plan_op_exchange_t *)
+                        sp->relations[ri].ops[oi].opaque_data;
+                    if (meta && meta->edb_rel_name
+                        && meta->edb_key_col_idxs
+                        && meta->edb_key_col_count > 0) {
+                        edb_part_name = meta->edb_rel_name;
+                        edb_part_keys = meta->edb_key_col_idxs;
+                        edb_part_key_count = meta->edb_key_col_count;
+                    }
+                    break;
                 }
-                break;
             }
+            if (edb_part_name)
+                break;
         }
-        if (edb_part_name)
-            break;
     }
 
     /* Issue #535 hardening: if only one of the two co-partitioned sides carries
@@ -3847,6 +4178,133 @@ bdx_hash_diff(col_rel_t *delta, const col_rel_t *base)
     return 0;
 }
 
+static int
+tdd_hashset_diff(col_rel_t *delta, const col_rel_t *base)
+{
+    if (!delta || delta->nrows == 0 || !base || base->nrows == 0)
+        return 0;
+    if (delta->ncols != base->ncols)
+        return EINVAL;
+    if (!base->dedup_slots)
+        return bdx_hash_diff(delta, base);
+
+    uint32_t wr = 0;
+    for (uint32_t di = 0; di < delta->nrows; di++) {
+        uint64_t h = dedup_row_hash(delta, di);
+        if (dedup_set_contains(base, h))
+            continue;
+        if (wr != di) {
+            col_columns_copy_row(delta->columns, wr,
+                (int64_t *const *)delta->columns, di, delta->ncols);
+            if (delta->timestamps)
+                delta->timestamps[wr] = delta->timestamps[di];
+        }
+        wr++;
+    }
+    delta->nrows = wr;
+    return 0;
+}
+
+static void
+tdd_dedup_set_insert_rel(col_rel_t *target, const col_rel_t *rows)
+{
+    if (!target || !target->dedup_slots || !rows)
+        return;
+    for (uint32_t row = 0; row < rows->nrows; row++) {
+        uint64_t h = dedup_row_hash(rows, row);
+        dedup_set_insert(target, h);
+    }
+}
+
+static void
+tdd_clear_relation_dedup_set(col_rel_t *r)
+{
+    if (!r)
+        return;
+    free(r->dedup_slots);
+    r->dedup_slots = NULL;
+    r->dedup_cap = 0;
+    r->dedup_count = 0;
+}
+
+static col_rel_t **
+tdd_save_coord_idb(const wl_plan_stratum_t *sp, wl_col_session_t *coord)
+{
+    col_rel_t **saved = (col_rel_t **)calloc(
+        sp->relation_count, sizeof(col_rel_t *));
+    if (!saved)
+        return NULL;
+    for (uint32_t ri = 0; ri < sp->relation_count; ri++) {
+        col_rel_t *r = session_find_rel(coord, sp->relations[ri].name);
+        if (!r || r->ncols == 0)
+            continue;
+        saved[ri] = col_rel_new_auto(r->name, r->ncols);
+        if (!saved[ri])
+            goto fail;
+        if (r->nrows > 0 && col_rel_append_all(saved[ri], r, NULL) != 0)
+            goto fail;
+    }
+    return saved;
+
+fail:
+    for (uint32_t ri = 0; ri < sp->relation_count; ri++)
+        col_rel_destroy(saved[ri]);
+    free(saved);
+    return NULL;
+}
+
+static int
+tdd_restore_coord_idb(const wl_plan_stratum_t *sp, wl_col_session_t *coord,
+    col_rel_t **saved)
+{
+    if (!saved)
+        return 0;
+    for (uint32_t ri = 0; ri < sp->relation_count; ri++) {
+        const char *name = sp->relations[ri].name;
+        col_rel_t *r = session_find_rel(coord, name);
+        if (!r) {
+            int alloc_rc = col_rel_alloc(&r, name);
+            if (alloc_rc != 0)
+                return alloc_rc;
+            alloc_rc = session_add_rel(coord, r);
+            if (alloc_rc != 0) {
+                col_rel_destroy(r);
+                return alloc_rc;
+            }
+        }
+        r->nrows = 0;
+        r->sorted_nrows = 0;
+        r->run_count = 0;
+        memset(r->run_ends, 0, sizeof(r->run_ends));
+        free(r->timestamps);
+        r->timestamps = NULL;
+        tdd_clear_relation_dedup_set(r);
+        if (saved[ri] && saved[ri]->ncols > 0) {
+            if (r->ncols == 0) {
+                int rc = col_rel_set_schema(r, saved[ri]->ncols,
+                        (const char *const *)saved[ri]->col_names);
+                if (rc != 0)
+                    return rc;
+            }
+            int rc = col_rel_append_all(r, saved[ri], NULL);
+            if (rc != 0)
+                return rc;
+        }
+        col_session_invalidate_arrangements(&coord->base, name);
+    }
+    return 0;
+}
+
+static void
+tdd_free_saved_coord_idb(const wl_plan_stratum_t *sp, col_rel_t **saved)
+{
+    if (!saved)
+        return;
+    for (uint32_t ri = 0; ri < sp->relation_count; ri++)
+        col_rel_destroy(saved[ri]);
+    free(saved);
+}
+
 /*
  * tdd_bdx_exchange_deltas:
  * Broadcast-Delta with Hash-Exchange Output (BDX) for Category C strata
@@ -3926,7 +4384,7 @@ tdd_bdx_exchange_deltas(const wl_plan_stratum_t *sp,
 
         col_rel_t *coord_idb = session_find_rel(coord, rel_name);
         if (coord_idb && coord_idb->nrows > 0 && combined->nrows > 0) {
-            rc = bdx_hash_diff(combined, coord_idb);
+            rc = tdd_hashset_diff(combined, coord_idb);
             if (rc != 0) {
                 col_rel_destroy(combined);
                 return rc;
@@ -3954,6 +4412,8 @@ tdd_bdx_exchange_deltas(const wl_plan_stratum_t *sp,
                 col_rel_destroy(combined);
                 return rc;
             }
+            tdd_dedup_set_insert_rel(coord_idb, combined);
+            col_session_invalidate_arrangements(&coord->base, rel_name);
         }
 
         /* Step 4: Truncate worker IDB to pre-subpass snapshot */
@@ -4060,6 +4520,191 @@ tdd_bdx_exchange_deltas(const wl_plan_stratum_t *sp,
     return 0;
 }
 
+static int
+tdd_owner_exchange_deltas(const wl_plan_stratum_t *sp,
+    wl_col_session_t *coord, col_eval_tdd_worker_ctx_t *ctxs, uint32_t W,
+    bool *out_any_accepted, uint32_t *out_accepted_rows)
+{
+    uint32_t nrels = sp->relation_count;
+    int rc = 0;
+    if (out_any_accepted)
+        *out_any_accepted = false;
+    if (out_accepted_rows)
+        *out_accepted_rows = 0;
+
+    for (uint32_t ri = 0; ri < nrels; ri++) {
+        const char *dname = sp->relations[ri].delta_name;
+        const char *rel_name = sp->relations[ri].name;
+        uint64_t prepare_t0 = now_ns();
+
+        for (uint32_t w = 0; w < W; w++)
+            session_remove_rel(&coord->tdd_workers[w], dname);
+
+        uint32_t total = 0, ncols = 0;
+        for (uint32_t w = 0; w < W; w++) {
+            col_rel_t *d = ctxs[w].delta_rels[ri];
+            if (d && d->nrows > 0) {
+                total += d->nrows;
+                if (ncols == 0)
+                    ncols = d->ncols;
+            }
+        }
+        if (total == 0) {
+            for (uint32_t w = 0; w < W; w++) {
+                col_rel_destroy(ctxs[w].delta_rels[ri]);
+                ctxs[w].delta_rels[ri] = NULL;
+            }
+            coord->tdd_exchange_coordinator_ns += now_ns() - prepare_t0;
+            continue;
+        }
+
+        col_rel_t *combined = col_rel_new_auto(dname, ncols);
+        if (!combined)
+            return ENOMEM;
+
+        for (uint32_t w = 0; w < W; w++) {
+            col_rel_t *d = ctxs[w].delta_rels[ri];
+            ctxs[w].delta_rels[ri] = NULL;
+            if (d && d->nrows > 0)
+                rc = col_rel_append_all(combined, d, NULL);
+            col_rel_destroy(d);
+            if (rc != 0) {
+                col_rel_destroy(combined);
+                return rc;
+            }
+        }
+
+        if (combined->nrows > 1)
+            tdd_dedup_rel(combined);
+
+        col_rel_t *coord_idb = session_find_rel(coord, rel_name);
+        if (coord_idb && coord_idb->nrows > 0 && combined->nrows > 0) {
+            rc = tdd_hashset_diff(combined, coord_idb);
+            if (rc != 0) {
+                col_rel_destroy(combined);
+                return rc;
+            }
+        }
+        if (combined->nrows == 0) {
+            rc = tdd_install_empty_delta_on_workers(coord, dname, ncols, W);
+            col_rel_destroy(combined);
+            coord->tdd_exchange_coordinator_ns += now_ns() - prepare_t0;
+            if (rc != 0)
+                return rc;
+            continue;
+        }
+        if (out_any_accepted)
+            *out_any_accepted = true;
+        if (out_accepted_rows)
+            *out_accepted_rows += combined->nrows;
+
+        if (coord_idb) {
+            if (coord_idb->ncols == 0 && combined->ncols > 0) {
+                rc = col_rel_set_schema(coord_idb, combined->ncols,
+                        (const char *const *)combined->col_names);
+                if (rc != 0) {
+                    col_rel_destroy(combined);
+                    return rc;
+                }
+            }
+            rc = col_rel_append_all(coord_idb, combined, NULL);
+            if (rc != 0) {
+                col_rel_destroy(combined);
+                return rc;
+            }
+            tdd_dedup_set_insert_rel(coord_idb, combined);
+            col_session_invalidate_arrangements(&coord->base, rel_name);
+        }
+        coord->tdd_exchange_coordinator_ns += now_ns() - prepare_t0;
+
+        const uint32_t *key_cols = NULL;
+        uint32_t key_count = 0;
+        for (uint32_t oi = 0; oi < sp->relations[ri].op_count; oi++) {
+            if (sp->relations[ri].ops[oi].op == WL_PLAN_OP_EXCHANGE) {
+                const wl_plan_op_exchange_t *meta =
+                    (const wl_plan_op_exchange_t *)
+                    sp->relations[ri].ops[oi].opaque_data;
+                if (meta && meta->key_col_count > 0) {
+                    key_cols = meta->key_col_idxs;
+                    key_count = meta->key_col_count;
+                }
+                break;
+            }
+        }
+        uint32_t default_key[] = { 0 };
+        if (!key_cols || key_count == 0) {
+            key_cols = default_key;
+            key_count = 1;
+        }
+
+        uint64_t scatter_t0 = now_ns();
+        col_rel_t **parts = (col_rel_t **)calloc(W, sizeof(col_rel_t *));
+        if (!parts) {
+            col_rel_destroy(combined);
+            return ENOMEM;
+        }
+        rc = col_rel_exchange_partition(combined, key_cols, key_count, W,
+                parts);
+        col_rel_destroy(combined);
+        if (rc != 0) {
+            for (uint32_t w = 0; w < W; w++)
+                col_rel_destroy(parts[w]);
+            free(parts);
+            return rc;
+        }
+
+        for (uint32_t w = 0; w < W; w++) {
+            col_rel_t *part = parts[w];
+            parts[w] = NULL;
+            if (!part || part->nrows == 0) {
+                col_rel_destroy(part);
+                continue;
+            }
+
+            col_rel_t *widb = session_find_rel(
+                &coord->tdd_workers[w], rel_name);
+            if (widb) {
+                if (widb->ncols == 0 && part->ncols > 0) {
+                    rc = col_rel_set_schema(widb, part->ncols,
+                            (const char *const *)part->col_names);
+                    if (rc != 0) {
+                        col_rel_destroy(part);
+                        break;
+                    }
+                }
+                rc = col_rel_append_all(widb, part, NULL);
+                if (rc != 0) {
+                    col_rel_destroy(part);
+                    break;
+                }
+                if (widb->dedup_slots) {
+                    for (uint32_t row = 0; row < part->nrows; row++) {
+                        uint64_t h = dedup_row_hash(part, row);
+                        dedup_set_insert(widb, h);
+                    }
+                }
+                col_session_invalidate_arrangements(
+                    &coord->tdd_workers[w].base, rel_name);
+            }
+
+            rc = session_add_rel(&coord->tdd_workers[w], part);
+            if (rc != 0) {
+                col_rel_destroy(part);
+                break;
+            }
+        }
+
+        for (uint32_t w = 0; w < W; w++)
+            col_rel_destroy(parts[w]);
+        free(parts);
+        coord->tdd_exchange_scatter_ns += now_ns() - scatter_t0;
+        if (rc != 0)
+            return rc;
+    }
+
+    return 0;
+}
+
 /*
  * col_eval_stratum_tdd_recursive:
  * Coordinator-driven semi-naive fixed-point for recursive strata.
@@ -4143,23 +4788,56 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
      *     - Stratum is not exchange-aligned AND has >2 IDB body atoms (BDX unsafe).
      *
      * Issue #388: Optional W=1 fallback for replicate mode only. */
+    bool has_idb_self_join = tdd_stratum_has_idb_self_join(sp);
     bool self_join_mode = tdd_stratum_idb_self_join_exchange_aligned(sp, coord);
-    bool bdx_mode = tdd_stratum_has_idb_self_join(sp) && !self_join_mode;
-    bool replicate_mode = (coord->last_inserted_relation == NULL)
-        || (!self_join_mode && stratum_max_idb_body_atoms(sp) > 2);
+    bool owner_exchange_mode = !has_idb_self_join
+        && stratum_max_idb_body_atoms(sp) <= 1
+        && tdd_stratum_exchange_keys_are_multi_column(sp)
+        && tdd_stratum_single_idb_join_keys_exchange_aligned(sp);
+    bool bdx_mode = has_idb_self_join && !self_join_mode;
+    bool replicate_mode = !owner_exchange_mode
+        && ((coord->last_inserted_relation == NULL)
+        || (!self_join_mode && stratum_max_idb_body_atoms(sp) > 2));
     bdx_mode = bdx_mode && !replicate_mode;
     if (replicate_mode) {
         const char *env = getenv("WIRELOG_TDD_REPLICATE_W1");
         if (env && env[0] == '1')
             W = 1;
     }
+
+    col_rel_t **owner_fallback_saved = NULL;
+    bool owner_adaptive_fallback = false;
+    if (owner_exchange_mode) {
+        owner_fallback_saved = tdd_save_coord_idb(sp, coord);
+        if (!owner_fallback_saved) {
+            coord->tdd_total_ns += now_ns() - tdd_total_t0;
+            return ENOMEM;
+        }
+    }
+
     if (replicate_mode)
         rc = tdd_replicate_workers(coord);
     else
-        rc = tdd_init_workers_hybrid(sp, coord);
+        rc = tdd_init_workers_hybrid(sp, coord, true);
     if (rc != 0) {
+        tdd_free_saved_coord_idb(sp, owner_fallback_saved);
         coord->tdd_total_ns += now_ns() - tdd_total_t0;
         return rc;
+    }
+
+    if (owner_exchange_mode) {
+        for (uint32_t ri = 0; ri < nrels; ri++) {
+            col_rel_t *r = session_find_rel(coord, sp->relations[ri].name);
+            if (r && !r->dedup_slots) {
+                rc = dedup_set_init_from_rel(r);
+                if (rc != 0) {
+                    tdd_cleanup_workers(coord);
+                    tdd_free_saved_coord_idb(sp, owner_fallback_saved);
+                    coord->tdd_total_ns += now_ns() - tdd_total_t0;
+                    return rc;
+                }
+            }
+        }
     }
 
     /* Pre-register empty IDB on each worker */
@@ -4414,6 +5092,7 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
                 ctxs[w].any_new = false;
                 ctxs[w].all_empty_delta = false;
                 ctxs[w].force_diff = bdx_mode;
+                ctxs[w].outbound_only = owner_exchange_mode;
                 ctxs[w].runtime_ns = 0;
                 ctxs[w].rc = 0;
             }
@@ -4527,7 +5206,7 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
              * any_new flags is both necessary and sufficient for fixed-point
              * detection.
              */
-            if (tdd_check_convergence(ctxs, W)) {
+            if (!owner_exchange_mode && tdd_check_convergence(ctxs, W)) {
                 coord->tdd_convergence_ns += now_ns() - convergence_t0;
                 for (uint32_t w = 0; w < W; w++)
                     for (uint32_t ri = 0; ri < nrels; ri++)
@@ -4542,9 +5221,15 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
              * Issue #372: pass self_join_mode so asymmetric strata broadcast
              * deltas to all workers (each holds 1/W IDB, needs full delta). */
             int brc;
+            bool owner_any_accepted = false;
+            uint32_t owner_accepted_rows = 0;
             {
                 uint64_t t0 = now_ns();
-                if (bdx_mode)
+                coord->current_iteration = eff_iter;
+                if (owner_exchange_mode)
+                    brc = tdd_owner_exchange_deltas(sp, coord, ctxs, W,
+                            &owner_any_accepted, &owner_accepted_rows);
+                else if (bdx_mode)
                     brc = tdd_bdx_exchange_deltas(sp, coord, ctxs, W,
                             bdx_snap);
                 else
@@ -4560,8 +5245,29 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
                 goto done;
             }
 
-            outer_any_new = true;
-            final_eff_iter = eff_iter;
+            /* Linear owner-mode can be slower than the sequential recursive
+             * evaluator on high-diameter, tiny-frontier workloads: every
+             * sub-pass pays a W-worker barrier and an exchange for only a few
+             * accepted rows.  Bail out early and replay the stratum through
+             * the existing single-threaded evaluator when that shape is
+             * detected. */
+            if (owner_exchange_mode
+                && eff_iter >= TDD_OWNER_FALLBACK_MIN_ITER
+                && owner_accepted_rows > 0
+                && owner_accepted_rows < TDD_OWNER_FALLBACK_DELTA_ROWS) {
+                owner_adaptive_fallback = true;
+                converged = true;
+                break;
+            }
+
+            if (owner_exchange_mode && !owner_any_accepted) {
+                converged = true;
+                break;
+            }
+
+            outer_any_new = owner_exchange_mode ? owner_any_accepted : true;
+            if (outer_any_new)
+                final_eff_iter = eff_iter;
         } /* end sub loop */
 
         if (stride_all_skipped)
@@ -4585,6 +5291,20 @@ done:
     }
     free(bdx_snap);
     coord->diff_operators_active = saved_diff;
+
+    if (owner_adaptive_fallback && rc == 0) {
+        rc = tdd_restore_coord_idb(sp, coord, owner_fallback_saved);
+        tdd_cleanup_workers(coord);
+        tdd_free_saved_coord_idb(sp, owner_fallback_saved);
+        coord->tdd_total_ns += now_ns() - tdd_total_t0;
+        if (rc != 0)
+            return rc;
+        coord->frontier_ops->reset_stratum_frontier(coord, stratum_idx,
+            coord->outer_epoch);
+        return col_eval_stratum(sp, coord, stratum_idx);
+    }
+    tdd_free_saved_coord_idb(sp, owner_fallback_saved);
+
     /* Issue #416: Accumulate instead of assign so total_iterations stays > 0
      * after any completed evaluation.  Assigning final_eff_iter (which is 0
      * when a replicate-mode stratum converges with no new tuples) would
@@ -4597,9 +5317,9 @@ done:
         tdd_record_recursive_convergence(coord, sp, stratum_idx,
             rule_id_base, final_eff_iter);
 
-        if (bdx_mode) {
-            /* BDX mode: coordinator IDB is already maintained (monotonic
-             * growth via tdd_bdx_exchange_deltas).  Just dedup final. */
+        if (bdx_mode || owner_exchange_mode) {
+            /* Coordinator-owned modes maintain IDB monotonically during
+             * exchange.  Just dedup final. */
             uint64_t merge_t0 = now_ns();
             for (uint32_t ri = 0; ri < nrels; ri++) {
                 col_rel_t *r = session_find_rel(coord,

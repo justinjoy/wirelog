@@ -1002,6 +1002,7 @@ typedef struct wl_col_session_t {
      * always uses the broadcast delta (which may be >= local partition size).
      * False everywhere else, including retraction paths. */
     bool tdd_subpass_active;
+    bool tdd_outbound_only_active;
     /* Side-relation compound arena (Issue #559): heap-allocated session-local
      * compound-term arena.  Owned by the coordinator; created in
      * col_session_create and freed in col_session_destroy.  Worker sessions
@@ -1611,6 +1612,11 @@ stratum_max_idb_body_atoms(const wl_plan_stratum_t *sp);
 bool
 tdd_stratum_idb_self_join_exchange_aligned(const wl_plan_stratum_t *sp,
     wl_col_session_t *coord);
+bool
+tdd_stratum_single_idb_join_keys_exchange_aligned(
+    const wl_plan_stratum_t *sp);
+bool
+tdd_stratum_exchange_keys_are_multi_column(const wl_plan_stratum_t *sp);
 int
 col_stratum_step_with_delta(const wl_plan_stratum_t *sp, wl_col_session_t *sess,
     uint32_t stratum_idx);
@@ -1766,6 +1772,7 @@ typedef struct {
     bool any_new;                  /* OUT: produced >=1 new tuple     */
     bool all_empty_delta;          /* OUT: all FORCE_DELTA empty, skipped */
     bool force_diff;               /* IN: enable diff from eff_iter 0 (BDX) */
+    bool outbound_only;            /* IN: emit deltas without local IDB append */
     col_rel_t **delta_rels;        /* OUT: produced deltas [nrels], coord frees */
     uint64_t runtime_ns;           /* OUT: worker sub-pass wall runtime */
     int rc;                        /* OUT: return code                */
