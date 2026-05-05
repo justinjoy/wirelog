@@ -3,23 +3,19 @@ name: CI PR
 # PR-specific CI workflow with 3-phase validation.
 #
 # Phase 1 (Lint):        lint-pr.yml — editorconfig -> uncrustify -> clang-tidy
-# Phase 1b (CodeQL):     non-blocking security-and-quality analysis
-# Phase 2 (Build):       Linux (GCC + Clang) + macOS (Clang), fail-fast
+# Phase 2 (Build):       Linux (GCC + Clang) + macOS (Clang) + Windows (MSVC), fail-fast
 # Phase 3 (Sanitizers):  ASan/UBSan + TSan, runs after lint
 #
-# Execution order on PR: lint + CodeQL -> build + sanitizers
-# Execution order on main push: CodeQL only
+# Execution order on PR: lint -> build + sanitizers
+# CodeQL runs in its own workflow (GitHub default-setup); not invoked from here.
 
 on:
   pull_request:
-    branches: [main]
-  push:
     branches: [main]
 
 permissions:
   actions: read
   contents: read
-  security-events: write
 
 jobs:
   # ==========================================================================
@@ -27,42 +23,7 @@ jobs:
   # editorconfig -> uncrustify -> clang-tidy 22 (sequential, hard gates)
   # ==========================================================================
   lint:
-    if: github.event_name == 'pull_request'
     uses: ./.github/workflows/lint-pr.yml
-
-  # ==========================================================================
-  # Phase 1b: CodeQL security-and-quality analysis
-  # Runs in parallel with lint and stays non-blocking while the alert baseline
-  # is cleaned up. C/C++ uses build-free analysis to keep PR latency bounded.
-  # ==========================================================================
-  codeql:
-    name: CodeQL / ${{ matrix.language }}
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - language: c-cpp
-            build-mode: none
-          - language: actions
-            build-mode: none
-
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@v4
-        with:
-          languages: ${{ matrix.language }}
-          build-mode: ${{ matrix.build-mode }}
-          config-file: ./.github/codeql/codeql-config.yml
-
-      - name: Analyze
-        uses: github/codeql-action/analyze@v4
-        with:
-          category: "/language:${{ matrix.language }}"
 
   # ==========================================================================
   # Phase 2: Build & Test matrix
@@ -72,7 +33,6 @@ jobs:
   # Excludes: subprojects/**, build/**
   # ==========================================================================
   build:
-    if: github.event_name == 'pull_request'
     name: Build / ${{ matrix.os }} / ${{ matrix.compiler }}
     needs: [lint]
     runs-on: ${{ matrix.os }}
@@ -193,7 +153,6 @@ jobs:
   # Linux: GCC + Clang; macOS: Clang
   # ==========================================================================
   sanitizer:
-    if: github.event_name == 'pull_request'
     name: Sanitizers / ${{ matrix.os }} / ${{ matrix.compiler }}
     needs: [lint]
     runs-on: ${{ matrix.os }}
@@ -260,7 +219,6 @@ jobs:
   # (thrd_create, mtx_lock) are uninstrumented and cause false SEGV.
   # ==========================================================================
   tsan:
-    if: github.event_name == 'pull_request'
     name: TSan / ubuntu-latest / gcc
     needs: [lint]
     runs-on: ubuntu-latest
