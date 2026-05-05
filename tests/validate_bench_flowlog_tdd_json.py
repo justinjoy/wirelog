@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import os
 import subprocess
 import sys
 
@@ -16,6 +17,9 @@ def main():
     if len(sys.argv) != 3:
         print("usage: validate_bench_flowlog_tdd_json.py BENCH_FLOWLOG DATA")
         return 2
+
+    env = os.environ.copy()
+    env.pop("WIRELOG_RADIX_BENCH_LOG", None)
 
     proc = subprocess.run(
         [
@@ -35,11 +39,15 @@ def main():
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        env=env,
     )
     if proc.returncode != 0:
         print(proc.stdout, end="")
         print(proc.stderr, end="", file=sys.stderr)
         return proc.returncode
+
+    if "[radix-bench" in proc.stderr:
+        raise AssertionError("radix benchmark logs should be opt-in")
 
     row = extract_json(proc.stdout)
     tdd_phase = row.get("tdd_phase_ms")
