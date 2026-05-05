@@ -2132,7 +2132,7 @@ col_join_should_parallelize_rows(const wl_col_session_t *sess,
 {
     if (!sess || !left || !right)
         return false;
-    if (sess->coordinator || !sess->wq || sess->num_workers <= 1)
+    if (sess->coordinator || sess->num_workers <= 1)
         return false;
     uint32_t min_left = col_join_parallel_min_left_rows();
     if (min_left == 0)
@@ -2249,7 +2249,7 @@ col_join_parallel_cross(wl_col_session_t *sess, const col_rel_t *left,
 {
     if (!sess || !left || !right || !outp || !*outp)
         return EINVAL;
-    if (!sess->wq || sess->num_workers <= 1 || right->nrows == 0)
+    if (sess->num_workers <= 1 || right->nrows == 0)
         return EINVAL;
 
     uint64_t total = (uint64_t)left->nrows * (uint64_t)right->nrows;
@@ -2262,6 +2262,16 @@ col_join_parallel_cross(wl_col_session_t *sess, const col_rel_t *left,
         return ENOMEM;
 
     uint32_t nrows = (uint32_t)emit_total;
+    uint32_t active_workers = sess->num_workers > emit_total
+        ? (uint32_t)emit_total
+        : sess->num_workers;
+    if (active_workers <= 1)
+        return EINVAL;
+    int ensure_rc = wl_columnar_session_ensure_workqueue(sess, active_workers);
+    if (ensure_rc != 0)
+        return ensure_rc;
+
+    uint32_t W = active_workers;
     col_rel_t *out = col_rel_new_auto("$join",
             col_join_output_width(left, right, op));
     if (!out)
@@ -2273,7 +2283,6 @@ col_join_parallel_cross(wl_col_session_t *sess, const col_rel_t *left,
     }
     out->nrows = nrows;
 
-    uint32_t W = sess->num_workers;
     col_join_cross_ctx_t *ctxs = (col_join_cross_ctx_t *)calloc(
         W, sizeof(col_join_cross_ctx_t));
     if (!ctxs) {

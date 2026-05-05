@@ -4903,8 +4903,7 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
             W = 1;
     }
     W = tdd_choose_active_workers(sp, coord, W, replicate_mode);
-    if (W <= 1 && (coord->last_inserted_relation != NULL
-        || coord->total_iterations == 0)) {
+    if (W <= 1) {
         tdd_record_active_workers(coord, 1);
         if (coord->tdd_decision_tracking_active) {
             if (coord->tdd_executed_strata > 0)
