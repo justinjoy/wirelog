@@ -5104,7 +5104,18 @@ col_op_k_fusion(const wl_plan_op_t *op, eval_stack_t *stack,
      * If this invocation cannot or should not dispatch parallel branch work,
      * use the existing serial K-fusion evaluator before allocating worker
      * sessions. */
-    wl_work_queue_t *wq = sess->wq; /* NULL when num_workers=1 or in workers */
+    uint32_t active_workers = live_count < sess->num_workers
+        ? live_count : sess->num_workers;
+    wl_work_queue_t *wq = NULL; /* NULL when serial or in workers */
+    if (active_workers > 1 && live_count >= WL_KFUSION_MIN_PARALLEL_K) {
+        int ensure_rc = wl_columnar_session_ensure_workqueue(sess,
+                active_workers);
+        if (ensure_rc != 0) {
+            free(live_indices);
+            return ensure_rc;
+        }
+        wq = sess->wq;
+    }
     if (!wq || live_count < WL_KFUSION_MIN_PARALLEL_K) {
         free(live_indices);
         return col_op_k_fusion_serial(op, stack, sess);
@@ -5145,6 +5156,10 @@ col_op_k_fusion(const wl_plan_op_t *op, eval_stack_t *stack,
          * darr_* are zeroed: workers rebuild delta arrangements per-iteration. */
         worker_sess[d] = *sess;
         worker_sess[d].wq = NULL; /* prevent nested K-fusion from workers */
+        worker_sess[d].wq_workers = 0;
+        worker_sess[d].tdd_workers = NULL;
+        worker_sess[d].tdd_workers_cap = 0;
+        worker_sess[d].tdd_workers_count = 0;
         if (worker_sess[d].join_output_limit > 0 && live_count > 1) {
             uint64_t per_branch =
                 worker_sess[d].join_output_limit / live_count;

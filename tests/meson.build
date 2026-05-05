@@ -3382,6 +3382,23 @@ test_safe_worker_scaling_exe = executable(
 
 test('safe_worker_scaling', test_safe_worker_scaling_exe)
 
+test_workers_as_cap_exe = executable(
+  'test_workers_as_cap',
+  files('test_workers_as_cap.c'),
+  backend_src,
+  parser_src,
+  ir_src,
+  optimizer_src,
+  arena_src,
+  io_src,
+  thread_src,
+  workqueue_src,
+  include_directories: [wirelog_inc, wirelog_src_inc],
+  dependencies: [nanoarrow_dep, threads_dep, xxhash_dep, mbedtls_dep, math_dep],
+)
+
+test('workers_as_cap', test_workers_as_cap_exe)
+
 # ============================================================================
 # Queue Transport Equivalence and Stress Tests (Issue #410)
 # ============================================================================
