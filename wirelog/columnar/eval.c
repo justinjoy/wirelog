@@ -1609,6 +1609,14 @@ tdd_cleanup_workers(wl_col_session_t *coord)
     coord->tdd_active_workers = 0;
 }
 
+static void
+tdd_record_active_workers(wl_col_session_t *coord, uint32_t W)
+{
+    coord->tdd_last_active_workers = W;
+    if (W > coord->tdd_max_active_workers)
+        coord->tdd_max_active_workers = W;
+}
+
 /*
  * tdd_init_workers:
  * Partition all coordinator relations across W worker sessions.
@@ -1626,6 +1634,7 @@ tdd_init_workers(wl_col_session_t *coord, uint32_t W)
     if (W == 0 || W > coord->num_workers)
         return EINVAL;
     coord->tdd_active_workers = W;
+    tdd_record_active_workers(coord, W);
     uint32_t nrels = coord->nrels;
 
     /* No relations: create empty worker sessions */
@@ -1757,6 +1766,7 @@ tdd_replicate_workers(wl_col_session_t *coord, uint32_t W)
     if (W == 0 || W > coord->num_workers)
         return EINVAL;
     coord->tdd_active_workers = W;
+    tdd_record_active_workers(coord, W);
     uint32_t nrels = coord->nrels;
 
     /* No relations: create empty worker sessions */
@@ -3629,6 +3639,7 @@ tdd_init_workers_hybrid(const wl_plan_stratum_t *sp, wl_col_session_t *coord,
     if (W == 0 || W > coord->num_workers)
         return EINVAL;
     coord->tdd_active_workers = W;
+    tdd_record_active_workers(coord, W);
     uint32_t nrels = coord->nrels;
 
     if (nrels == 0) {
@@ -5435,8 +5446,10 @@ col_eval_stratum_tdd_nonrecursive(const wl_plan_stratum_t *sp,
     int rc;
 
     W = tdd_choose_active_workers(sp, coord, W, false);
-    if (W <= 1)
+    if (W <= 1) {
+        tdd_record_active_workers(coord, 1);
         return col_eval_stratum(sp, coord, stratum_idx);
+    }
 
     /* Phase 1: PARTITION — partition all coordinator relations to workers */
     rc = tdd_init_workers(coord, W);

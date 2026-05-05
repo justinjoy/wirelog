@@ -986,6 +986,8 @@ typedef struct wl_col_session_t {
     struct wl_col_session_t *tdd_workers; /* owned array [num_workers] */
     uint32_t tdd_workers_count;         /* number of initialized workers */
     uint32_t tdd_active_workers;        /* current adaptive TDD width */
+    uint32_t tdd_last_active_workers;   /* last selected TDD width */
+    uint32_t tdd_max_active_workers;    /* max selected width this eval */
     /* Per-party memory budget for TDD replicate-mode (Issue #416).
      * = total_ram*75% / (num_workers+1): the share that keeps aggregate
      * usage within 75% RAM when coordinator + W workers each hold a full
