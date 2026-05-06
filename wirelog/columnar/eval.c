@@ -1604,6 +1604,24 @@ tdd_reconstruct_delta_matrix(col_eval_tdd_worker_ctx_t *ctxs,
     }
 }
 
+static void
+tdd_discard_delta_queue(wl_mpsc_queue_t *queue, uint32_t W, uint32_t nrels)
+{
+    if (!queue)
+        return;
+    uint32_t max_msgs = W * nrels;
+    if (max_msgs == 0)
+        max_msgs = 1;
+    wl_delta_msg_t *msgs = (wl_delta_msg_t *)calloc(max_msgs,
+            sizeof(wl_delta_msg_t));
+    if (!msgs)
+        return;
+    uint32_t msg_count = wl_mpsc_dequeue_all(queue, msgs, max_msgs);
+    for (uint32_t i = 0; i < msg_count; i++)
+        col_rel_destroy((col_rel_t *)msgs[i].delta);
+    free(msgs);
+}
+
 /*
  * tdd_cleanup_workers:
  * Destroy and zero all initialized TDD worker sessions.
@@ -5769,10 +5787,17 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
     }
 
     col_rel_t **owner_fallback_saved = NULL;
+    col_rel_t **global_read_saved = NULL;
     bool owner_adaptive_fallback = false;
     if (owner_exchange_mode) {
         owner_fallback_saved = tdd_save_coord_idb(sp, coord);
         if (!owner_fallback_saved) {
+            coord->tdd_total_ns += now_ns() - tdd_total_t0;
+            return ENOMEM;
+        }
+    } else if (global_read_mode) {
+        global_read_saved = tdd_save_coord_idb(sp, coord);
+        if (!global_read_saved) {
             coord->tdd_total_ns += now_ns() - tdd_total_t0;
             return ENOMEM;
         }
@@ -5786,6 +5811,7 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
         rc = tdd_init_workers_hybrid(sp, coord, true, W);
     if (rc != 0) {
         tdd_free_saved_coord_idb(sp, owner_fallback_saved);
+        tdd_free_saved_coord_idb(sp, global_read_saved);
         coord->tdd_total_ns += now_ns() - tdd_total_t0;
         return rc;
     }
@@ -5798,6 +5824,7 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
                 if (rc != 0) {
                     tdd_cleanup_workers(coord);
                     tdd_free_saved_coord_idb(sp, owner_fallback_saved);
+                    tdd_free_saved_coord_idb(sp, global_read_saved);
                     coord->tdd_total_ns += now_ns() - tdd_total_t0;
                     return rc;
                 }
@@ -5809,6 +5836,8 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
     rc = tdd_preregister_idb_on_workers(sp, coord);
     if (rc != 0) {
         tdd_cleanup_workers(coord);
+        tdd_free_saved_coord_idb(sp, owner_fallback_saved);
+        tdd_free_saved_coord_idb(sp, global_read_saved);
         coord->tdd_total_ns += now_ns() - tdd_total_t0;
         return rc;
     }
@@ -5836,6 +5865,8 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
             col_rel_t *slot = col_rel_new_auto(dname, ncols_ri);
             if (!slot) {
                 tdd_cleanup_workers(coord);
+                tdd_free_saved_coord_idb(sp, owner_fallback_saved);
+                tdd_free_saved_coord_idb(sp, global_read_saved);
                 coord->tdd_total_ns += now_ns() - tdd_total_t0;
                 return ENOMEM;
             }
@@ -5843,6 +5874,8 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
             if (rc != 0) {
                 col_rel_destroy(slot);
                 tdd_cleanup_workers(coord);
+                tdd_free_saved_coord_idb(sp, owner_fallback_saved);
+                tdd_free_saved_coord_idb(sp, global_read_saved);
                 coord->tdd_total_ns += now_ns() - tdd_total_t0;
                 return rc;
             }
@@ -6089,6 +6122,7 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
             coord->tdd_submit_loop_ns += submit_ns;
 
             if (!submit_ok) {
+                tdd_discard_delta_queue(coord->delta_queue, W, nrels);
                 for (uint32_t w = 0; w < W; w++)
                     for (uint32_t ri = 0; ri < nrels; ri++)
                         col_rel_destroy(ctxs[w].delta_rels[ri]);
@@ -6125,6 +6159,7 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
                     fprintf(stderr,
                         "TDD worker error stratum=%u iter=%u rc=%d\n",
                         stratum_idx, eff_iter, rc);
+                tdd_discard_delta_queue(coord->delta_queue, W, nrels);
                 for (uint32_t w = 0; w < W; w++)
                     for (uint32_t ri = 0; ri < nrels; ri++)
                         col_rel_destroy(ctxs[w].delta_rels[ri]);
@@ -6287,6 +6322,7 @@ done:
         rc = tdd_restore_coord_idb(sp, coord, owner_fallback_saved);
         tdd_cleanup_workers(coord);
         tdd_free_saved_coord_idb(sp, owner_fallback_saved);
+        tdd_free_saved_coord_idb(sp, global_read_saved);
         coord->tdd_total_ns += now_ns() - tdd_total_t0;
         if (rc != 0)
             return rc;
@@ -6294,7 +6330,20 @@ done:
             coord->outer_epoch);
         return col_eval_stratum(sp, coord, stratum_idx);
     }
+    if (global_read_mode && rc == EOVERFLOW) {
+        int restore_rc = tdd_restore_coord_idb(sp, coord, global_read_saved);
+        tdd_cleanup_workers(coord);
+        tdd_free_saved_coord_idb(sp, owner_fallback_saved);
+        tdd_free_saved_coord_idb(sp, global_read_saved);
+        coord->tdd_total_ns += now_ns() - tdd_total_t0;
+        if (restore_rc != 0)
+            return restore_rc;
+        coord->frontier_ops->reset_stratum_frontier(coord, stratum_idx,
+            coord->outer_epoch);
+        return col_eval_stratum(sp, coord, stratum_idx);
+    }
     tdd_free_saved_coord_idb(sp, owner_fallback_saved);
+    tdd_free_saved_coord_idb(sp, global_read_saved);
 
     /* Issue #416: Accumulate instead of assign so total_iterations stays > 0
      * after any completed evaluation.  Assigning final_eff_iter (which is 0

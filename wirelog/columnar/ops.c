@@ -5243,8 +5243,12 @@ col_op_k_fusion(const wl_plan_op_t *op, eval_stack_t *stack,
         return EINVAL;
 
     /* Issue #549: W=1 fast-path. Skip per-worker clone/arena/delta_pool
-     * machinery when there's only one thread — pure overhead otherwise. */
-    if (sess->wq == NULL && sess->num_workers <= 1)
+     * machinery when there's only one thread — pure overhead otherwise.
+     * TDD workers already run under the distributed stratum workqueue; running
+     * nested K-fusion workers inside them oversubscribes execution and divides
+     * join_output_limit a second time. */
+    if (sess->tdd_subpass_active || sess->coordinator
+        || (sess->wq == NULL && sess->num_workers <= 1))
         return col_op_k_fusion_serial(op, stack, sess);
 
     /* Issue #560: Advance the compound-arena epoch frontier before
