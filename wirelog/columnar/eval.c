@@ -3953,7 +3953,7 @@ tdd_stratum_global_read_candidate(const wl_plan_stratum_t *sp)
         if (!tdd_relation_has_exchange_key(rel))
             return false;
         uint32_t top_joins = ops_count_join_like(rel->ops, rel->op_count);
-        if (top_joins > 2)
+        if (top_joins > 4)
             return false;
 
         for (uint32_t oi = 0; oi < rel->op_count; oi++) {
@@ -3965,7 +3965,7 @@ tdd_stratum_global_read_candidate(const wl_plan_stratum_t *sp)
             for (uint32_t ki = 0; ki < kf->k; ki++) {
                 uint32_t child_joins = ops_count_join_like(kf->k_ops[ki],
                         kf->k_op_counts[ki]);
-                if (child_joins > 2)
+                if (child_joins > 4)
                     return false;
             }
         }
@@ -4896,6 +4896,22 @@ tdd_choose_active_workers(const wl_plan_stratum_t *sp,
     return active;
 }
 
+static uint32_t
+tdd_global_read_worker_cap(void)
+{
+    uint32_t cap = 16;
+    const char *env = getenv("WIRELOG_TDD_GLOBAL_READ_MAX_ACTIVE_WORKERS");
+    if (env && env[0] != '\0') {
+        char *endp = NULL;
+        errno = 0;
+        unsigned long v = strtoul(env, &endp, 10);
+        if (endp != env && *endp == '\0' && errno != ERANGE && v > 0
+            && v <= UINT32_MAX)
+            cap = (uint32_t)v;
+    }
+    return cap;
+}
+
 /*
  * bdx_hash_diff:
  * Remove from delta any row that already exists in base.  This exact
@@ -5779,6 +5795,11 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
             W = 1;
     }
     W = tdd_choose_active_workers(sp, coord, W, replicate_mode);
+    if (global_read_mode) {
+        uint32_t cap = tdd_global_read_worker_cap();
+        if (W > cap)
+            W = cap;
+    }
     if (W <= 1) {
         tdd_record_active_workers(coord, 1);
         if (coord->tdd_decision_tracking_active) {
