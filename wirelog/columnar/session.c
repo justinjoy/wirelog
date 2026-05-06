@@ -277,6 +277,35 @@ wl_columnar_session_tdd_stratum_is_safe(const wl_plan_stratum_t *sp,
     return stratum_max_idb_body_atoms(sp) <= 2;
 }
 
+static void
+wl_columnar_session_tdd_debug_decision(const wl_plan_stratum_t *sp,
+    wl_col_session_t *sess, bool snapshot_tdd_eligible,
+    wl_columnar_session_tdd_decision_t decision)
+{
+    const char *env = getenv("WIRELOG_TDD_DECISION_DEBUG");
+    if (!env || env[0] == '\0' || env[0] == '0')
+        return;
+
+    const char *first_rel = (sp && sp->relation_count > 0)
+        ? sp->relations[0].name : "(none)";
+    fprintf(stderr,
+        "TDD decision rel=%s recursive=%d snapshot=%d exchange=%d "
+        "safe=%d global_read_candidate=%d self_join=%d idb_atoms=%u "
+        "single_key_aligned=%d use_tdd=%d fallback=%s\n",
+        first_rel ? first_rel : "(null)",
+        sp ? (int)sp->is_recursive : 0,
+        (int)snapshot_tdd_eligible,
+        sp ? (int)wl_columnar_session_tdd_stratum_has_exchange(sp) : 0,
+        sp ? (int)wl_columnar_session_tdd_stratum_is_safe(sp, sess) : 0,
+        sp ? (int)tdd_stratum_global_read_candidate(sp) : 0,
+        sp ? (int)tdd_stratum_has_idb_self_join(sp) : 0,
+        sp ? stratum_max_idb_body_atoms(sp) : 0,
+        sp ? (int)tdd_stratum_single_idb_join_keys_exchange_aligned(sp) : 0,
+        (int)decision.use_tdd,
+        wl_columnar_session_tdd_fallback_reason_name(
+            decision.fallback_reason));
+}
+
 static wl_columnar_session_tdd_decision_t
 wl_columnar_session_tdd_plan_stratum(const wl_plan_stratum_t *sp,
     wl_col_session_t *sess,
@@ -290,16 +319,22 @@ wl_columnar_session_tdd_plan_stratum(const wl_plan_stratum_t *sp,
     if (!sp->is_recursive) {
         decision.fallback_reason =
             WL_COLUMNAR_INTERNAL_TDD_FALLBACK_NON_RECURSIVE;
+        wl_columnar_session_tdd_debug_decision(sp, sess,
+            snapshot_tdd_eligible, decision);
         return decision;
     }
     if (!snapshot_tdd_eligible) {
         decision.fallback_reason =
             WL_COLUMNAR_INTERNAL_TDD_FALLBACK_SNAPSHOT_INELIGIBLE;
+        wl_columnar_session_tdd_debug_decision(sp, sess,
+            snapshot_tdd_eligible, decision);
         return decision;
     }
     if (!wl_columnar_session_tdd_stratum_has_exchange(sp)) {
         decision.fallback_reason =
             WL_COLUMNAR_INTERNAL_TDD_FALLBACK_NO_EXCHANGE;
+        wl_columnar_session_tdd_debug_decision(sp, sess,
+            snapshot_tdd_eligible, decision);
         return decision;
     }
     if (!wl_columnar_session_tdd_stratum_is_safe(sp, sess)) {
@@ -307,14 +342,20 @@ wl_columnar_session_tdd_plan_stratum(const wl_plan_stratum_t *sp,
         if (!(env && env[0] == '0' && env[1] == '\0')
             && tdd_stratum_global_read_candidate(sp)) {
             decision.use_tdd = true;
+            wl_columnar_session_tdd_debug_decision(sp, sess,
+                snapshot_tdd_eligible, decision);
             return decision;
         }
         decision.fallback_reason =
             WL_COLUMNAR_INTERNAL_TDD_FALLBACK_UNSAFE_PLAN;
+        wl_columnar_session_tdd_debug_decision(sp, sess,
+            snapshot_tdd_eligible, decision);
         return decision;
     }
 
     decision.use_tdd = true;
+    wl_columnar_session_tdd_debug_decision(sp, sess, snapshot_tdd_eligible,
+        decision);
     return decision;
 }
 
