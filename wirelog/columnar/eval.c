@@ -3784,26 +3784,6 @@ tdd_stratum_single_idb_join_keys_exchange_aligned(
     return true;
 }
 
-bool
-tdd_stratum_exchange_keys_are_multi_column(const wl_plan_stratum_t *sp)
-{
-    bool saw_exchange = false;
-    for (uint32_t ri = 0; ri < sp->relation_count; ri++) {
-        for (uint32_t oi = 0; oi < sp->relations[ri].op_count; oi++) {
-            if (sp->relations[ri].ops[oi].op != WL_PLAN_OP_EXCHANGE)
-                continue;
-            const wl_plan_op_exchange_t *meta =
-                (const wl_plan_op_exchange_t *)
-                sp->relations[ri].ops[oi].opaque_data;
-            if (!meta || meta->key_col_count < 2)
-                return false;
-            saw_exchange = true;
-            break;
-        }
-    }
-    return saw_exchange;
-}
-
 /*
  * tdd_stratum_has_idb_self_join:
  * Returns true if any rule in the stratum has a JOIN where BOTH the left
@@ -5289,7 +5269,6 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
     bool self_join_mode = tdd_stratum_idb_self_join_exchange_aligned(sp, coord);
     bool owner_exchange_mode = !has_idb_self_join
         && stratum_max_idb_body_atoms(sp) <= 1
-        && tdd_stratum_exchange_keys_are_multi_column(sp)
         && tdd_stratum_single_idb_join_keys_exchange_aligned(sp);
     bool bdx_mode = has_idb_self_join && !self_join_mode;
     bool replicate_mode = !owner_exchange_mode

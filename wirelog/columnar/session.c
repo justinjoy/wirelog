@@ -262,11 +262,11 @@ wl_columnar_session_tdd_stratum_is_safe(const wl_plan_stratum_t *sp,
     if (!tdd_stratum_has_idb_self_join(sp)) {
         /* Category A: no IDB-IDB joins.  Owner-partitioned TDD is
          * correct only when every recursive IDB probe uses the
-         * relation's EXCHANGE key.  Rules that consume the same IDB
-         * through multiple key columns require cross-owner access and
-         * must stay single-threaded for now. */
+         * relation's EXCHANGE key.  Rules that consume recursive IDB
+         * rows through non-exchange keys or multiple IDB body atoms
+         * require cross-owner access and must stay single-threaded for
+         * now. */
         return stratum_max_idb_body_atoms(sp) <= 1
-               && tdd_stratum_exchange_keys_are_multi_column(sp)
                && tdd_stratum_single_idb_join_keys_exchange_aligned(sp);
     }
     if (tdd_stratum_idb_self_join_exchange_aligned(sp, sess))

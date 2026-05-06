@@ -3344,6 +3344,23 @@ test_tdd_decision_stats_exe = executable(
 
 test('tdd_decision_stats', test_tdd_decision_stats_exe)
 
+test_tdd_single_key_owner_exe = executable(
+  'test_tdd_single_key_owner',
+  files('test_tdd_single_key_owner.c'),
+  backend_src,
+  parser_src,
+  ir_src,
+  optimizer_src,
+  arena_src,
+  io_src,
+  thread_src,
+  workqueue_src,
+  include_directories: [wirelog_inc, wirelog_src_inc],
+  dependencies: [nanoarrow_dep, threads_dep, xxhash_dep, mbedtls_dep, math_dep],
+)
+
+test('tdd_single_key_owner', test_tdd_single_key_owner_exe)
+
 test_constant_filter_pushdown_exe = executable(
   'test_constant_filter_pushdown',
   files('test_constant_filter_pushdown.c'),
