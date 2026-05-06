@@ -2238,6 +2238,7 @@ typedef struct {
     uint64_t out_begin;
     uint64_t count;
     uint64_t limit;
+    uint32_t *left_hashes;
     atomic_bool *stop;
     atomic_uint_fast64_t *shared_count;
     int rc;
@@ -2296,6 +2297,8 @@ col_join_keyed_count_worker_fn(void *arg)
         memory_order_relaxed)); lr++) {
         uint32_t h = col_join_hash_rel_keys(left, lr, ctx->lk, ctx->kc)
             & (darr->nbuckets - 1);
+        if (ctx->left_hashes)
+            ctx->left_hashes[lr] = h;
         for (uint32_t e = darr->ht_head[h]; e != 0;
             e = darr->ht_next[e - 1]) {
             if (ctx->stop && atomic_load_explicit(ctx->stop,
@@ -2340,8 +2343,9 @@ col_join_keyed_fill_worker_fn(void *arg)
     uint64_t out_row = ctx->out_begin;
 
     for (uint32_t lr = ctx->begin; lr < ctx->end; lr++) {
-        uint32_t h = col_join_hash_rel_keys(left, lr, ctx->lk, ctx->kc)
-            & (darr->nbuckets - 1);
+        uint32_t h = ctx->left_hashes ? ctx->left_hashes[lr]
+            : (col_join_hash_rel_keys(left, lr, ctx->lk, ctx->kc)
+            & (darr->nbuckets - 1));
         for (uint32_t e = darr->ht_head[h]; e != 0;
             e = darr->ht_next[e - 1]) {
             uint32_t rr = e - 1;
@@ -6433,9 +6437,13 @@ col_op_join_diff(const wl_plan_op_t *op, eval_stack_t *stack,
             col_join_keyed_ctx_t *ctxs = (col_join_keyed_ctx_t *)calloc(
                 W, sizeof(col_join_keyed_ctx_t));
             uint64_t *offsets = (uint64_t *)calloc(W + 1, sizeof(uint64_t));
+            uint32_t *left_hashes = (uint32_t *)malloc(
+                sizeof(uint32_t)
+                * (size_t)(left->nrows ? left->nrows : 1));
             if (!ctxs || !offsets) {
                 free(ctxs);
                 free(offsets);
+                free(left_hashes);
                 free(tmp);
                 col_rel_destroy(out);
                 free(lk);
@@ -6467,6 +6475,7 @@ col_op_join_diff(const wl_plan_op_t *op, eval_stack_t *stack,
                 ctxs[w].begin = begin;
                 ctxs[w].end = end;
                 ctxs[w].limit = sess->join_output_limit;
+                ctxs[w].left_hashes = left_hashes;
                 ctxs[w].stop = &stop;
                 ctxs[w].shared_count = &shared_count;
                 if (wl_workqueue_submit(sess->wq,
@@ -6529,6 +6538,7 @@ col_op_join_diff(const wl_plan_op_t *op, eval_stack_t *stack,
             }
             free(offsets);
             free(ctxs);
+            free(left_hashes);
             if (prc != 0) {
                 free(tmp);
                 col_rel_destroy(out);
