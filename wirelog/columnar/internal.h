@@ -1662,6 +1662,8 @@ typedef struct {
 void
 tdd_stratum_segment_stats(const wl_plan_stratum_t *sp,
     wl_tdd_segment_stats_t *stats);
+bool
+tdd_stratum_mixed_slice_candidate(const wl_plan_stratum_t *sp);
 int
 col_stratum_step_with_delta(const wl_plan_stratum_t *sp, wl_col_session_t *sess,
     uint32_t stratum_idx);
