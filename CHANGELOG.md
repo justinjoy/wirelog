@@ -2,7 +2,7 @@
 
 All notable changes to wirelog are documented in this file.
 
-## [Unreleased]
+## [0.30.0] - 2026-05-07
 
 ### Added
 
@@ -16,6 +16,32 @@ All notable changes to wirelog are documented in this file.
 - **I/O Adapters User Guide** (#463): `docs/io-adapters.md` with Path A/B workflows, ABI policy, ownership rules, and thread-safety notes
 - **Retraction Support** (#443): Fact retraction with recursive re-evaluation
 - **Delta Query Examples**: Examples 08-12 demonstrating retraction, recursive update, time evolution, and snapshot-vs-delta patterns
+- **Compound Terms**: Compound declaration parsing, inline compound declaration patterns, public side compound allocation, compound side support in flowlog benches, and daemon-style rotation examples
+- **TDD Diagnostics**: Planner decision diagnostics, fallback decision stats, recursive TDD profiling counters, branch eligibility reports, and opt-in stratum profiling
+- **Global-read TDD Infrastructure**: Guarded global-read recursive TDD path, candidate classification, rollback support, incremental shared-view refresh, and opt-in mixed child-plan execution
+
+### Changed
+
+- **Adaptive Worker Semantics**: Treat requested workers as an adaptive upper bound for K-fusion and TDD rather than a fixed allocation target
+- **DOOP Benchmark Validation**: Validate DOOP benchmark output and refresh benchmark snapshots with W=N behavior
+- **Recursive Evaluation**: Enable global-read TDD candidates by default while preserving guarded fallback paths
+- **K-Fusion Scheduling**: Keep branch workers single-threaded, skip inactive branches, and use serial K-fusion below the dispatch threshold
+- **CI Quality Gates**: Run CodeQL on main pushes and PRs, update artifact upload actions, and strengthen lint/code-quality checks
+
+### Fixed
+
+- **DOOP Worker Scaling** (#659): Current `main` no longer reproduces the workers-created-but-single-core DOOP path; W=8/W=16 runs preserve tuple/iteration parity and show active worker CPU
+- **Worker Session Isolation**: Isolate filtered caches in worker sessions and add shared-view cleanup regression coverage
+- **TDD Exchange Correctness**: Fix owner exchange delta registration and improve owner-mode fallback behavior for recursive workloads
+- **MSVC Portability**: Add atomics shims, environment helper shims for tests, and portable atomic counter initialization
+- **Join Robustness**: Fail closed on join output overflow and harden materialized join ownership
+
+### Performance
+
+- Parallelize eligible non-recursive relation plans, differential keyed joins, semijoin probing, and selected columnar join paths
+- Optimize CRDT keyed probes and cap TDD width adaptively
+- Reuse diff join left hash buckets and cache diff join match pairs
+- Inline and specialize join, semijoin, arrangement, and owner-exchange key hashing helpers
 
 ## [0.21.0] - 2026-03-19
 
