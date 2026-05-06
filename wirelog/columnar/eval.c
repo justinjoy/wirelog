@@ -2415,6 +2415,15 @@ tdd_seed_global_read_initial_deltas(const wl_plan_stratum_t *sp,
             key_cols = default_key;
             key_count = 1;
         }
+        bool key_valid = src->ncols > 0;
+        for (uint32_t ki = 0; key_valid && ki < key_count; ki++) {
+            if (key_cols[ki] >= src->ncols)
+                key_valid = false;
+        }
+        if (!key_valid) {
+            key_cols = default_key;
+            key_count = 1;
+        }
 
         col_rel_t **parts = (col_rel_t **)calloc(W, sizeof(col_rel_t *));
         if (!parts)
@@ -2491,6 +2500,11 @@ tdd_install_empty_delta_on_workers(wl_col_session_t *coord,
             return ENOMEM;
         int rc = session_add_rel(&coord->tdd_workers[w], empty);
         if (rc != 0) {
+            if (getenv("WIRELOG_TDD_GLOBAL_READ_DEBUG")) {
+                fprintf(stderr,
+                    "TDD install empty delta error rel=%s worker=%u cols=%u rc=%d\n",
+                    dname, w, ncols, rc);
+            }
             col_rel_destroy(empty);
             return rc;
         }
@@ -2543,7 +2557,35 @@ tdd_worker_eval_rule_slices(col_eval_tdd_worker_ctx_t *ctx,
             continue;
         }
 
+        col_rel_t *target = session_find_rel(sess, target_plan->name);
+        if (target && target->ncols > 0 && result.rel->ncols != target->ncols) {
+            if (getenv("WIRELOG_TDD_GLOBAL_READ_DEBUG")) {
+                fprintf(stderr,
+                    "TDD worker slice schema mismatch rel=%s worker=%u "
+                    "slice=%u result_cols=%u target_cols=%u\n",
+                    target_plan->name, sess->worker_id, si,
+                    result.rel->ncols, target->ncols);
+            }
+            if (result.owned)
+                col_rel_destroy(result.rel);
+            rc = EINVAL;
+            break;
+        }
+
         col_rel_t *delta = deltas[slice->relation_index];
+        if (delta && delta->ncols != result.rel->ncols) {
+            if (getenv("WIRELOG_TDD_GLOBAL_READ_DEBUG")) {
+                fprintf(stderr,
+                    "TDD worker slice delta schema mismatch rel=%s worker=%u "
+                    "slice=%u delta_cols=%u result_cols=%u\n",
+                    target_plan->name, sess->worker_id, si,
+                    delta->ncols, result.rel->ncols);
+            }
+            if (result.owned)
+                col_rel_destroy(result.rel);
+            rc = EINVAL;
+            break;
+        }
         if (!delta) {
             delta = col_rel_new_like(target_plan->delta_name, result.rel);
             if (!delta) {
@@ -2601,6 +2643,123 @@ tdd_worker_eval_rule_slices(col_eval_tdd_worker_ctx_t *ctx,
     for (uint32_t ri = 0; ri < nrels; ri++)
         col_rel_destroy(deltas[ri]);
     free(deltas);
+    return rc;
+}
+
+static int
+tdd_coord_append_delta(col_eval_tdd_worker_ctx_t *ctx, uint32_t rel_idx,
+    col_rel_t *delta)
+{
+    if (!delta || delta->nrows == 0) {
+        col_rel_destroy(delta);
+        return 0;
+    }
+    col_rel_t *existing = ctx->delta_rels[rel_idx];
+    if (!existing) {
+        ctx->delta_rels[rel_idx] = delta;
+        return 0;
+    }
+    if (existing->ncols != delta->ncols) {
+        col_rel_destroy(delta);
+        return EINVAL;
+    }
+    int rc = col_rel_append_all(existing, delta, NULL);
+    col_rel_destroy(delta);
+    return rc;
+}
+
+static int
+tdd_coord_eval_fallback_rule_slices(const wl_plan_stratum_t *sp,
+    wl_col_session_t *coord, col_eval_tdd_worker_ctx_t *ctx,
+    const wl_tdd_rule_slice_t *slices, uint32_t slice_count,
+    uint32_t eff_iter, bool *out_any_new)
+{
+    int rc = 0;
+    bool saved_diff = coord->diff_operators_active;
+    coord->diff_operators_active = coord->diff_enabled && eff_iter > 0;
+    coord->current_iteration = eff_iter;
+
+    for (uint32_t si = 0; si < slice_count; si++) {
+        const wl_tdd_rule_slice_t *slice = &slices[si];
+        if (slice->tdd_safe || slice->relation_index >= sp->relation_count)
+            continue;
+
+        const wl_plan_relation_t *target_plan =
+            &sp->relations[slice->relation_index];
+        wl_plan_relation_t tmp = {
+            .name = target_plan->name,
+            .delta_name = target_plan->delta_name,
+            .ops = slice->ops,
+            .op_count = slice->op_count,
+        };
+        if (has_empty_forced_delta(&tmp, coord, eff_iter))
+            continue;
+
+        eval_stack_t stack;
+        eval_stack_init(&stack);
+        rc = col_eval_relation_plan(&tmp, &stack, coord);
+        if (rc != 0) {
+            eval_stack_drain(&stack);
+            break;
+        }
+        if (stack.top == 0)
+            continue;
+
+        eval_entry_t result = eval_stack_pop(&stack);
+        eval_stack_drain(&stack);
+        if (!result.rel || result.rel->nrows == 0) {
+            if (result.owned)
+                col_rel_destroy(result.rel);
+            continue;
+        }
+
+        col_rel_t *target = session_find_rel(coord, target_plan->name);
+        if (target && target->ncols > 0 && result.rel->ncols != target->ncols) {
+            if (getenv("WIRELOG_TDD_GLOBAL_READ_DEBUG")) {
+                fprintf(stderr,
+                    "TDD fallback slice schema mismatch rel=%s slice=%u "
+                    "result_cols=%u target_cols=%u\n",
+                    target_plan->name, si, result.rel->ncols, target->ncols);
+            }
+            if (result.owned)
+                col_rel_destroy(result.rel);
+            rc = EINVAL;
+            break;
+        }
+
+        col_rel_t *delta = col_rel_new_like(target_plan->delta_name,
+                result.rel);
+        if (!delta) {
+            if (result.owned)
+                col_rel_destroy(result.rel);
+            rc = ENOMEM;
+            break;
+        }
+        rc = col_rel_append_all(delta, result.rel, coord->eval_arena);
+        if (result.owned)
+            col_rel_destroy(result.rel);
+        if (rc != 0) {
+            col_rel_destroy(delta);
+            break;
+        }
+
+        if (target && target->nrows > 0) {
+            rc = tdd_hashset_diff(delta, target);
+            if (rc != 0) {
+                col_rel_destroy(delta);
+                break;
+            }
+        }
+        if (delta->nrows > 1)
+            tdd_dedup_rel(delta);
+        if (delta->nrows > 0 && out_any_new)
+            *out_any_new = true;
+        rc = tdd_coord_append_delta(ctx, slice->relation_index, delta);
+        if (rc != 0)
+            break;
+    }
+
+    coord->diff_operators_active = saved_diff;
     return rc;
 }
 
@@ -4204,6 +4363,200 @@ tdd_visit_rule_segments(const wl_plan_op_t *ops, uint32_t op_count,
             continue;
         }
     }
+}
+
+static bool
+tdd_rule_slice_global_read_safe(const wl_plan_op_t *ops, uint32_t op_count,
+    const wl_plan_stratum_t *sp, bool relation_has_exchange)
+{
+    uint32_t idb_atoms = 0;
+    uint32_t join_like = 0;
+    bool has_antijoin = false;
+    bool recursive_semijoin = false;
+
+    if (!relation_has_exchange || !ops || op_count == 0)
+        return false;
+
+    for (uint32_t oi = 0; oi < op_count; oi++) {
+        const wl_plan_op_t *op = &ops[oi];
+        if (op->delta_mode == WL_DELTA_FORCE_EMPTY)
+            continue;
+        if (op_references_stratum_idb(op, sp))
+            idb_atoms++;
+        switch (op->op) {
+        case WL_PLAN_OP_JOIN:
+            join_like++;
+            break;
+        case WL_PLAN_OP_SEMIJOIN:
+            join_like++;
+            if (op->right_relation
+                && is_stratum_idb(sp, op->right_relation))
+                recursive_semijoin = true;
+            break;
+        case WL_PLAN_OP_ANTIJOIN:
+            join_like++;
+            has_antijoin = true;
+            break;
+        default:
+            break;
+        }
+    }
+
+    return idb_atoms == 1
+           && join_like <= 4
+           && !has_antijoin
+           && !recursive_semijoin
+           && !ops_have_idb_idb_join(ops, op_count, sp);
+}
+
+static bool
+tdd_child_plan_global_read_safe(const wl_plan_op_t *ops, uint32_t op_count,
+    const wl_plan_stratum_t *sp, bool relation_has_exchange)
+{
+    if (!ops || op_count == 0)
+        return false;
+
+    uint32_t idb_segments = 0;
+    for (uint32_t oi = 0; oi < op_count;) {
+        while (oi < op_count && ops[oi].op != WL_PLAN_OP_VARIABLE)
+            oi++;
+        if (oi >= op_count)
+            break;
+
+        uint32_t seg_start = oi++;
+        while (oi < op_count
+            && ops[oi].op != WL_PLAN_OP_VARIABLE
+            && ops[oi].op != WL_PLAN_OP_CONCAT
+            && ops[oi].op != WL_PLAN_OP_CONSOLIDATE) {
+            oi++;
+        }
+
+        if (ops[seg_start].delta_mode == WL_DELTA_FORCE_EMPTY) {
+            if (oi < op_count && ops[oi].op == WL_PLAN_OP_CONCAT)
+                oi++;
+            continue;
+        }
+
+        bool has_idb = false;
+        for (uint32_t si = seg_start; si < oi; si++) {
+            if (ops[si].delta_mode == WL_DELTA_FORCE_EMPTY)
+                continue;
+            if (op_references_stratum_idb(&ops[si], sp)) {
+                has_idb = true;
+                break;
+            }
+        }
+        if (has_idb) {
+            if (!tdd_rule_slice_global_read_safe(ops + seg_start,
+                oi - seg_start, sp, relation_has_exchange))
+                return false;
+            idb_segments++;
+        }
+
+        if (oi < op_count && ops[oi].op == WL_PLAN_OP_CONCAT)
+            oi++;
+    }
+
+    return idb_segments == 1;
+}
+
+static int
+tdd_rule_slices_append(wl_tdd_rule_slice_t **slices, uint32_t *count,
+    uint32_t *cap, uint32_t relation_index, const wl_plan_op_t *ops,
+    uint32_t op_count, bool tdd_safe)
+{
+    if (op_count == 0)
+        return 0;
+    if (*count == *cap) {
+        uint32_t new_cap = *cap == 0 ? 32 : *cap * 2;
+        wl_tdd_rule_slice_t *new_slices =
+            (wl_tdd_rule_slice_t *)realloc(*slices,
+                (size_t)new_cap * sizeof(wl_tdd_rule_slice_t));
+        if (!new_slices)
+            return ENOMEM;
+        *slices = new_slices;
+        *cap = new_cap;
+    }
+
+    (*slices)[*count].relation_index = relation_index;
+    (*slices)[*count].ops = ops;
+    (*slices)[*count].op_count = op_count;
+    (*slices)[*count].tdd_safe = tdd_safe;
+    (*count)++;
+    return 0;
+}
+
+static int
+tdd_build_rule_slices(const wl_plan_stratum_t *sp,
+    wl_tdd_rule_slice_t **out_slices, uint32_t *out_count,
+    uint32_t *out_safe_count)
+{
+    wl_tdd_rule_slice_t *slices = NULL;
+    uint32_t count = 0;
+    uint32_t cap = 0;
+    uint32_t safe_count = 0;
+
+    *out_slices = NULL;
+    *out_count = 0;
+    *out_safe_count = 0;
+    if (!sp)
+        return 0;
+
+    for (uint32_t ri = 0; ri < sp->relation_count; ri++) {
+        const wl_plan_relation_t *rel = &sp->relations[ri];
+        bool has_kfusion = false;
+        bool has_exchange = tdd_relation_has_exchange_key(rel);
+
+        for (uint32_t oi = 0; oi < rel->op_count; oi++) {
+            if (rel->ops[oi].op != WL_PLAN_OP_K_FUSION
+                || !rel->ops[oi].opaque_data)
+                continue;
+            has_kfusion = true;
+            const wl_plan_op_k_fusion_t *kf =
+                (const wl_plan_op_k_fusion_t *)rel->ops[oi].opaque_data;
+            for (uint32_t ki = 0; ki < kf->k; ki++) {
+                bool safe = tdd_child_plan_global_read_safe(kf->k_ops[ki],
+                        kf->k_op_counts[ki], sp, has_exchange);
+                int rc = tdd_rule_slices_append(&slices, &count, &cap, ri,
+                        kf->k_ops[ki], kf->k_op_counts[ki], safe);
+                if (rc != 0) {
+                    free(slices);
+                    return rc;
+                }
+            }
+        }
+
+        if (!has_kfusion) {
+            bool safe = tdd_child_plan_global_read_safe(rel->ops,
+                    rel->op_count, sp, has_exchange);
+            int rc = tdd_rule_slices_append(&slices, &count, &cap, ri,
+                    rel->ops, rel->op_count, safe);
+            if (rc != 0) {
+                free(slices);
+                return rc;
+            }
+        }
+    }
+
+    for (uint32_t i = 0; i < count; i++) {
+        if (slices[i].tdd_safe)
+            safe_count++;
+    }
+    *out_slices = slices;
+    *out_count = count;
+    *out_safe_count = safe_count;
+    return 0;
+}
+
+bool
+tdd_stratum_mixed_slice_candidate(const wl_plan_stratum_t *sp)
+{
+    wl_tdd_rule_slice_t *slices = NULL;
+    uint32_t count = 0;
+    uint32_t safe_count = 0;
+    int rc = tdd_build_rule_slices(sp, &slices, &count, &safe_count);
+    free(slices);
+    return rc == 0 && safe_count > 0 && safe_count < count;
 }
 
 void
@@ -5900,7 +6253,8 @@ tdd_owner_exchange_deltas(const wl_plan_stratum_t *sp,
 static int
 tdd_global_read_exchange_deltas(const wl_plan_stratum_t *sp,
     wl_col_session_t *coord, col_eval_tdd_worker_ctx_t *ctxs, uint32_t W,
-    bool *out_any_accepted, uint32_t *out_accepted_rows)
+    bool *out_any_accepted, uint32_t *out_accepted_rows,
+    bool install_coord_delta)
 {
     uint32_t nrels = sp->relation_count;
     int rc = 0;
@@ -5913,6 +6267,8 @@ tdd_global_read_exchange_deltas(const wl_plan_stratum_t *sp,
         const char *dname = sp->relations[ri].delta_name;
         const char *rel_name = sp->relations[ri].name;
 
+        if (install_coord_delta)
+            session_remove_rel(coord, dname);
         for (uint32_t w = 0; w < W; w++)
             session_remove_rel(&coord->tdd_workers[w], dname);
 
@@ -5974,6 +6330,22 @@ tdd_global_read_exchange_deltas(const wl_plan_stratum_t *sp,
         if (out_accepted_rows)
             *out_accepted_rows += combined->nrows;
 
+        if (install_coord_delta) {
+            col_rel_t *coord_delta = col_rel_new_like(dname, combined);
+            if (!coord_delta) {
+                col_rel_destroy(combined);
+                return ENOMEM;
+            }
+            rc = col_rel_append_all(coord_delta, combined, NULL);
+            if (rc == 0)
+                rc = session_add_rel(coord, coord_delta);
+            if (rc != 0) {
+                col_rel_destroy(coord_delta);
+                col_rel_destroy(combined);
+                return rc;
+            }
+        }
+
         if (coord_idb) {
             if (coord_idb->ncols == 0 && combined->ncols > 0) {
                 rc = col_rel_set_schema(coord_idb, combined->ncols,
@@ -5992,6 +6364,11 @@ tdd_global_read_exchange_deltas(const wl_plan_stratum_t *sp,
             col_session_invalidate_arrangements(&coord->base, rel_name);
             rc = tdd_refresh_global_read_relation(sp, coord, ri, W);
             if (rc != 0) {
+                if (getenv("WIRELOG_TDD_GLOBAL_READ_DEBUG")) {
+                    fprintf(stderr,
+                        "TDD global-read refresh error rel=%s cols=%u rows=%u rc=%d\n",
+                        rel_name, coord_idb->ncols, coord_idb->nrows, rc);
+                }
                 col_rel_destroy(combined);
                 return rc;
             }
@@ -6016,16 +6393,35 @@ tdd_global_read_exchange_deltas(const wl_plan_stratum_t *sp,
             key_cols = default_key;
             key_count = 1;
         }
+        bool key_valid = combined->ncols > 0;
+        for (uint32_t ki = 0; key_valid && ki < key_count; ki++) {
+            if (key_cols[ki] >= combined->ncols)
+                key_valid = false;
+        }
+        if (!key_valid) {
+            key_cols = default_key;
+            key_count = 1;
+        }
 
         col_rel_t **parts = (col_rel_t **)calloc(W, sizeof(col_rel_t *));
         if (!parts) {
             col_rel_destroy(combined);
             return ENOMEM;
         }
+        uint32_t combined_cols = combined->ncols;
+        uint32_t combined_rows = combined->nrows;
+        uint32_t debug_key0 = key_count > 0 ? key_cols[0] : 0;
         rc = col_rel_exchange_partition(combined, key_cols, key_count, W,
                 parts);
         col_rel_destroy(combined);
         if (rc != 0) {
+            if (getenv("WIRELOG_TDD_GLOBAL_READ_DEBUG")) {
+                fprintf(stderr,
+                    "TDD global-read partition error rel=%s cols=%u rows=%u "
+                    "key_count=%u key0=%u rc=%d\n",
+                    rel_name, combined_cols, combined_rows, key_count,
+                    debug_key0, rc);
+            }
             for (uint32_t w = 0; w < W; w++)
                 col_rel_destroy(parts[w]);
             free(parts);
@@ -6151,11 +6547,32 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
         && stratum_max_idb_body_atoms(sp) <= 1
         && tdd_stratum_single_idb_join_keys_exchange_aligned(sp);
     bool bdx_mode = has_idb_self_join && !self_join_mode;
+    wl_tdd_rule_slice_t *mixed_slices = NULL;
+    uint32_t mixed_slice_count = 0;
+    uint32_t mixed_safe_count = 0;
+    bool mixed_slice_mode = false;
+    const char *mixed_env = getenv("WIRELOG_TDD_MIXED_SLICES");
+    if (mixed_env && mixed_env[0] == '1') {
+        rc = tdd_build_rule_slices(sp, &mixed_slices, &mixed_slice_count,
+                &mixed_safe_count);
+        if (rc != 0) {
+            coord->tdd_total_ns += now_ns() - tdd_total_t0;
+            return rc;
+        }
+        mixed_slice_mode = mixed_safe_count > 0
+            && mixed_safe_count < mixed_slice_count;
+    }
     const char *global_read_env = getenv("WIRELOG_TDD_GLOBAL_READ");
     bool global_read_mode = !(global_read_env && global_read_env[0] == '0'
         && global_read_env[1] == '\0')
         && !owner_exchange_mode && !self_join_mode && !bdx_mode
         && tdd_stratum_global_read_candidate(sp);
+    if (mixed_slice_mode) {
+        owner_exchange_mode = false;
+        self_join_mode = false;
+        bdx_mode = false;
+        global_read_mode = true;
+    }
     bool replicate_mode = !owner_exchange_mode
         && !global_read_mode
         && ((coord->last_inserted_relation == NULL)
@@ -6187,6 +6604,7 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
         int seq_rc = col_eval_stratum(sp, coord, stratum_idx);
         if (seq_rc == 0 && saved_total_iterations > 0)
             coord->total_iterations += saved_total_iterations;
+        free(mixed_slices);
         return seq_rc;
     }
 
@@ -6197,12 +6615,14 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
         owner_fallback_saved = tdd_save_coord_idb(sp, coord);
         if (!owner_fallback_saved) {
             coord->tdd_total_ns += now_ns() - tdd_total_t0;
+            free(mixed_slices);
             return ENOMEM;
         }
     } else if (global_read_mode) {
         global_read_saved = tdd_save_coord_idb(sp, coord);
         if (!global_read_saved) {
             coord->tdd_total_ns += now_ns() - tdd_total_t0;
+            free(mixed_slices);
             return ENOMEM;
         }
     }
@@ -6217,6 +6637,7 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
         tdd_free_saved_coord_idb(sp, owner_fallback_saved);
         tdd_free_saved_coord_idb(sp, global_read_saved);
         coord->tdd_total_ns += now_ns() - tdd_total_t0;
+        free(mixed_slices);
         return rc;
     }
 
@@ -6230,6 +6651,7 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
                     tdd_free_saved_coord_idb(sp, owner_fallback_saved);
                     tdd_free_saved_coord_idb(sp, global_read_saved);
                     coord->tdd_total_ns += now_ns() - tdd_total_t0;
+                    free(mixed_slices);
                     return rc;
                 }
             }
@@ -6243,6 +6665,7 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
         tdd_free_saved_coord_idb(sp, owner_fallback_saved);
         tdd_free_saved_coord_idb(sp, global_read_saved);
         coord->tdd_total_ns += now_ns() - tdd_total_t0;
+        free(mixed_slices);
         return rc;
     }
 
@@ -6272,6 +6695,7 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
                 tdd_free_saved_coord_idb(sp, owner_fallback_saved);
                 tdd_free_saved_coord_idb(sp, global_read_saved);
                 coord->tdd_total_ns += now_ns() - tdd_total_t0;
+                free(mixed_slices);
                 return ENOMEM;
             }
             rc = session_add_rel(&coord->tdd_workers[w], slot);
@@ -6281,6 +6705,7 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
                 tdd_free_saved_coord_idb(sp, owner_fallback_saved);
                 tdd_free_saved_coord_idb(sp, global_read_saved);
                 coord->tdd_total_ns += now_ns() - tdd_total_t0;
+                free(mixed_slices);
                 return rc;
             }
         }
@@ -6495,6 +6920,9 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
                 memset(ctxs[w].delta_rels, 0, nrels * sizeof(col_rel_t *));
                 ctxs[w].sp = sp;
                 ctxs[w].worker_sess = &coord->tdd_workers[w];
+                ctxs[w].rule_slices = mixed_slice_mode ? mixed_slices : NULL;
+                ctxs[w].rule_slice_count =
+                    mixed_slice_mode ? mixed_slice_count : 0;
                 ctxs[w].stratum_idx = stratum_idx;
                 ctxs[w].eff_iter = eff_iter;
                 ctxs[w].any_new = false;
@@ -6587,6 +7015,23 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
                 coord->tdd_queue_drain_ns += now_ns() - queue_t0;
             }
 
+            bool mixed_fallback_any_new = false;
+            if (mixed_slice_mode) {
+                rc = tdd_coord_eval_fallback_rule_slices(sp, coord,
+                        &ctxs[0], mixed_slices, mixed_slice_count,
+                        eff_iter, &mixed_fallback_any_new);
+                if (rc != 0) {
+                    for (uint32_t w = 0; w < W; w++)
+                        for (uint32_t ri = 0; ri < nrels; ri++) {
+                            col_rel_destroy(ctxs[w].delta_rels[ri]);
+                            ctxs[w].delta_rels[ri] = NULL;
+                        }
+                    goto done;
+                }
+                if (mixed_fallback_any_new)
+                    ctxs[0].any_new = true;
+            }
+
             uint64_t convergence_t0 = now_ns();
 
             /* Stratum-level early exit: all workers have all_empty_delta */
@@ -6597,7 +7042,7 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
                     break;
                 }
             }
-            if (all_workers_empty) {
+            if (all_workers_empty && !mixed_slice_mode) {
                 coord->tdd_convergence_ns += now_ns() - convergence_t0;
                 for (uint32_t w = 0; w < W; w++)
                     for (uint32_t ri = 0; ri < nrels; ri++)
@@ -6646,7 +7091,8 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
                             &owner_any_accepted, &owner_accepted_rows);
                 else if (global_read_mode)
                     brc = tdd_global_read_exchange_deltas(sp, coord, ctxs, W,
-                            &owner_any_accepted, &owner_accepted_rows);
+                            &owner_any_accepted, &owner_accepted_rows,
+                            mixed_slice_mode);
                 else if (bdx_mode)
                     brc = tdd_bdx_exchange_deltas(sp, coord, ctxs, W,
                             bdx_snap);
@@ -6661,8 +7107,11 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
             if (brc != 0) {
                 if (getenv("WIRELOG_TDD_GLOBAL_READ_DEBUG"))
                     fprintf(stderr,
-                        "TDD exchange error stratum=%u iter=%u rc=%d\n",
-                        stratum_idx, eff_iter, brc);
+                        "TDD exchange error stratum=%u iter=%u rc=%d "
+                        "owner=%d global=%d bdx=%d mixed=%d replicate=%d\n",
+                        stratum_idx, eff_iter, brc, owner_exchange_mode,
+                        global_read_mode, bdx_mode, mixed_slice_mode,
+                        replicate_mode);
                 rc = brc;
                 goto done;
             }
@@ -6714,6 +7163,7 @@ done:
         free(ctxs);
     }
     free(bdx_snap);
+    free(mixed_slices);
     coord->diff_operators_active = saved_diff;
 
     if (owner_adaptive_fallback && rc == 0) {
