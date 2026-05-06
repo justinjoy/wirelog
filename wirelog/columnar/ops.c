@@ -5760,10 +5760,8 @@ col_op_semijoin(const wl_plan_op_t *op, eval_stack_t *stack,
         return ENOMEM;
     }
     for (uint32_t rr = 0; rr < right->nrows; rr++) {
-        int64_t rrow_buf[COL_STACK_MAX];
-        col_rel_row_copy_out(right, rr, rrow_buf);
-        const int64_t *rrow = rrow_buf;
-        uint32_t h = hash_int64_keys_fast(rrow, rk, kc) & (nbuckets - 1);
+        uint32_t h = col_join_hash_rel_keys(right, rr, rk, kc)
+            & (nbuckets - 1);
         ht_next[rr] = ht_head[h];
         ht_head[h] = rr + 1; /* 1-based; 0 = end of chain */
     }
@@ -5771,27 +5769,23 @@ col_op_semijoin(const wl_plan_op_t *op, eval_stack_t *stack,
     /* Probe: for each left row test membership, emit if found: O(|L|) */
     int sj_rc = 0;
     for (uint32_t lr = 0; lr < left->nrows && sj_rc == 0; lr++) {
-        int64_t lrow_buf[COL_STACK_MAX];
-        col_rel_row_copy_out(left, lr, lrow_buf);
-        const int64_t *lrow = lrow_buf;
-        uint32_t h = hash_int64_keys_fast(lrow, lk, kc) & (nbuckets - 1);
+        uint32_t h = col_join_hash_rel_keys(left, lr, lk, kc)
+            & (nbuckets - 1);
         bool found = false;
         for (uint32_t e = ht_head[h]; e != 0 && !found; e = ht_next[e - 1]) {
             uint32_t rr = e - 1;
-            int64_t rrow_buf[COL_STACK_MAX];
-            col_rel_row_copy_out(right, rr, rrow_buf);
-            const int64_t *rrow = rrow_buf;
-            if (keys_match_fast(lrow, lk, rrow, rk, kc))
+            if (col_join_keys_match_rel(left, lr, lk, right, rr, rk, kc))
                 found = true;
         }
         if (found) {
             if (op->project_count > 0 && op->project_indices) {
                 for (uint32_t c = 0; c < ocols; c++) {
                     uint32_t si = op->project_indices[c];
-                    tmp[c] = (si < left->ncols) ? lrow[si] : 0;
+                    tmp[c] = (si < left->ncols) ? left->columns[si][lr] : 0;
                 }
             } else {
-                memcpy(tmp, lrow, sizeof(int64_t) * left->ncols);
+                for (uint32_t c = 0; c < left->ncols; c++)
+                    tmp[c] = left->columns[c][lr];
             }
             sj_rc = col_rel_append_row(out, tmp);
         }
