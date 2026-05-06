@@ -24,6 +24,14 @@
 #define WL_JOIN_PAIR_CACHE_MAX_BYTES (256ULL * 1024ULL * 1024ULL)
 #define WL_JOIN_PAIR_CACHE_MIN_LEFT_ROWS 100000u
 
+#if defined(_MSC_VER)
+#define WL_OPS_ALWAYS_INLINE __forceinline
+#elif defined(__GNUC__) || defined(__clang__)
+#define WL_OPS_ALWAYS_INLINE inline __attribute__((always_inline))
+#else
+#define WL_OPS_ALWAYS_INLINE inline
+#endif
+
 #include "columnar/internal.h"
 #include "columnar/lftj.h"
 #include "wirelog/util/log.h"
@@ -2264,11 +2272,11 @@ static int64_t
 col_join_pair_value(const col_rel_t *left, uint32_t lr, const col_rel_t *right,
     uint32_t rr, uint32_t idx);
 
-static inline uint32_t
+static WL_OPS_ALWAYS_INLINE uint32_t
 col_join_hash_rel_keys(const col_rel_t *rel, uint32_t row,
     const uint32_t *key_cols, uint32_t kc);
 
-static inline bool
+static WL_OPS_ALWAYS_INLINE bool
 col_join_keys_match_rel(const col_rel_t *left, uint32_t lr,
     const uint32_t *lk, const col_rel_t *right, uint32_t rr,
     const uint32_t *rk, uint32_t kc);
@@ -2558,7 +2566,7 @@ col_join_parallel_cross(wl_col_session_t *sess, const col_rel_t *left,
     return 0;
 }
 
-static inline uint32_t
+static WL_OPS_ALWAYS_INLINE uint32_t
 col_join_hash_rel_keys(const col_rel_t *rel, uint32_t row,
     const uint32_t *key_cols, uint32_t kc)
 {
@@ -2594,7 +2602,7 @@ col_join_hash_rel_keys(const col_rel_t *rel, uint32_t row,
     return h;
 }
 
-static inline bool
+static WL_OPS_ALWAYS_INLINE bool
 col_join_keys_match_rel(const col_rel_t *left, uint32_t lr,
     const uint32_t *lk, const col_rel_t *right, uint32_t rr,
     const uint32_t *rk, uint32_t kc)
