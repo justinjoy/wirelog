@@ -212,12 +212,18 @@ typedef struct {
  *                       multiway delta expansion when the segment
  *                       contains no FORCE_DELTA op, preventing
  *                       wasteful full-join computation.
+ * WL_DELTA_FORCE_EMPTY_AFTER_SEED:
+ *                       Use normal AUTO selection for the seed pass, then
+ *                       force empty in outbound TDD sub-passes.  Used for
+ *                       EDB-only UNION child segments that seed a recursive
+ *                       relation once but do not need repeated evaluation.
  */
 typedef enum {
     WL_DELTA_AUTO = 0,
     WL_DELTA_FORCE_DELTA = 1,
     WL_DELTA_FORCE_FULL = 2,
     WL_DELTA_FORCE_EMPTY = 3,
+    WL_DELTA_FORCE_EMPTY_AFTER_SEED = 4,
 } wl_delta_mode_t;
 
 /* ======================================================================== */

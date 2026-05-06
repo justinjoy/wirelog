@@ -3875,22 +3875,61 @@ stratum_max_idb_body_atoms(const wl_plan_stratum_t *sp)
     return max_count;
 }
 
-static uint32_t
-ops_count_join_like(const wl_plan_op_t *ops, uint32_t op_count)
+static bool
+op_references_stratum_idb(const wl_plan_op_t *op,
+    const wl_plan_stratum_t *sp)
 {
-    uint32_t count = 0;
+    if (op->op == WL_PLAN_OP_VARIABLE)
+        return is_stratum_idb(sp, op->relation_name);
+    if ((op->op == WL_PLAN_OP_JOIN
+        || op->op == WL_PLAN_OP_SEMIJOIN
+        || op->op == WL_PLAN_OP_ANTIJOIN)
+        && op->right_relation)
+        return is_stratum_idb(sp, op->right_relation);
+    return false;
+}
+
+static uint32_t
+ops_max_idb_segment_join_like(const wl_plan_op_t *ops, uint32_t op_count,
+    const wl_plan_stratum_t *sp)
+{
+    uint32_t max_count = 0;
+    uint32_t segment_count = 0;
+    uint32_t depth = 0;
+    bool segment_has_idb = false;
+
     for (uint32_t oi = 0; oi < op_count; oi++) {
-        switch (ops[oi].op) {
+        const wl_plan_op_t *op = &ops[oi];
+        if (op->op == WL_PLAN_OP_VARIABLE && depth >= 1) {
+            if (segment_has_idb && segment_count > max_count)
+                max_count = segment_count;
+            segment_count = 0;
+            segment_has_idb = false;
+        }
+
+        if (op_references_stratum_idb(op, sp))
+            segment_has_idb = true;
+
+        switch (op->op) {
         case WL_PLAN_OP_JOIN:
         case WL_PLAN_OP_SEMIJOIN:
         case WL_PLAN_OP_ANTIJOIN:
-            count++;
+            segment_count++;
             break;
         default:
             break;
         }
+
+        if (op->op == WL_PLAN_OP_VARIABLE) {
+            depth++;
+        } else if (op->op == WL_PLAN_OP_CONCAT && depth > 0) {
+            depth--;
+        }
     }
-    return count;
+
+    if (segment_has_idb && segment_count > max_count)
+        max_count = segment_count;
+    return max_count;
 }
 
 static uint32_t
@@ -3952,7 +3991,8 @@ tdd_stratum_global_read_candidate(const wl_plan_stratum_t *sp)
         const wl_plan_relation_t *rel = &sp->relations[ri];
         if (!tdd_relation_has_exchange_key(rel))
             return false;
-        uint32_t top_joins = ops_count_join_like(rel->ops, rel->op_count);
+        uint32_t top_joins = ops_max_idb_segment_join_like(rel->ops,
+                rel->op_count, sp);
         if (top_joins > 4)
             return false;
 
@@ -3963,8 +4003,8 @@ tdd_stratum_global_read_candidate(const wl_plan_stratum_t *sp)
             const wl_plan_op_k_fusion_t *kf =
                 (const wl_plan_op_k_fusion_t *)rel->ops[oi].opaque_data;
             for (uint32_t ki = 0; ki < kf->k; ki++) {
-                uint32_t child_joins = ops_count_join_like(kf->k_ops[ki],
-                        kf->k_op_counts[ki]);
+                uint32_t child_joins = ops_max_idb_segment_join_like(
+                    kf->k_ops[ki], kf->k_op_counts[ki], sp);
                 if (child_joins > 4)
                     return false;
             }

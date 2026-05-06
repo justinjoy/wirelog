@@ -1595,7 +1595,8 @@ expand_multiway_delta(const wl_plan_op_t *ops, uint32_t op_count,
     /* Per-copy segment skip (issue #370): same logic as K-fusion path.
      * Within each copy's op_count ops, neuter UNION child segments that
      * have FORCE_FULL (IDB ops from wrong rule) but no FORCE_DELTA.
-     * EDB-only segments (all AUTO) are preserved for base-case seeding. */
+     * EDB-only segments (all AUTO) are preserved for base-case seeding and
+     * skipped after the seed pass in outbound TDD evaluation. */
     for (uint32_t d = 0; d < k; d++) {
         uint32_t base = d * (op_count + 1); /* +1 for CONCAT after copy */
         uint32_t depth = 0;
@@ -1607,9 +1608,11 @@ expand_multiway_delta(const wl_plan_op_t *ops, uint32_t op_count,
             wl_plan_op_t *op = &new_ops[base + i];
 
             if (op->op == WL_PLAN_OP_VARIABLE && depth >= 1) {
-                if (seg_var_idx != UINT32_MAX && !seg_has_delta
-                    && seg_has_full)
-                    new_ops[seg_var_idx].delta_mode = WL_DELTA_FORCE_EMPTY;
+                if (seg_var_idx != UINT32_MAX && !seg_has_delta) {
+                    new_ops[seg_var_idx].delta_mode = seg_has_full
+                        ? WL_DELTA_FORCE_EMPTY
+                        : WL_DELTA_FORCE_EMPTY_AFTER_SEED;
+                }
                 seg_var_idx = base + i;
                 seg_has_delta = false;
                 seg_has_full = false;
@@ -1628,8 +1631,11 @@ expand_multiway_delta(const wl_plan_op_t *ops, uint32_t op_count,
                 depth--;
             }
         }
-        if (seg_var_idx != UINT32_MAX && !seg_has_delta && seg_has_full)
-            new_ops[seg_var_idx].delta_mode = WL_DELTA_FORCE_EMPTY;
+        if (seg_var_idx != UINT32_MAX && !seg_has_delta) {
+            new_ops[seg_var_idx].delta_mode = seg_has_full
+                ? WL_DELTA_FORCE_EMPTY
+                : WL_DELTA_FORCE_EMPTY_AFTER_SEED;
+        }
     }
 
     *out_count = wi;
@@ -1824,10 +1830,13 @@ expand_multiway_k_fusion(const wl_plan_op_t *ops, uint32_t op_count,
                 /* Finalize previous segment: neuter only if the segment
                  * has IDB ops (FORCE_FULL) but none are delta-active.
                  * EDB-only segments (all AUTO) are preserved for
-                 * base-case seeding at iteration 0. */
-                if (seg_var_idx != UINT32_MAX && !seg_has_delta
-                    && seg_has_full)
-                    seq[seg_var_idx].delta_mode = WL_DELTA_FORCE_EMPTY;
+                 * base-case seeding and skipped after the seed pass in
+                 * outbound TDD evaluation. */
+                if (seg_var_idx != UINT32_MAX && !seg_has_delta) {
+                    seq[seg_var_idx].delta_mode = seg_has_full
+                        ? WL_DELTA_FORCE_EMPTY
+                        : WL_DELTA_FORCE_EMPTY_AFTER_SEED;
+                }
                 seg_var_idx = i;
                 seg_has_delta = false;
                 seg_has_full = false;
@@ -1847,8 +1856,11 @@ expand_multiway_k_fusion(const wl_plan_op_t *ops, uint32_t op_count,
             }
         }
         /* Finalize last segment */
-        if (seg_var_idx != UINT32_MAX && !seg_has_delta && seg_has_full)
-            seq[seg_var_idx].delta_mode = WL_DELTA_FORCE_EMPTY;
+        if (seg_var_idx != UINT32_MAX && !seg_has_delta) {
+            seq[seg_var_idx].delta_mode = seg_has_full
+                ? WL_DELTA_FORCE_EMPTY
+                : WL_DELTA_FORCE_EMPTY_AFTER_SEED;
+        }
     }
 
     result->op = WL_PLAN_OP_K_FUSION;
