@@ -3814,7 +3814,7 @@ ops_have_idb_idb_join(const wl_plan_op_t *ops, uint32_t op_count,
 /*
  * ops_count_idb_body_atoms:
  * Walk an op sequence and count the number of distinct IDB relations
- * referenced as body atoms (VARIABLE loads + JOIN right_relations).
+ * referenced as body atoms (VARIABLE loads + join-like right_relations).
  * Extends the pattern from ops_have_idb_idb_join but returns a count.
  */
 static uint32_t
@@ -3827,7 +3827,10 @@ ops_count_idb_body_atoms(const wl_plan_op_t *ops, uint32_t op_count,
         if (op->op == WL_PLAN_OP_VARIABLE) {
             if (is_stratum_idb(sp, op->relation_name))
                 count++;
-        } else if (op->op == WL_PLAN_OP_JOIN && op->right_relation) {
+        } else if ((op->op == WL_PLAN_OP_JOIN
+            || op->op == WL_PLAN_OP_SEMIJOIN
+            || op->op == WL_PLAN_OP_ANTIJOIN)
+            && op->right_relation) {
             if (is_stratum_idb(sp, op->right_relation))
                 count++;
         }
