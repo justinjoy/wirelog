@@ -4049,16 +4049,28 @@ tdd_visit_rule_segments(const wl_plan_op_t *ops, uint32_t op_count,
     if (!ops || op_count == 0)
         return;
 
-    uint32_t seg_start = 0;
-    for (uint32_t oi = 1; oi < op_count; oi++) {
-        if (ops[oi].op != WL_PLAN_OP_VARIABLE)
+    for (uint32_t oi = 0; oi < op_count;) {
+        while (oi < op_count && ops[oi].op != WL_PLAN_OP_VARIABLE)
+            oi++;
+        if (oi >= op_count)
+            break;
+
+        uint32_t seg_start = oi++;
+        while (oi < op_count
+            && ops[oi].op != WL_PLAN_OP_VARIABLE
+            && ops[oi].op != WL_PLAN_OP_CONCAT
+            && ops[oi].op != WL_PLAN_OP_CONSOLIDATE) {
+            oi++;
+        }
+        if (oi > seg_start) {
+            tdd_record_segment_stats(ops + seg_start, oi - seg_start, sp,
+                relation_has_exchange, stats);
+        }
+        if (oi < op_count && ops[oi].op == WL_PLAN_OP_CONCAT) {
+            oi++;
             continue;
-        tdd_record_segment_stats(ops + seg_start, oi - seg_start, sp,
-            relation_has_exchange, stats);
-        seg_start = oi;
+        }
     }
-    tdd_record_segment_stats(ops + seg_start, op_count - seg_start, sp,
-        relation_has_exchange, stats);
 }
 
 void
