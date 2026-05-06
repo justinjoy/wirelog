@@ -5528,51 +5528,15 @@ col_op_k_fusion(const wl_plan_op_t *op, eval_stack_t *stack,
          * is replaced below; the parent session retains its own copies. */
         worker_sess[d].eval_arena = NULL;
         worker_sess[d].delta_pool = NULL;
-        /* Issue #260: Deep-copy parent's full-arrangement cache so each worker
-         * has an independent copy.  arr.key_cols is a shared alias of
-         * entry.key_cols inside each clone (see col_arr_entry_clone). */
         worker_sess[d].arr_entries = NULL;
         worker_sess[d].arr_count = 0;
         worker_sess[d].arr_cap = 0;
-        {
-            uint32_t clone_cap = 0;
-            int clone_rc = col_arr_entries_clone(
-                sess->arr_entries, sess->arr_count,
-                &worker_sess[d].arr_entries, &clone_cap);
-            if (clone_rc != 0) {
-                rc = ENOMEM;
-                if (wq)
-                    wl_workqueue_drain(wq);
-                goto cleanup_wq;
-            }
-            worker_sess[d].arr_count = sess->arr_count;
-            worker_sess[d].arr_cap = clone_cap;
-            /* Issue #216: inherit LRU tracking state so worker clock is
-             * consistent with coordinator; worker computes its own totals. */
-            worker_sess[d].arr_clock = sess->arr_clock;
-            worker_sess[d].arr_total_bytes = sess->arr_total_bytes;
-            worker_sess[d].arr_cache_limit_bytes = sess->arr_cache_limit_bytes;
-        }
-        /* Issue #274: Deep-copy differential arrangement cache so each worker
-         * has an independent copy. This prevents concurrent realloc() races
-         * when col_session_get_diff_arrangement() grows the registry. */
+        worker_sess[d].arr_clock = sess->arr_clock;
+        worker_sess[d].arr_total_bytes = 0;
+        worker_sess[d].arr_cache_limit_bytes = sess->arr_cache_limit_bytes;
         worker_sess[d].diff_arr_entries = NULL;
         worker_sess[d].diff_arr_count = 0;
         worker_sess[d].diff_arr_cap = 0;
-        {
-            uint32_t diff_clone_cap = 0;
-            int diff_clone_rc = col_diff_arr_entries_clone(
-                sess->diff_arr_entries, sess->diff_arr_count,
-                &worker_sess[d].diff_arr_entries, &diff_clone_cap);
-            if (diff_clone_rc != 0) {
-                rc = diff_clone_rc;
-                if (wq)
-                    wl_workqueue_drain(wq);
-                goto cleanup_wq;
-            }
-            worker_sess[d].diff_arr_count = sess->diff_arr_count;
-            worker_sess[d].diff_arr_cap = diff_clone_cap;
-        }
         worker_sess[d].darr_entries = NULL;
         worker_sess[d].darr_count = 0;
         worker_sess[d].darr_cap = 0;
