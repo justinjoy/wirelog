@@ -18,6 +18,12 @@
  * K < WL_KFUSION_MIN_PARALLEL_K falls back to sequential execution. */
 #define WL_KFUSION_MIN_PARALLEL_K 4
 
+/* Best-effort match-pair cache for parallel keyed diff joins.  The cache is
+ * scratch memory outside the final output relation, so keep it bounded and
+ * fall back to the old fill traversal when a worker reaches the cap. */
+#define WL_JOIN_PAIR_CACHE_MAX_BYTES (256ULL * 1024ULL * 1024ULL)
+#define WL_JOIN_PAIR_CACHE_MIN_LEFT_ROWS 100000u
+
 #include "columnar/internal.h"
 #include "columnar/lftj.h"
 #include "wirelog/util/log.h"
@@ -2225,6 +2231,11 @@ typedef struct {
 } col_join_cross_ctx_t;
 
 typedef struct {
+    uint32_t lr;
+    uint32_t rr;
+} col_join_pair_ref_t;
+
+typedef struct {
     const col_rel_t *left;
     const col_rel_t *right;
     const col_diff_arrangement_t *darr;
@@ -2239,6 +2250,11 @@ typedef struct {
     uint64_t count;
     uint64_t limit;
     uint32_t *left_hashes;
+    col_join_pair_ref_t *pairs;
+    uint32_t pair_count;
+    uint32_t pair_cap;
+    uint32_t pair_cap_limit;
+    bool pairs_complete;
     atomic_bool *stop;
     atomic_uint_fast64_t *shared_count;
     int rc;
@@ -2282,6 +2298,52 @@ col_join_write_pair_at(col_rel_t *out, uint64_t out_row,
     }
 }
 
+static bool
+col_join_pair_cache_append(col_join_keyed_ctx_t *ctx, uint32_t lr,
+    uint32_t rr)
+{
+    if (!ctx->pairs_complete)
+        return false;
+    if (ctx->pair_cap_limit == 0) {
+        ctx->pairs_complete = false;
+        return false;
+    }
+    if (ctx->pair_count == ctx->pair_cap) {
+        uint32_t new_cap = ctx->pair_cap ? ctx->pair_cap * 2u : 1024u;
+        if (new_cap <= ctx->pair_cap) {
+            ctx->pairs_complete = false;
+            return false;
+        }
+        if (ctx->pair_cap_limit > 0 && new_cap > ctx->pair_cap_limit)
+            new_cap = ctx->pair_cap_limit;
+        size_t max_pairs = SIZE_MAX / sizeof(col_join_pair_ref_t);
+        if (new_cap <= ctx->pair_cap || (size_t)new_cap > max_pairs) {
+            free(ctx->pairs);
+            ctx->pairs = NULL;
+            ctx->pair_count = 0;
+            ctx->pair_cap = 0;
+            ctx->pairs_complete = false;
+            return false;
+        }
+        col_join_pair_ref_t *new_pairs = (col_join_pair_ref_t *)realloc(
+            ctx->pairs, (size_t)new_cap * sizeof(col_join_pair_ref_t));
+        if (!new_pairs) {
+            free(ctx->pairs);
+            ctx->pairs = NULL;
+            ctx->pair_count = 0;
+            ctx->pair_cap = 0;
+            ctx->pairs_complete = false;
+            return false;
+        }
+        ctx->pairs = new_pairs;
+        ctx->pair_cap = new_cap;
+    }
+    ctx->pairs[ctx->pair_count].lr = lr;
+    ctx->pairs[ctx->pair_count].rr = rr;
+    ctx->pair_count++;
+    return true;
+}
+
 static void
 col_join_keyed_count_worker_fn(void *arg)
 {
@@ -2307,6 +2369,7 @@ col_join_keyed_count_worker_fn(void *arg)
             uint32_t rr = e - 1;
             if (col_join_keys_match_rel(left, lr, ctx->lk, right, rr, ctx->rk,
                 ctx->kc)) {
+                (void)col_join_pair_cache_append(ctx, lr, rr);
                 count++;
                 if (ctx->limit > 0 && ctx->shared_count
                     && (count - reported) >= 1024u) {
@@ -2341,6 +2404,15 @@ col_join_keyed_fill_worker_fn(void *arg)
     const col_rel_t *right = ctx->right;
     const col_diff_arrangement_t *darr = ctx->darr;
     uint64_t out_row = ctx->out_begin;
+
+    if (ctx->pairs_complete && (uint64_t)ctx->pair_count == ctx->count) {
+        for (uint32_t i = 0; i < ctx->pair_count; i++) {
+            col_join_write_pair_at(ctx->out, out_row++, left,
+                ctx->pairs[i].lr, right, ctx->pairs[i].rr,
+                ctx->op->project_indices, ctx->op->project_count);
+        }
+        return;
+    }
 
     for (uint32_t lr = ctx->begin; lr < ctx->end; lr++) {
         uint32_t h = ctx->left_hashes ? ctx->left_hashes[lr]
@@ -6455,6 +6527,18 @@ col_op_join_diff(const wl_plan_op_t *op, eval_stack_t *stack,
                 return ENOMEM;
             }
             uint32_t chunk = (left->nrows + W - 1u) / W;
+            uint64_t pair_budget = wl_mem_ledger_bytes_remaining(
+                &sess->mem_ledger) / 8u;
+            if (left->nrows < WL_JOIN_PAIR_CACHE_MIN_LEFT_ROWS)
+                pair_budget = 0;
+            if (pair_budget > WL_JOIN_PAIR_CACHE_MAX_BYTES)
+                pair_budget = WL_JOIN_PAIR_CACHE_MAX_BYTES;
+            uint64_t pair_budget_per_worker = W > 0 ? pair_budget / W : 0;
+            uint32_t pair_cap_limit = pair_budget_per_worker
+                / sizeof(col_join_pair_ref_t) > UINT32_MAX
+                ? UINT32_MAX
+                : (uint32_t)(pair_budget_per_worker
+                / sizeof(col_join_pair_ref_t));
             atomic_bool stop = ATOMIC_VAR_INIT(false);
             atomic_uint_fast64_t shared_count = ATOMIC_VAR_INIT(0);
             int prc = 0;
@@ -6476,6 +6560,8 @@ col_op_join_diff(const wl_plan_op_t *op, eval_stack_t *stack,
                 ctxs[w].end = end;
                 ctxs[w].limit = sess->join_output_limit;
                 ctxs[w].left_hashes = left_hashes;
+                ctxs[w].pair_cap_limit = pair_cap_limit;
+                ctxs[w].pairs_complete = true;
                 ctxs[w].stop = &stop;
                 ctxs[w].shared_count = &shared_count;
                 if (wl_workqueue_submit(sess->wq,
@@ -6536,6 +6622,8 @@ col_op_join_diff(const wl_plan_op_t *op, eval_stack_t *stack,
                             prc = ctxs[w].rc;
                 }
             }
+            for (uint32_t w = 0; w < W; w++)
+                free(ctxs[w].pairs);
             free(offsets);
             free(ctxs);
             free(left_hashes);
