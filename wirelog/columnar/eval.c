@@ -1854,7 +1854,7 @@ col_eval_nonrecursive_relation_parallel(const wl_plan_relation_t *rp,
     uint32_t built_workers = 0;
     uint32_t chunk = (driver->nrows + W - 1u) / W;
     atomic_uint_fast64_t shared_join_count;
-    atomic_init(&shared_join_count, 0);
+    atomic_store_explicit(&shared_join_count, 0, memory_order_relaxed);
     for (uint32_t w = 0; w < W && rc == 0; w++) {
         worker_rels[w] = (col_rel_t **)calloc(coord->nrels + 1,
                 sizeof(col_rel_t *));
