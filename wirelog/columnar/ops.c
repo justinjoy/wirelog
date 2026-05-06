@@ -1018,7 +1018,10 @@ col_op_variable(const wl_plan_op_t *op, eval_stack_t *stack,
         delta = session_find_rel(sess, dname);
     }
 
-    if (op->delta_mode == WL_DELTA_FORCE_EMPTY) {
+    if (op->delta_mode == WL_DELTA_FORCE_EMPTY
+        || (op->delta_mode == WL_DELTA_FORCE_EMPTY_AFTER_SEED
+        && sess->tdd_outbound_only_active
+        && sess->current_iteration > 0)) {
         /* Issue #370: segment has no FORCE_DELTA — push empty to skip. */
         col_rel_t *empty = col_rel_pool_new_like(
             sess->delta_pool, "$empty_skip", full_rel);
