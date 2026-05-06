@@ -1651,6 +1651,17 @@ tdd_stratum_single_idb_join_keys_exchange_aligned(
     const wl_plan_stratum_t *sp);
 bool
 tdd_stratum_global_read_candidate(const wl_plan_stratum_t *sp);
+typedef struct {
+    uint32_t total_segments;
+    uint32_t seed_only_segments;
+    uint32_t global_read_segments;
+    uint32_t unsafe_segments;
+    uint32_t max_segment_idb_atoms;
+    uint32_t max_segment_join_like;
+} wl_tdd_segment_stats_t;
+void
+tdd_stratum_segment_stats(const wl_plan_stratum_t *sp,
+    wl_tdd_segment_stats_t *stats);
 int
 col_stratum_step_with_delta(const wl_plan_stratum_t *sp, wl_col_session_t *sess,
     uint32_t stratum_idx);

@@ -288,9 +288,13 @@ wl_columnar_session_tdd_debug_decision(const wl_plan_stratum_t *sp,
 
     const char *first_rel = (sp && sp->relation_count > 0)
         ? sp->relations[0].name : "(none)";
+    wl_tdd_segment_stats_t segment_stats;
+    tdd_stratum_segment_stats(sp, &segment_stats);
     fprintf(stderr,
         "TDD decision rel=%s recursive=%d snapshot=%d exchange=%d "
         "safe=%d global_read_candidate=%d self_join=%d idb_atoms=%u "
+        "segments=%u segment_seed=%u segment_global_read=%u "
+        "segment_unsafe=%u segment_max_idb=%u segment_max_joins=%u "
         "single_key_aligned=%d use_tdd=%d fallback=%s\n",
         first_rel ? first_rel : "(null)",
         sp ? (int)sp->is_recursive : 0,
@@ -300,6 +304,12 @@ wl_columnar_session_tdd_debug_decision(const wl_plan_stratum_t *sp,
         sp ? (int)tdd_stratum_global_read_candidate(sp) : 0,
         sp ? (int)tdd_stratum_has_idb_self_join(sp) : 0,
         sp ? stratum_max_idb_body_atoms(sp) : 0,
+        segment_stats.total_segments,
+        segment_stats.seed_only_segments,
+        segment_stats.global_read_segments,
+        segment_stats.unsafe_segments,
+        segment_stats.max_segment_idb_atoms,
+        segment_stats.max_segment_join_like,
         sp ? (int)tdd_stratum_single_idb_join_keys_exchange_aligned(sp) : 0,
         (int)decision.use_tdd,
         wl_columnar_session_tdd_fallback_reason_name(
