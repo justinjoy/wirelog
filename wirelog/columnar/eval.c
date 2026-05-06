@@ -2337,44 +2337,46 @@ cleanup:
 }
 
 static int
-tdd_refresh_global_read_idb(const wl_plan_stratum_t *sp,
-    wl_col_session_t *coord, uint32_t W)
+tdd_refresh_global_read_relation(const wl_plan_stratum_t *sp,
+    wl_col_session_t *coord, uint32_t ri, uint32_t W)
 {
-    for (uint32_t ri = 0; ri < sp->relation_count; ri++) {
-        const char *name = sp->relations[ri].name;
-        col_rel_t *src = session_find_rel(coord, name);
-        if (!src)
+    if (!sp || !coord || ri >= sp->relation_count)
+        return EINVAL;
+
+    const char *name = sp->relations[ri].name;
+    col_rel_t *src = session_find_rel(coord, name);
+    if (!src)
+        return 0;
+
+    for (uint32_t w = 0; w < W; w++) {
+        col_rel_t *dst = session_find_rel(&coord->tdd_workers[w], name);
+        if (!dst)
             continue;
-        for (uint32_t w = 0; w < W; w++) {
-            col_rel_t *dst = session_find_rel(&coord->tdd_workers[w], name);
-            if (!dst)
-                continue;
-            if (src->ncols > 0) {
-                if (dst->ncols != src->ncols) {
-                    col_rel_t *view = NULL;
-                    int rc = nonrec_make_shared_relation_view(src, &view);
-                    if (rc != 0)
-                        return rc;
-                    rc = session_add_rel(&coord->tdd_workers[w], view);
-                    if (rc != 0) {
-                        col_rel_destroy(view);
-                        return rc;
-                    }
-                } else {
-                    int rc = col_rel_install_shared_view(dst, src);
-                    if (rc != 0) {
-                        dst->nrows = 0;
-                        rc = col_rel_append_all(dst, src, NULL);
-                    }
-                    if (rc != 0)
-                        return rc;
+        if (src->ncols > 0) {
+            if (dst->ncols != src->ncols) {
+                col_rel_t *view = NULL;
+                int rc = nonrec_make_shared_relation_view(src, &view);
+                if (rc != 0)
+                    return rc;
+                rc = session_add_rel(&coord->tdd_workers[w], view);
+                if (rc != 0) {
+                    col_rel_destroy(view);
+                    return rc;
                 }
             } else {
-                dst->nrows = 0;
+                int rc = col_rel_install_shared_view(dst, src);
+                if (rc != 0) {
+                    dst->nrows = 0;
+                    rc = col_rel_append_all(dst, src, NULL);
+                }
+                if (rc != 0)
+                    return rc;
             }
-            col_session_invalidate_arrangements(
-                &coord->tdd_workers[w].base, name);
+        } else {
+            dst->nrows = 0;
         }
+        col_session_invalidate_arrangements(&coord->tdd_workers[w].base,
+            name);
     }
     return 0;
 }
@@ -5597,6 +5599,11 @@ tdd_global_read_exchange_deltas(const wl_plan_stratum_t *sp,
             }
             tdd_dedup_set_insert_rel(coord_idb, combined);
             col_session_invalidate_arrangements(&coord->base, rel_name);
+            rc = tdd_refresh_global_read_relation(sp, coord, ri, W);
+            if (rc != 0) {
+                col_rel_destroy(combined);
+                return rc;
+            }
         }
 
         const uint32_t *key_cols = NULL;
@@ -6101,12 +6108,6 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
                 ctxs[w].runtime_ns = 0;
                 ctxs[w].rc = 0;
             }
-            if (global_read_mode) {
-                rc = tdd_refresh_global_read_idb(sp, coord, W);
-                if (rc != 0)
-                    goto done;
-            }
-
             /* DISPATCH */
             bool submit_ok = true;
             uint64_t dispatch_t0 = now_ns();
