@@ -1355,6 +1355,9 @@ col_worker_session_create(wl_col_session_t *coordinator,
     out_worker->sarr_entries = NULL;
     out_worker->sarr_count = 0;
     out_worker->sarr_cap = 0;
+    out_worker->filt_arr_entries = NULL;
+    out_worker->filt_arr_count = 0;
+    out_worker->filt_arr_cap = 0;
     out_worker->filt_cache = NULL;
     out_worker->filt_cache_count = 0;
     out_worker->filt_cache_cap = 0;

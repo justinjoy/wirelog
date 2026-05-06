@@ -3091,10 +3091,12 @@ col_op_join(const wl_plan_op_t *op, eval_stack_t *stack, wl_col_session_t *sess)
                  * `right` is the cached filtered relation from filt_cache;
                  * filt_arr persists across sub-passes to avoid ephemeral
                  * hash table rebuild on every semi-naive iteration. */
-                uint64_t fhash = fnv1a_hash(op->right_filter_expr.data,
-                        op->right_filter_expr.size);
-                arr = col_session_get_filt_arrangement(sess,
-                        op->right_relation, fhash, right, rk, kc);
+                if (!sess->coordinator) {
+                    uint64_t fhash = fnv1a_hash(op->right_filter_expr.data,
+                            op->right_filter_expr.size);
+                    arr = col_session_get_filt_arrangement(sess,
+                            op->right_relation, fhash, right, rk, kc);
+                }
             }
         } else if (used_right_delta && op->right_relation && kc > 0)
             arr = col_session_get_delta_arrangement(sess, op->right_relation,
@@ -5545,6 +5547,9 @@ col_op_k_fusion(const wl_plan_op_t *op, eval_stack_t *stack,
         worker_sess[d].filt_arr_entries = NULL;
         worker_sess[d].filt_arr_count = 0;
         worker_sess[d].filt_arr_cap = 0;
+        worker_sess[d].filt_cache = NULL;
+        worker_sess[d].filt_cache_count = 0;
+        worker_sess[d].filt_cache_cap = 0;
         /* Issue #196: Workers start with empty mat_cache.  Divergent rule
          * copies have ~0% cache hit rate, so inheriting parent entries
          * wastes memory without benefit. */
@@ -5769,6 +5774,13 @@ cleanup_wq:
         col_session_free_diff_arrangements(&worker_sess[d]);
         /* Free worker's private filtered arrangement cache (filt_arr_*). */
         col_session_free_filt_arrangements(&worker_sess[d]);
+        for (uint32_t i = 0; i < worker_sess[d].filt_cache_count; i++) {
+            free(worker_sess[d].filt_cache[i].rel_name);
+            free(worker_sess[d].filt_cache[i].filter_data);
+            if (worker_sess[d].filt_cache[i].filtered)
+                col_rel_destroy(worker_sess[d].filt_cache[i].filtered);
+        }
+        free(worker_sess[d].filt_cache);
         /* Free contents of pool-allocated relations before bulk destroy.
          * delta_pool_destroy frees the slab/arena but skips individually
          * malloc'd members (name, columns, col_names) -- leaks under ASAN.
