@@ -1649,6 +1649,8 @@ tdd_stratum_idb_self_join_exchange_aligned(const wl_plan_stratum_t *sp,
 bool
 tdd_stratum_single_idb_join_keys_exchange_aligned(
     const wl_plan_stratum_t *sp);
+bool
+tdd_stratum_global_read_candidate(const wl_plan_stratum_t *sp);
 int
 col_stratum_step_with_delta(const wl_plan_stratum_t *sp, wl_col_session_t *sess,
     uint32_t stratum_idx);
