@@ -1810,8 +1810,17 @@ col_compute_worker_cap(uint64_t ram_bytes);
  * to the coordinator after the workqueue barrier.
  */
 typedef struct {
+    uint32_t relation_index;       /* target relation in stratum      */
+    const wl_plan_op_t *ops;       /* borrowed executable rule slice  */
+    uint32_t op_count;
+    bool tdd_safe;                 /* true: worker TDD, false: fallback */
+} wl_tdd_rule_slice_t;
+
+typedef struct {
     const wl_plan_stratum_t *sp;   /* borrowed: stratum plan          */
     wl_col_session_t *worker_sess; /* borrowed: isolated worker       */
+    const wl_tdd_rule_slice_t *rule_slices; /* optional mixed TDD slices */
+    uint32_t rule_slice_count;
     uint32_t stratum_idx;
     uint32_t eff_iter;             /* effective sub-pass index (set by coord) */
     bool any_new;                  /* OUT: produced >=1 new tuple     */
