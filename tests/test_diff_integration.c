@@ -2415,6 +2415,63 @@ test_edge_last_inserted_relation_updated(void)
     PASS();
 }
 
+static void
+test_edge_multiple_plain_inserts_force_full_eval(void)
+{
+    TEST("edge: multiple plain inserts force full snapshot evaluation");
+
+    const char *two_rel_src =
+        ".decl a(x: int32)\n"
+        "a(1).\n"
+        ".decl b(x: int32)\n"
+        "b(10).\n"
+        ".decl ra(x: int32)\n"
+        "ra(x) :- a(x).\n"
+        ".decl rb(x: int32)\n"
+        "rb(x) :- b(x).\n"
+        ".output ra\n"
+        ".output rb\n";
+
+    wirelog_program_t *prog;
+    wl_plan_t *plan;
+    wl_session_t *sess;
+
+    int rc = make_session(two_rel_src, &prog, &plan, &sess);
+    ASSERT(rc == 0, "session creation failed");
+
+    struct multi_rel_ctx c0 = { "ra", "rb", 0, 0 };
+    rc = wl_session_snapshot(sess, multi_count_cb, &c0);
+    ASSERT(rc == 0, "initial snapshot failed");
+    ASSERT(c0.count_a == 1 && c0.count_b == 1,
+        "initial snapshot must include both outputs");
+
+    int64_t new_a[1] = { 2 };
+    int64_t new_b[1] = { 20 };
+    rc = wl_session_insert(sess, "a", new_a, 1, 1);
+    ASSERT(rc == 0, "plain insert into a failed");
+    rc = wl_session_insert(sess, "b", new_b, 1, 1);
+    ASSERT(rc == 0, "plain insert into b failed");
+
+    wl_col_session_t *cs = COL_SESSION(sess);
+    ASSERT(cs->last_inserted_relation != NULL
+        && strcmp(cs->last_inserted_relation, "b") == 0,
+        "last_inserted_relation must preserve the latest insert");
+    ASSERT(cs->pending_full_input_eval == true,
+        "multiple pending input relations must force full evaluation");
+
+    struct multi_rel_ctx c1 = { "ra", "rb", 0, 0 };
+    rc = wl_session_snapshot(sess, multi_count_cb, &c1);
+    ASSERT(rc == 0, "snapshot after multiple plain inserts failed");
+    printf("(ra_before=%" PRId64 " ra_after=%" PRId64
+        " rb_before=%" PRId64 " rb_after=%" PRId64 ") ",
+        c0.count_a, c1.count_a, c0.count_b, c1.count_b);
+    ASSERT(c1.count_a > c0.count_a && c1.count_b > c0.count_b,
+        "snapshot must include changes from both pending input relations");
+
+    teardown(sess, plan, prog);
+    PASS();
+}
+
 /* Test 49: TC correctness for star graph (one node connected to many) */
 static void
 test_edge_star_graph_correctness(void)
@@ -2587,6 +2644,7 @@ main(void)
     test_edge_empty_output_relation();
     test_edge_no_insert_guard_stays_false();
     test_edge_last_inserted_relation_updated();
+    test_edge_multiple_plain_inserts_force_full_eval();
     test_edge_star_graph_correctness();
     test_edge_outer_epoch_tracks_inserts();
 

@@ -886,6 +886,14 @@ typedef struct wl_col_session_t {
      * NULL when no incremental insert preceded the current step (all strata
      * evaluated normally via affected_mask = UINT64_MAX). */
     const char *last_inserted_relation;
+    /* True when an input relation changed since the last successful step.
+     * This includes hidden side-compound storage writes, which are EDB-like
+     * dependencies for plans that scan __compound_* relations. */
+    bool pending_input_change;
+    /* True when more than one inserted input relation is pending, so affected
+     * stratum selection must conservatively evaluate every stratum while
+     * preserving last_inserted_relation as the most recent input name. */
+    bool pending_full_input_eval;
     /* Current fixed-point iteration counter within col_eval_stratum.
      * Set at the start of each iteration; operators use this to distinguish
      * iteration 0 (base case: FORCE_DELTA falls back to full relation) from
