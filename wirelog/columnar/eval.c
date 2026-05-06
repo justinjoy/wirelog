@@ -5764,7 +5764,8 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
         && tdd_stratum_single_idb_join_keys_exchange_aligned(sp);
     bool bdx_mode = has_idb_self_join && !self_join_mode;
     const char *global_read_env = getenv("WIRELOG_TDD_GLOBAL_READ");
-    bool global_read_mode = global_read_env && global_read_env[0] == '1'
+    bool global_read_mode = !(global_read_env && global_read_env[0] == '0'
+        && global_read_env[1] == '\0')
         && !owner_exchange_mode && !self_join_mode && !bdx_mode
         && tdd_stratum_global_read_candidate(sp);
     bool replicate_mode = !owner_exchange_mode
