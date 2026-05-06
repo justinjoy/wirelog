@@ -4867,24 +4867,91 @@ tdd_check_convergence(const col_eval_tdd_worker_ctx_t *ctxs, uint32_t W)
     return true;
 }
 
+static bool
+tdd_estimate_add_rel_name(const char **names, uint32_t *count, uint32_t cap,
+    const char *name)
+{
+    if (!name || !names || !count)
+        return true;
+    for (uint32_t i = 0; i < *count; i++) {
+        if (names[i] && strcmp(names[i], name) == 0)
+            return true;
+    }
+    if (*count >= cap)
+        return false;
+    names[(*count)++] = name;
+    return true;
+}
+
+static bool
+tdd_estimate_collect_ops(const wl_plan_op_t *ops, uint32_t op_count,
+    const wl_plan_stratum_t *sp, const char **names, uint32_t *count,
+    uint32_t cap)
+{
+    (void)sp;
+    for (uint32_t oi = 0; oi < op_count; oi++) {
+        const wl_plan_op_t *op = &ops[oi];
+        const char *rel_name = NULL;
+        if (op->op == WL_PLAN_OP_VARIABLE) {
+            rel_name = op->relation_name;
+        } else if (op->op == WL_PLAN_OP_JOIN
+            || op->op == WL_PLAN_OP_SEMIJOIN
+            || op->op == WL_PLAN_OP_ANTIJOIN) {
+            rel_name = op->right_relation;
+        } else if (op->op == WL_PLAN_OP_K_FUSION && op->opaque_data) {
+            const wl_plan_op_k_fusion_t *kf =
+                (const wl_plan_op_k_fusion_t *)op->opaque_data;
+            for (uint32_t ki = 0; ki < kf->k; ki++) {
+                if (!tdd_estimate_collect_ops(kf->k_ops[ki],
+                    kf->k_op_counts[ki], sp, names, count, cap))
+                    return false;
+            }
+        } else if (op->op == WL_PLAN_OP_LFTJ && op->opaque_data) {
+            const wl_plan_op_lftj_t *lftj =
+                (const wl_plan_op_lftj_t *)op->opaque_data;
+            for (uint32_t i = 0; i < lftj->k; i++) {
+                if (!tdd_estimate_add_rel_name(names, count, cap,
+                    lftj->rel_names ? lftj->rel_names[i] : NULL))
+                    return false;
+            }
+        }
+        if (!tdd_estimate_add_rel_name(names, count, cap, rel_name))
+            return false;
+    }
+    return true;
+}
+
 static uint64_t
 tdd_estimate_stratum_work_rows(const wl_plan_stratum_t *sp,
     wl_col_session_t *coord)
 {
-    uint64_t stratum_rows = 0;
+    const char *names[256];
+    uint32_t name_count = 0;
     for (uint32_t ri = 0; ri < sp->relation_count; ri++) {
-        col_rel_t *r = session_find_rel(coord, sp->relations[ri].name);
-        if (r)
-            stratum_rows += r->nrows;
+        if (!tdd_estimate_add_rel_name(names, &name_count, 256,
+            sp->relations[ri].name))
+            goto fallback;
+        if (!tdd_estimate_collect_ops(sp->relations[ri].ops,
+            sp->relations[ri].op_count, sp, names, &name_count, 256))
+            goto fallback;
     }
 
-    uint64_t input_rows = 0;
+    uint64_t rows = 0;
+    for (uint32_t i = 0; i < name_count; i++) {
+        col_rel_t *r = session_find_rel(coord, names[i]);
+        if (r)
+            rows += r->nrows;
+    }
+    return rows;
+
+fallback:
+    rows = 0;
     for (uint32_t ri = 0; ri < coord->nrels; ri++) {
         col_rel_t *r = coord->rels[ri];
         if (r)
-            input_rows += r->nrows;
+            rows += r->nrows;
     }
-    return input_rows > stratum_rows ? input_rows : stratum_rows;
+    return rows;
 }
 
 static uint32_t
