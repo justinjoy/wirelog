@@ -2383,9 +2383,35 @@ col_session_snapshot(wl_session_t *session, wl_on_tuple_fn callback,
             }
         }
 
+        const char *tdd_profile = getenv("WIRELOG_TDD_STRATUM_PROFILE");
+        bool tdd_profile_active = tdd_profile && tdd_profile[0] != '\0'
+            && tdd_profile[0] != '0';
+        uint64_t stratum_t0 = tdd_profile_active ? now_ns() : 0;
+        uint64_t kfusion_base = sess->kfusion_ns;
+        uint64_t exchange_base = sess->exchange_time_ns;
+        uint64_t tdd_base = sess->tdd_total_ns;
+
         int rc = use_tdd
             ? col_eval_stratum_tdd(&plan->strata[si], sess, si)
             : col_eval_stratum(&plan->strata[si], sess, si);
+
+        if (tdd_profile_active) {
+            const char *first_rel = plan->strata[si].relation_count > 0
+                ? plan->strata[si].relations[0].name : "(none)";
+            fprintf(stderr,
+                "TDD stratum idx=%u rel=%s recursive=%d use_tdd=%d "
+                "fallback=%s "
+                "total_ms=%.3f kfusion_ms=%.3f exchange_ms=%.3f "
+                "tdd_ms=%.3f\n",
+                si, first_rel ? first_rel : "(null)",
+                (int)plan->strata[si].is_recursive, (int)use_tdd,
+                wl_columnar_session_tdd_fallback_reason_name(
+                    tdd_decision.fallback_reason),
+                (double)(now_ns() - stratum_t0) / 1e6,
+                (double)(sess->kfusion_ns - kfusion_base) / 1e6,
+                (double)(sess->exchange_time_ns - exchange_base) / 1e6,
+                (double)(sess->tdd_total_ns - tdd_base) / 1e6);
+        }
 
         if (tdd_cc_active && rc == 0 && pre_saved) {
             uint32_t *tdd_counts
