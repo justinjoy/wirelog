@@ -303,6 +303,12 @@ wl_columnar_session_tdd_plan_stratum(const wl_plan_stratum_t *sp,
         return decision;
     }
     if (!wl_columnar_session_tdd_stratum_is_safe(sp, sess)) {
+        const char *env = getenv("WIRELOG_TDD_GLOBAL_READ");
+        if (env && env[0] == '1'
+            && tdd_stratum_global_read_candidate(sp)) {
+            decision.use_tdd = true;
+            return decision;
+        }
         decision.fallback_reason =
             WL_COLUMNAR_INTERNAL_TDD_FALLBACK_UNSAFE_PLAN;
         return decision;
