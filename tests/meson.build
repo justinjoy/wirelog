@@ -1820,6 +1820,24 @@ test_delta_callback_exe = executable(
 
 test('delta_callback', test_delta_callback_exe)
 
+test_side_compound_delta_exe = executable(
+  'test_side_compound_delta',
+  files('test_side_compound_delta.c'),
+  parser_src,
+  ir_src,
+  optimizer_src,
+  backend_src,
+  io_src,
+  arena_src,
+  thread_src,
+  workqueue_src,
+  csv_src,
+  include_directories: [wirelog_inc, wirelog_src_inc],
+  dependencies: [nanoarrow_dep, threads_dep, xxhash_dep, mbedtls_dep, math_dep],
+)
+
+test('side_compound_delta', test_side_compound_delta_exe)
+
 # ============================================================================
 # Delta Retraction Tests (Issue #158)
 # ============================================================================

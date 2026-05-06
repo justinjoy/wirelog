@@ -23,6 +23,35 @@
 /* Column-name buffer size: "arg" + up to 10-digit decimal + NUL. */
 #define WL_COMPOUND_SIDE_COLNAME_MAX 16u
 
+static int
+side_rel_set_schema(col_rel_t *rel, uint32_t arity)
+{
+    uint32_t ncols = arity + 1; /* +1 for the handle column */
+    char **names_owned = (char **)calloc(ncols, sizeof(char *));
+    if (!names_owned)
+        return ENOMEM;
+    char *names_buf
+        = (char *)malloc((size_t)ncols * WL_COMPOUND_SIDE_COLNAME_MAX);
+    if (!names_buf) {
+        free(names_owned);
+        return ENOMEM;
+    }
+
+    char *slot0 = names_buf;
+    snprintf(slot0, WL_COMPOUND_SIDE_COLNAME_MAX, "handle");
+    names_owned[0] = slot0;
+    for (uint32_t i = 1; i < ncols; i++) {
+        char *slot = names_buf + (size_t)i * WL_COMPOUND_SIDE_COLNAME_MAX;
+        snprintf(slot, WL_COMPOUND_SIDE_COLNAME_MAX, "arg%u", i - 1);
+        names_owned[i] = slot;
+    }
+
+    int rc = col_rel_set_schema(rel, ncols, (const char *const *)names_owned);
+    free(names_owned);
+    free(names_buf);
+    return rc;
+}
+
 int
 wl_compound_side_name(const char *functor, uint32_t arity,
     char *buf, size_t bufsz)
@@ -56,6 +85,14 @@ wl_compound_side_ensure(wl_col_session_t *sess, const char *functor,
     /* Idempotent: return existing relation if present. */
     col_rel_t *existing = session_find_rel(sess, name);
     if (existing) {
+        uint32_t ncols = arity + 1u;
+        if (existing->ncols == 0) {
+            int rc = side_rel_set_schema(existing, arity);
+            if (rc != 0)
+                return rc;
+        } else if (existing->ncols != ncols) {
+            return EINVAL;
+        }
         if (out_rel)
             *out_rel = existing;
         return 0;
@@ -67,39 +104,7 @@ wl_compound_side_ensure(wl_col_session_t *sess, const char *functor,
     if (rc != 0)
         return rc;
 
-    uint32_t ncols = arity + 1; /* +1 for the handle column */
-    /* Build the column-name array as a heap-allocated pointer array
-     * backed by a single contiguous buffer.  col_rel_set_schema takes
-     * its own copies; we free both the pointer array and the backing
-     * buffer unconditionally after the call. */
-    char **names_owned = (char **)calloc(ncols, sizeof(char *));
-    if (!names_owned) {
-        col_rel_destroy(rel);
-        return ENOMEM;
-    }
-    char *names_buf
-        = (char *)malloc((size_t)ncols * WL_COMPOUND_SIDE_COLNAME_MAX);
-    if (!names_buf) {
-        free(names_owned);
-        col_rel_destroy(rel);
-        return ENOMEM;
-    }
-
-    /* Column 0: "handle"; columns 1..N: "arg{i-1}" */
-    {
-        char *slot0 = names_buf + 0 * WL_COMPOUND_SIDE_COLNAME_MAX;
-        snprintf(slot0, WL_COMPOUND_SIDE_COLNAME_MAX, "handle");
-        names_owned[0] = slot0;
-        for (uint32_t i = 1; i < ncols; i++) {
-            char *slot = names_buf + (size_t)i * WL_COMPOUND_SIDE_COLNAME_MAX;
-            snprintf(slot, WL_COMPOUND_SIDE_COLNAME_MAX, "arg%u", i - 1);
-            names_owned[i] = slot;
-        }
-    }
-
-    rc = col_rel_set_schema(rel, ncols, (const char *const *)names_owned);
-    free(names_owned);
-    free(names_buf);
+    rc = side_rel_set_schema(rel, arity);
     if (rc != 0) {
         col_rel_destroy(rel);
         return rc;

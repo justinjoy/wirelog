@@ -120,6 +120,20 @@ session_invalidate_relation_caches(wl_col_session_t *sess, const char *name)
     sess->filt_cache_count = out;
 }
 
+static void
+session_note_inserted_input(wl_col_session_t *sess, const char *relation,
+    bool advance_epoch)
+{
+    session_invalidate_relation_caches(sess, relation);
+    if (advance_epoch)
+        sess->outer_epoch++;
+    if (sess->last_inserted_relation
+        && strcmp(sess->last_inserted_relation, relation) != 0)
+        sess->pending_full_input_eval = true;
+    sess->last_inserted_relation = relation;
+    sess->pending_input_change = true;
+}
+
 int
 session_add_rel(wl_col_session_t *sess, col_rel_t *r)
 {
@@ -1014,6 +1028,7 @@ col_session_create(const wl_plan_t *plan, uint32_t num_workers,
     }
 
     sess->rel_cap = 16;
+    sess->pending_input_change = true;
     sess->rels = (col_rel_t **)calloc(sess->rel_cap, sizeof(col_rel_t *));
     if (!sess->rels) {
         free(sess);
@@ -1657,11 +1672,7 @@ col_session_insert(wl_session_t *session, const char *relation,
             return rc;
     }
 
-    /* Enable incremental re-evaluation mode: mark this relation as the
-     * insertion point for affected stratum detection. This activates
-     * frontier persistence in col_session_snapshot, enabling the per-iteration
-     * skip condition to reduce iterations on subsequent snapshots. */
-    COL_SESSION(session)->last_inserted_relation = relation;
+    session_note_inserted_input(sess, relation, false);
 
     return 0;
 }
@@ -1749,6 +1760,7 @@ col_session_make_compound(wl_session_t *session, const char *functor,
         return rc;
     }
 
+    session_note_inserted_input(sess, side_rel->name, true);
     *handle_out = handle;
     return 0;
 }
@@ -1804,21 +1816,8 @@ col_session_insert_incremental(wl_session_t *session, const char *relation,
             return rc;
     }
 
-    /* Invalidate arrangement caches for the modified relation so subsequent
-     * re-evaluation rebuilds hash indices with the new rows (issue #92). */
-    col_session_invalidate_arrangements(session, relation);
-
-    /* Issue #103: Increment outer_epoch to mark a new insertion epoch.
-     * This epoch counter distinguishes different insertion phases for 2D frontier
-     * tracking: (outer_epoch, iteration) pairs ensure iterations are skipped only
-     * within the same epoch. Wrapping at UINT32_MAX is acceptable (continues
-     * distinguishing epochs across multiple insertions). */
     wl_col_session_t *sess = COL_SESSION(session);
-    sess->outer_epoch++;
-
-    /* Record the inserted relation so col_session_step can skip unaffected
-     * strata (Phase 4 affected-stratum skip optimization). */
-    sess->last_inserted_relation = relation;
+    session_note_inserted_input(sess, relation, true);
     return 0;
 }
 
@@ -1989,11 +1988,12 @@ next_del_incr:;
      * so subsequent re-evaluation rebuilds hash indices without the removed
      * rows.  Without this, cached arrangements contain stale entries that
      * produce phantom join matches during full re-eval retraction. */
-    col_session_invalidate_arrangements(session, relation);
+    session_invalidate_relation_caches(sess, relation);
 
     /* Mark removal for affected-stratum calculation */
     sess->last_removed_relation = relation;
     sess->outer_epoch++;
+    sess->pending_input_change = true;
 
     return 0;
 }
@@ -2019,12 +2019,18 @@ col_session_step(wl_session_t *session)
     wl_col_session_t *sess = COL_SESSION(session);
     const wl_plan_t *plan = sess->plan;
 
+    if (sess->delta_cb && !sess->pending_input_change
+        && sess->last_inserted_relation == NULL
+        && sess->last_removed_relation == NULL)
+        return 0;
+
     /* Compute affected strata bitmask (Phase 4 incremental skip).
      * When last_inserted_relation is set (incremental path), only evaluate
      * strata that transitively depend on the inserted relation.  When NULL
      * (regular step), UINT64_MAX means all strata are evaluated. */
     uint64_t affected_mask = UINT64_MAX;
-    if (sess->last_inserted_relation != NULL) {
+    if (!sess->pending_full_input_eval &&
+        sess->last_inserted_relation != NULL) {
         affected_mask = col_compute_affected_strata(
             session, sess->last_inserted_relation);
     }
@@ -2119,6 +2125,8 @@ col_session_step(wl_session_t *session)
 
     /* Reset after successful eval so next plain session_step runs all strata */
     sess->last_inserted_relation = NULL;
+    sess->pending_input_change = false;
+    sess->pending_full_input_eval = false;
     return 0;
 }
 
@@ -2216,7 +2224,8 @@ col_session_snapshot(wl_session_t *session, wl_on_tuple_fn callback,
      * On the first snapshot (total_iterations == 0), always evaluate all strata
      * to establish the baseline. */
     uint64_t affected_mask = UINT64_MAX;
-    if (sess->last_inserted_relation != NULL && sess->total_iterations > 0) {
+    if (!sess->pending_full_input_eval && sess->last_inserted_relation != NULL
+        && sess->total_iterations > 0) {
         affected_mask = col_compute_affected_strata(
             session, sess->last_inserted_relation);
 
@@ -2341,8 +2350,9 @@ col_session_snapshot(wl_session_t *session, wl_on_tuple_fn callback,
      * OR incremental evaluation (last_inserted_relation != NULL). */
     bool snapshot_tdd_eligible = (affected_mask == UINT64_MAX
         && sess->num_workers > 1
-        && (sess->last_inserted_relation != NULL ||
-        sess->total_iterations == 0));
+        && ((!sess->pending_full_input_eval
+        && sess->last_inserted_relation != NULL)
+        || sess->total_iterations == 0));
     sess->tdd_decision_tracking_active = true;
     for (uint32_t si = 0; si < plan->stratum_count; si++) {
         if ((affected_mask & ((uint64_t)1 << si)) == 0)
@@ -2545,6 +2555,8 @@ col_session_snapshot(wl_session_t *session, wl_on_tuple_fn callback,
     /* Reset after successful eval so next plain snapshot runs all strata */
     sess->last_inserted_relation = NULL;
     sess->delta_seeded = false;
+    sess->pending_input_change = false;
+    sess->pending_full_input_eval = false;
 
     /* Issue #83: Update base_nrows for all relations after convergence.
      * This marks the current state as "stable" so the next incremental
