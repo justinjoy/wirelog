@@ -2498,6 +2498,112 @@ tdd_install_empty_delta_on_workers(wl_col_session_t *coord,
     return 0;
 }
 
+static int
+tdd_worker_eval_rule_slices(col_eval_tdd_worker_ctx_t *ctx,
+    wl_col_session_t *sess, uint32_t eff_iter, bool *out_any_new)
+{
+    const wl_plan_stratum_t *sp = ctx->sp;
+    uint32_t nrels = sp->relation_count;
+    col_rel_t **deltas = (col_rel_t **)calloc(nrels, sizeof(col_rel_t *));
+    if (!deltas)
+        return ENOMEM;
+
+    int rc = 0;
+    for (uint32_t si = 0; si < ctx->rule_slice_count; si++) {
+        const wl_tdd_rule_slice_t *slice = &ctx->rule_slices[si];
+        if (!slice->tdd_safe || slice->relation_index >= nrels)
+            continue;
+
+        const wl_plan_relation_t *target_plan =
+            &sp->relations[slice->relation_index];
+        wl_plan_relation_t tmp = {
+            .name = target_plan->name,
+            .delta_name = target_plan->delta_name,
+            .ops = slice->ops,
+            .op_count = slice->op_count,
+        };
+        if (has_empty_forced_delta(&tmp, sess, eff_iter))
+            continue;
+
+        eval_stack_t stack;
+        eval_stack_init(&stack);
+        rc = col_eval_relation_plan(&tmp, &stack, sess);
+        if (rc != 0) {
+            eval_stack_drain(&stack);
+            break;
+        }
+        if (stack.top == 0)
+            continue;
+
+        eval_entry_t result = eval_stack_pop(&stack);
+        eval_stack_drain(&stack);
+        if (!result.rel || result.rel->nrows == 0) {
+            if (result.owned)
+                col_rel_destroy(result.rel);
+            continue;
+        }
+
+        col_rel_t *delta = deltas[slice->relation_index];
+        if (!delta) {
+            delta = col_rel_new_like(target_plan->delta_name, result.rel);
+            if (!delta) {
+                if (result.owned)
+                    col_rel_destroy(result.rel);
+                rc = ENOMEM;
+                break;
+            }
+            deltas[slice->relation_index] = delta;
+        }
+        rc = col_rel_append_all(delta, result.rel, sess->eval_arena);
+        if (result.owned)
+            col_rel_destroy(result.rel);
+        if (rc != 0)
+            break;
+    }
+
+    if (rc == 0) {
+        for (uint32_t ri = 0; ri < nrels; ri++) {
+            col_rel_t *delta = deltas[ri];
+            deltas[ri] = NULL;
+            if (!delta)
+                continue;
+
+            col_rel_t *target = session_find_rel(sess, sp->relations[ri].name);
+            if (target && target->nrows > 0) {
+                rc = bdx_hash_diff(delta, target);
+                if (rc != 0) {
+                    col_rel_destroy(delta);
+                    break;
+                }
+            }
+            if (sess->coordinator && delta->nrows > 0) {
+                col_rel_t *coord_target = session_find_rel(
+                    sess->coordinator, sp->relations[ri].name);
+                if (coord_target && coord_target->nrows > 0) {
+                    rc = tdd_hashset_diff(delta, coord_target);
+                    if (rc != 0) {
+                        col_rel_destroy(delta);
+                        break;
+                    }
+                }
+            }
+            if (delta->nrows > 1)
+                tdd_dedup_rel(delta);
+            bool produced = delta->nrows > 0;
+            rc = tdd_worker_publish_delta(ctx, sess, delta, ri, eff_iter);
+            if (rc != 0)
+                break;
+            if (produced && out_any_new)
+                *out_any_new = true;
+        }
+    }
+
+    for (uint32_t ri = 0; ri < nrels; ri++)
+        col_rel_destroy(deltas[ri]);
+    free(deltas);
+    return rc;
+}
+
 static void
 tdd_worker_subpass_fn(void *arg)
 {
@@ -2574,6 +2680,33 @@ tdd_worker_subpass_fn(void *arg)
     }
 
     bool any_new = false;
+
+    if (ctx->rule_slices && ctx->rule_slice_count > 0) {
+        int slice_rc = tdd_worker_eval_rule_slices(ctx, sess, eff_iter,
+                &any_new);
+        free(snap);
+        if (slice_rc != 0) {
+            ctx->rc = slice_rc;
+            sess->tdd_subpass_active = saved_tdd_subpass;
+            sess->tdd_outbound_only_active = saved_outbound_only;
+            sess->diff_operators_active = saved_diff;
+            TDD_WORKER_RETURN();
+        }
+        delta_pool_reset(sess->delta_pool);
+        sess->rotation_ops->rotate_eval_arena(sess);
+        if (sess->cache_evict_threshold == 0) {
+            col_mat_cache_clear(&sess->mat_cache);
+        } else {
+            col_mat_cache_evict_until(&sess->mat_cache,
+                sess->cache_evict_threshold);
+        }
+        ctx->any_new = any_new;
+        sess->tdd_subpass_active = saved_tdd_subpass;
+        sess->tdd_outbound_only_active = saved_outbound_only;
+        sess->diff_operators_active = saved_diff;
+        ctx->runtime_ns = now_ns() - worker_t0;
+        TDD_WORKER_RETURN();
+    }
 
     /* Evaluate all relation plans (eval.c:505-604) */
     for (uint32_t ri = 0; ri < nrels; ri++) {
