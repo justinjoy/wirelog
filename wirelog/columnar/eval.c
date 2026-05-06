@@ -3986,6 +3986,116 @@ tdd_relation_has_exchange_key(const wl_plan_relation_t *rel)
     return false;
 }
 
+static void
+tdd_record_segment_stats(const wl_plan_op_t *ops, uint32_t op_count,
+    const wl_plan_stratum_t *sp, bool relation_has_exchange,
+    wl_tdd_segment_stats_t *stats)
+{
+    if (!ops || op_count == 0 || !stats)
+        return;
+
+    uint32_t idb_atoms = 0;
+    uint32_t join_like = 0;
+    bool has_idb = false;
+    bool has_antijoin = false;
+
+    for (uint32_t oi = 0; oi < op_count; oi++) {
+        const wl_plan_op_t *op = &ops[oi];
+        if (op_references_stratum_idb(op, sp)) {
+            has_idb = true;
+            idb_atoms++;
+        }
+        switch (op->op) {
+        case WL_PLAN_OP_JOIN:
+        case WL_PLAN_OP_SEMIJOIN:
+            join_like++;
+            break;
+        case WL_PLAN_OP_ANTIJOIN:
+            join_like++;
+            has_antijoin = true;
+            break;
+        default:
+            break;
+        }
+    }
+
+    stats->total_segments++;
+    if (idb_atoms > stats->max_segment_idb_atoms)
+        stats->max_segment_idb_atoms = idb_atoms;
+    if (join_like > stats->max_segment_join_like)
+        stats->max_segment_join_like = join_like;
+
+    if (!has_idb) {
+        stats->seed_only_segments++;
+        return;
+    }
+
+    if (relation_has_exchange
+        && idb_atoms <= 2
+        && join_like <= 4
+        && !has_antijoin
+        && !ops_have_idb_idb_join(ops, op_count, sp)) {
+        stats->global_read_segments++;
+    } else {
+        stats->unsafe_segments++;
+    }
+}
+
+static void
+tdd_visit_rule_segments(const wl_plan_op_t *ops, uint32_t op_count,
+    const wl_plan_stratum_t *sp, bool relation_has_exchange,
+    wl_tdd_segment_stats_t *stats)
+{
+    if (!ops || op_count == 0)
+        return;
+
+    uint32_t seg_start = 0;
+    for (uint32_t oi = 1; oi < op_count; oi++) {
+        if (ops[oi].op != WL_PLAN_OP_VARIABLE)
+            continue;
+        tdd_record_segment_stats(ops + seg_start, oi - seg_start, sp,
+            relation_has_exchange, stats);
+        seg_start = oi;
+    }
+    tdd_record_segment_stats(ops + seg_start, op_count - seg_start, sp,
+        relation_has_exchange, stats);
+}
+
+void
+tdd_stratum_segment_stats(const wl_plan_stratum_t *sp,
+    wl_tdd_segment_stats_t *stats)
+{
+    if (!stats)
+        return;
+    memset(stats, 0, sizeof(*stats));
+    if (!sp)
+        return;
+
+    for (uint32_t ri = 0; ri < sp->relation_count; ri++) {
+        const wl_plan_relation_t *rel = &sp->relations[ri];
+        bool has_kfusion = false;
+        bool has_exchange = tdd_relation_has_exchange_key(rel);
+
+        for (uint32_t oi = 0; oi < rel->op_count; oi++) {
+            if (rel->ops[oi].op != WL_PLAN_OP_K_FUSION
+                || !rel->ops[oi].opaque_data)
+                continue;
+            has_kfusion = true;
+            const wl_plan_op_k_fusion_t *kf =
+                (const wl_plan_op_k_fusion_t *)rel->ops[oi].opaque_data;
+            for (uint32_t ki = 0; ki < kf->k; ki++) {
+                tdd_visit_rule_segments(kf->k_ops[ki],
+                    kf->k_op_counts[ki], sp, has_exchange, stats);
+            }
+        }
+
+        if (!has_kfusion) {
+            tdd_visit_rule_segments(rel->ops, rel->op_count, sp,
+                has_exchange, stats);
+        }
+    }
+}
+
 bool
 tdd_stratum_global_read_candidate(const wl_plan_stratum_t *sp)
 {
