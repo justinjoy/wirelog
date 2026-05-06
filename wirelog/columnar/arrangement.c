@@ -45,6 +45,35 @@ arr_hash_key(const int64_t *row, const uint32_t *key_cols, uint32_t key_count,
     return (uint32_t)(h & (uint64_t)(nbuckets - 1));
 }
 
+static uint32_t
+arr_hash_rel_key(const col_rel_t *rel, uint32_t row,
+    const uint32_t *key_cols, uint32_t key_count, uint32_t nbuckets)
+{
+    uint64_t h = 14695981039346656037ULL; /* FNV-1a basis */
+    for (uint32_t k = 0; k < key_count; k++) {
+        uint64_t v = (uint64_t)rel->columns[key_cols[k]][row];
+        for (int b = 0; b < 8; b++) {
+            h ^= v & 0xFFu;
+            h *= 1099511628211ULL;
+            v >>= 8;
+        }
+    }
+    return (uint32_t)(h & (uint64_t)(nbuckets - 1));
+}
+
+static bool
+arr_key_cols_valid(const col_rel_t *rel, const uint32_t *key_cols,
+    uint32_t key_count)
+{
+    if (!rel || !key_cols || key_count == 0)
+        return false;
+    for (uint32_t k = 0; k < key_count; k++) {
+        if (key_cols[k] >= rel->ncols)
+            return false;
+    }
+    return true;
+}
+
 /* Round n up to the next power of 2; minimum 16. */
 static uint32_t
 arr_next_pow2(uint32_t n)
@@ -111,10 +140,8 @@ arr_build_full(col_arrangement_t *arr, const col_rel_t *rel)
     }
 
     for (uint32_t row = 0; row < nrows; row++) {
-        int64_t row_buf[16]; /* stack buffer; avoids col_rel_row heap alloc */
-        col_rel_row_copy_out(rel, row, row_buf);
-        uint32_t bucket
-            = arr_hash_key(row_buf, arr->key_cols, arr->key_count, nbuckets);
+        uint32_t bucket = arr_hash_rel_key(rel, row, arr->key_cols,
+                arr->key_count, nbuckets);
         arr->ht_next[row] = arr->ht_head[bucket];
         arr->ht_head[bucket] = row;
     }
@@ -149,10 +176,8 @@ arr_update_incremental(col_arrangement_t *arr, const col_rel_t *rel,
 
     uint32_t nb = arr->nbuckets;
     for (uint32_t row = old_nrows; row < nrows; row++) {
-        int64_t row_buf[16]; /* stack buffer; avoids col_rel_row heap alloc */
-        col_rel_row_copy_out(rel, row, row_buf);
-        uint32_t bucket = arr_hash_key(row_buf, arr->key_cols, arr->key_count,
-                nb);
+        uint32_t bucket = arr_hash_rel_key(rel, row, arr->key_cols,
+                arr->key_count, nb);
         arr->ht_next[row] = arr->ht_head[bucket];
         arr->ht_head[bucket] = row;
     }
@@ -238,6 +263,8 @@ col_session_get_arrangement(wl_session_t *sess, const char *rel_name,
         }
     }
     if (!rel)
+        return NULL;
+    if (!arr_key_cols_valid(rel, key_cols, key_count))
         return NULL;
 
     /* Search registry for matching (rel_name, key_cols) entry. */
@@ -485,6 +512,8 @@ col_session_get_delta_arrangement(wl_col_session_t *cs, const char *rel_name,
 {
     if (!cs || !rel_name || !delta_rel || !key_cols || key_count == 0)
         return NULL;
+    if (!arr_key_cols_valid(delta_rel, key_cols, key_count))
+        return NULL;
 
     /* Search existing cache entries. */
     for (uint32_t i = 0; i < cs->darr_count; i++) {
@@ -593,6 +622,8 @@ col_session_get_filt_arrangement(wl_col_session_t *cs, const char *rel_name,
     const uint32_t *key_cols, uint32_t key_count)
 {
     if (!cs || !rel_name || !filtered_rel || !key_cols || key_count == 0)
+        return NULL;
+    if (!arr_key_cols_valid(filtered_rel, key_cols, key_count))
         return NULL;
 
     /* Search existing entries. */
