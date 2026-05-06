@@ -2268,6 +2268,24 @@ typedef struct {
     int rc;
 } col_join_keyed_ctx_t;
 
+typedef struct {
+    const col_rel_t *left;
+    const col_rel_t *right;
+    const uint32_t *lk;
+    const uint32_t *rk;
+    uint32_t kc;
+    const wl_plan_op_t *op;
+    const uint32_t *ht_head;
+    const uint32_t *ht_next;
+    uint32_t nbuckets;
+    col_rel_t *out;
+    uint32_t begin;
+    uint32_t end;
+    uint64_t out_begin;
+    uint64_t count;
+    uint32_t *left_hashes;
+} col_semijoin_ctx_t;
+
 static int64_t
 col_join_pair_value(const col_rel_t *left, uint32_t lr, const col_rel_t *right,
     uint32_t rr, uint32_t idx);
@@ -2435,6 +2453,67 @@ col_join_keyed_fill_worker_fn(void *arg)
                     rr, ctx->op->project_indices, ctx->op->project_count);
             }
         }
+    }
+}
+
+static bool
+col_semijoin_row_found(const col_semijoin_ctx_t *ctx, uint32_t lr)
+{
+    const col_rel_t *left = ctx->left;
+    const col_rel_t *right = ctx->right;
+    uint32_t h = ctx->left_hashes ? ctx->left_hashes[lr]
+        : (col_join_hash_rel_keys(left, lr, ctx->lk, ctx->kc)
+        & (ctx->nbuckets - 1));
+
+    for (uint32_t e = ctx->ht_head[h]; e != 0; e = ctx->ht_next[e - 1]) {
+        uint32_t rr = e - 1;
+        if (col_join_keys_match_rel(left, lr, ctx->lk, right, rr, ctx->rk,
+            ctx->kc))
+            return true;
+    }
+    return false;
+}
+
+static void
+col_semijoin_count_worker_fn(void *arg)
+{
+    col_semijoin_ctx_t *ctx = (col_semijoin_ctx_t *)arg;
+    uint64_t count = 0;
+
+    for (uint32_t lr = ctx->begin; lr < ctx->end; lr++) {
+        if (ctx->left_hashes)
+            ctx->left_hashes[lr] = col_join_hash_rel_keys(ctx->left, lr,
+                    ctx->lk, ctx->kc) & (ctx->nbuckets - 1);
+        if (col_semijoin_row_found(ctx, lr))
+            count++;
+    }
+    ctx->count = count;
+}
+
+static void
+col_semijoin_fill_worker_fn(void *arg)
+{
+    col_semijoin_ctx_t *ctx = (col_semijoin_ctx_t *)arg;
+    const col_rel_t *left = ctx->left;
+    col_rel_t *out = ctx->out;
+    uint64_t out_row = ctx->out_begin;
+    uint32_t ocols = ctx->op->project_count ? ctx->op->project_count
+        : left->ncols;
+
+    for (uint32_t lr = ctx->begin; lr < ctx->end; lr++) {
+        if (!col_semijoin_row_found(ctx, lr))
+            continue;
+        if (ctx->op->project_count > 0 && ctx->op->project_indices) {
+            for (uint32_t c = 0; c < ocols; c++) {
+                uint32_t si = ctx->op->project_indices[c];
+                out->columns[c][out_row] = (si < left->ncols)
+                    ? left->columns[si][lr] : 0;
+            }
+        } else {
+            for (uint32_t c = 0; c < left->ncols; c++)
+                out->columns[c][out_row] = left->columns[c][lr];
+        }
+        out_row++;
     }
 }
 
@@ -5850,8 +5929,90 @@ col_op_semijoin(const wl_plan_op_t *op, eval_stack_t *stack,
         ht_head[h] = rr + 1; /* 1-based; 0 = end of chain */
     }
 
-    /* Probe: for each left row test membership, emit if found: O(|L|) */
     int sj_rc = 0;
+    uint32_t min_left = col_join_parallel_min_left_rows();
+    if (min_left == 0)
+        min_left = 1;
+    uint32_t W = left->nrows / min_left;
+    if (W > sess->num_workers)
+        W = sess->num_workers;
+    if (!sess->coordinator && W > 1 && right->nrows > 0) {
+        int ensure_rc = wl_columnar_session_ensure_workqueue(sess, W);
+        if (ensure_rc == 0) {
+            col_semijoin_ctx_t *ctxs = (col_semijoin_ctx_t *)calloc(
+                W, sizeof(col_semijoin_ctx_t));
+            uint64_t *offsets = (uint64_t *)calloc(W + 1,
+                    sizeof(uint64_t));
+            uint32_t *left_hashes = (uint32_t *)malloc(
+                sizeof(uint32_t) * (size_t)(left->nrows ? left->nrows : 1));
+            if (ctxs && offsets) {
+                uint32_t chunk = (left->nrows + W - 1u) / W;
+                int prc = 0;
+                for (uint32_t w = 0; w < W; w++) {
+                    uint32_t begin = w * chunk;
+                    uint32_t end = begin + chunk;
+                    if (begin > left->nrows)
+                        begin = left->nrows;
+                    if (end > left->nrows)
+                        end = left->nrows;
+                    ctxs[w].left = left;
+                    ctxs[w].right = right;
+                    ctxs[w].lk = lk;
+                    ctxs[w].rk = rk;
+                    ctxs[w].kc = kc;
+                    ctxs[w].op = op;
+                    ctxs[w].ht_head = ht_head;
+                    ctxs[w].ht_next = ht_next;
+                    ctxs[w].nbuckets = nbuckets;
+                    ctxs[w].begin = begin;
+                    ctxs[w].end = end;
+                    ctxs[w].left_hashes = left_hashes;
+                    if (wl_workqueue_submit(sess->wq,
+                        col_semijoin_count_worker_fn, &ctxs[w]) != 0)
+                        prc = ENOMEM;
+                }
+                wl_workqueue_wait_all(sess->wq);
+                uint64_t total = 0;
+                for (uint32_t w = 0; w < W; w++) {
+                    offsets[w] = total;
+                    total += ctxs[w].count;
+                }
+                offsets[W] = total;
+                if (prc == 0 && total > UINT32_MAX)
+                    prc = ENOMEM;
+                if (prc == 0 && col_join_reserve_exact(out,
+                    (uint32_t)total) != 0)
+                    prc = ENOMEM;
+                if (prc == 0) {
+                    out->nrows = (uint32_t)total;
+                    if (out->timestamps && total > 0)
+                        memset(out->timestamps, 0,
+                            (size_t)total * sizeof(col_delta_timestamp_t));
+                    for (uint32_t w = 0; w < W; w++) {
+                        ctxs[w].out = out;
+                        ctxs[w].out_begin = offsets[w];
+                        if (wl_workqueue_submit(sess->wq,
+                            col_semijoin_fill_worker_fn, &ctxs[w]) != 0)
+                            prc = ENOMEM;
+                    }
+                    wl_workqueue_wait_all(sess->wq);
+                }
+                if (prc != 0)
+                    out->nrows = 0;
+                free(left_hashes);
+                free(offsets);
+                free(ctxs);
+                if (prc == 0)
+                    goto semijoin_done;
+            } else {
+                free(left_hashes);
+                free(offsets);
+                free(ctxs);
+            }
+        }
+    }
+
+    /* Probe: for each left row test membership, emit if found: O(|L|) */
     for (uint32_t lr = 0; lr < left->nrows && sj_rc == 0; lr++) {
         uint32_t h = col_join_hash_rel_keys(left, lr, lk, kc)
             & (nbuckets - 1);
@@ -5875,6 +6036,7 @@ col_op_semijoin(const wl_plan_op_t *op, eval_stack_t *stack,
         }
     }
 
+semijoin_done:
     free(ht_head);
     free(ht_next);
     if (sj_rc != 0) {
