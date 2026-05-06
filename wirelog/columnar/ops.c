@@ -5481,8 +5481,8 @@ col_op_k_fusion(const wl_plan_op_t *op, eval_stack_t *stack,
     col_rel_t **results = (col_rel_t **)calloc(live_count, sizeof(col_rel_t *));
     col_op_k_fusion_worker_t *workers = (col_op_k_fusion_worker_t *)calloc(
         live_count, sizeof(col_op_k_fusion_worker_t));
-    /* Per-worker session wrappers: shallow copy of sess with an isolated
-     * mat_cache so concurrent col_op_join calls do not race on the cache. */
+    /* Per-worker session wrappers: shallow copy of sess with isolated mutable
+     * caches so concurrent branch evaluation does not race on cache state. */
     wl_col_session_t *worker_sess
         = (wl_col_session_t *)calloc(live_count, sizeof(wl_col_session_t));
     COL_SESSION(sess)->kfusion_alloc_ns += now_ns() - _phase_t0;
@@ -5508,12 +5508,12 @@ col_op_k_fusion(const wl_plan_op_t *op, eval_stack_t *stack,
         uint32_t branch_idx = live_indices[d];
         /* Shallow copy shares rels[], plan, etc. (read-only during K-fusion).
          * mat_cache is zeroed below (Issue #196): workers start fresh.
-         * arr_* are deep-copied (#260): each worker gets an independent
-         * arrangement cache to probe without races (no shared mutable state).
-         * darr_* are zeroed: workers rebuild delta arrangements per-iteration. */
+         * arrangement caches are zeroed below, so workers rebuild private
+         * entries on demand instead of cloning coordinator state. */
         worker_sess[d] = *sess;
         worker_sess[d].wq = NULL; /* prevent nested K-fusion from workers */
         worker_sess[d].wq_workers = 0;
+        worker_sess[d].num_workers = 1;
         worker_sess[d].tdd_workers = NULL;
         worker_sess[d].tdd_workers_cap = 0;
         worker_sess[d].tdd_workers_count = 0;
