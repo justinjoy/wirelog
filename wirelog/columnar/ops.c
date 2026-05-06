@@ -2247,11 +2247,11 @@ static int64_t
 col_join_pair_value(const col_rel_t *left, uint32_t lr, const col_rel_t *right,
     uint32_t rr, uint32_t idx);
 
-static uint32_t
+static inline uint32_t
 col_join_hash_rel_keys(const col_rel_t *rel, uint32_t row,
     const uint32_t *key_cols, uint32_t kc);
 
-static bool
+static inline bool
 col_join_keys_match_rel(const col_rel_t *left, uint32_t lr,
     const uint32_t *lk, const col_rel_t *right, uint32_t rr,
     const uint32_t *rk, uint32_t kc);
@@ -2482,7 +2482,7 @@ col_join_parallel_cross(wl_col_session_t *sess, const col_rel_t *left,
     return 0;
 }
 
-static uint32_t
+static inline uint32_t
 col_join_hash_rel_keys(const col_rel_t *rel, uint32_t row,
     const uint32_t *key_cols, uint32_t kc)
 {
@@ -2518,7 +2518,7 @@ col_join_hash_rel_keys(const col_rel_t *rel, uint32_t row,
     return h;
 }
 
-static bool
+static inline bool
 col_join_keys_match_rel(const col_rel_t *left, uint32_t lr,
     const uint32_t *lk, const col_rel_t *right, uint32_t rr,
     const uint32_t *rk, uint32_t kc)
