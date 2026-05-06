@@ -59,29 +59,69 @@ For fine-grained control over plans, backends, or worker counts, use the `wl_ses
 
 ## Performance
 
-15-workload benchmark portfolio (2026-04-10, Release -O2, single worker):
+15-workload benchmark portfolio (2026-05-06, `main` at `8240f97`,
+release/LTO build, GCC 16.1.1, `repeat=1`):
 
-**Environment**: AMD Ryzen 5 5600G (6C/12T), 28GB RAM, Linux 6.19.10 (Arch), GCC 15.2.1
+**Test environment**: Intel Xeon E5-2696 v4 (22C/44T), Linux 6.19.14
+(Arch), 44 logical CPUs, single NUMA node. Measurements were collected
+from `./build/bench/bench_flowlog`; wall-clock results vary with CPU
+governor, thermal state, and memory pressure.
 
-| Category | Workload | Median | Tuples | Iterations | Peak RSS |
-|----------|----------|--------|--------|------------|----------|
-| Graph | TC (Transitive Closure) | 8.7ms | 4,950 | 98 | 3MB |
-| Graph | Reach | 0.5ms | 100 | 98 | 3MB |
-| Graph | CC (Connected Components) | 0.3ms | 100 | 0 | 3MB |
-| Graph | SSSP (Shortest Path) | 0.1ms | 1 | 0 | 3MB |
-| Graph | SG (Subgraph) | 0.1ms | 0 | 0 | 3MB |
-| Graph | Bipartite | 1.4ms | 100 | 73 | 3MB |
-| Pointer Analysis | Andersen | 2.4ms | 155 | 8 | 3MB |
-| Pointer Analysis | Dyck-2 | 16.1ms | 2,120 | 8 | 6MB |
-| Pointer Analysis | CSPA | 2.43s | 20,381 | 6 | 893MB |
-| Data Flow | CSDA | 3.7ms | 2,986 | 29 | ~1MB |
-| Ontology | Galen | 36.7ms | 5,568 | 23 | ~1MB |
-| Borrow Check | Polonius | 4.2ms | 1,807 | 23 | ~1MB |
-| Disassembly | DDISASM | 4.6ms | 531 | 0 | ~1MB |
-| CRDT | CRDT | 17.3s | 1,301,914 | 0 | ~1GB |
-| Program Analysis | DOOP (zxing) | 155.3s | 6,276,338 | 28 | 15GB |
+| Category | Workload | W=1 median | W=8 median | Tuples | Iterations | Peak RSS (W=1 / W=8) |
+|----------|----------|------------|------------|--------|------------|----------------------|
+| Graph | TC (Transitive Closure) | 7.3ms | 7.1ms | 4,950 | 98 | 2.8MB / 3.0MB |
+| Graph | Reach | 0.8ms | 0.7ms | 100 | 98 | 2.6MB / 2.6MB |
+| Graph | CC (Connected Components) | 0.7ms | 0.7ms | 100 | 0 | 2.7MB / 2.6MB |
+| Graph | SSSP (Shortest Path) | 0.6ms | 0.5ms | 1 | 0 | 2.6MB / 2.6MB |
+| Graph | SG (Subgraph) | 0.6ms | 0.6ms | 0 | 0 | 2.6MB / 2.6MB |
+| Graph | Bipartite | 1.0ms | 1.0ms | 100 | 73 | 2.6MB / 2.6MB |
+| Pointer Analysis | Andersen | 2.1ms | 2.7ms | 155 | 8 | 4.5MB / 3.0MB |
+| Pointer Analysis | Dyck-2 | 15.1ms | 9.4ms | 2,120 | 8 | 5.5MB / 6.3MB |
+| Pointer Analysis | CSPA | 1.55s | 0.58s | 20,381 | 6 | 314MB / 409MB |
+| Data Flow | CSDA | 2.9ms | 2.9ms | 2,986 | 29 | 3.1MB / 3.0MB |
+| Ontology | Galen | 32.8ms | 27.9ms | 5,568 | 23 | 6.1MB / 15.5MB |
+| Borrow Check | Polonius | 4.6ms | 4.6ms | 1,807 | 23 | 5.0MB / 5.0MB |
+| Disassembly | DDISASM | 3.8ms | 4.3ms | 531 | 0 | 4.9MB / 4.9MB |
+| CRDT | CRDT | 19.25s | 19.23s | 1,301,914 | 0 / 7,603 | 73MB / 175MB |
+| Program Analysis | DOOP (zxing) | 73.42s | 59.05s | 6,276,657 | 28 | 11.8GB / 12.0GB |
 
-**Incremental evaluation** (CSPA, delta-seeded): baseline 2.45s → incremental re-eval 29.9ms (**82x faster**, 1 fact inserted, 5 iterations vs 6).
+**Incremental evaluation** (CSPA, delta-seeded): W=1 baseline 1.55s
+-> incremental re-eval 30.7ms (**50.4x faster**); W=8 baseline 648.2ms
+-> incremental re-eval 26.3ms (**24.6x faster**). Each run inserted one
+fact and changed the result from 20,381 to 21,063 tuples.
+
+`--workers N` means "use up to N workers", not "force exactly N workers for
+every stratum". The evaluator selects an active width per eligible TDD or
+K-Fusion path, falls back to narrower execution when a plan is not safely
+partitionable, and caps some paths to avoid spending memory on idle worker
+state. This keeps `W=N` adaptive: increasing N gives the runtime permission to
+use more parallelism where it is semantically safe and profitable, while
+single-threaded or narrow strata remain valid.
+
+Re-run the large-workload snapshot with:
+
+```bash
+meson setup build --buildtype=release
+meson compile -C build bench/bench_flowlog
+for w in 1 8; do
+  ./build/bench/bench_flowlog --workload tc --data bench/data/graph_100.csv --workers "$w" --repeat 1
+  ./build/bench/bench_flowlog --workload reach --data bench/data/graph_100.csv --workers "$w" --repeat 1
+  ./build/bench/bench_flowlog --workload cc --data bench/data/graph_100.csv --workers "$w" --repeat 1
+  ./build/bench/bench_flowlog --workload sssp --data bench/data/graph_100.csv --data-weighted bench/data/graph_100_weighted.csv --workers "$w" --repeat 1
+  ./build/bench/bench_flowlog --workload sg --data bench/data/graph_100.csv --workers "$w" --repeat 1
+  ./build/bench/bench_flowlog --workload bipartite --data bench/data/graph_100.csv --workers "$w" --repeat 1
+  ./build/bench/bench_flowlog --workload andersen --data-andersen bench/data/andersen --workers "$w" --repeat 1
+  ./build/bench/bench_flowlog --workload dyck --data-dyck bench/data/dyck --workers "$w" --repeat 1
+  ./build/bench/bench_flowlog --workload cspa-fast --data-cspa bench/data/cspa --workers "$w" --repeat 1
+  ./build/bench/bench_flowlog --workload cspa --data-cspa bench/data/cspa --workers "$w" --repeat 1
+  ./build/bench/bench_flowlog --workload csda --data-csda bench/data/csda --workers "$w" --repeat 1
+  ./build/bench/bench_flowlog --workload galen --data-galen bench/data/galen --workers "$w" --repeat 1
+  ./build/bench/bench_flowlog --workload polonius --data-polonius bench/data/polonius --workers "$w" --repeat 1
+  ./build/bench/bench_flowlog --workload ddisasm --data-ddisasm bench/data/ddisasm --workers "$w" --repeat 1
+  ./build/bench/bench_flowlog --workload crdt --data-crdt bench/data/crdt --workers "$w" --repeat 1
+  ./build/bench/bench_flowlog --workload doop --data-doop bench/data/doop --workers "$w" --repeat 1
+done
+```
 
 ## Examples
 
