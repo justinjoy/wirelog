@@ -2,6 +2,16 @@
 
 All notable changes to wirelog are documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- **wl_easy inline-fact materialization** (#718): `wl_easy_open` now seeds inline `.dl` facts into the columnar session at first lazy build, matching the CLI driver's order-of-operations. Previously the wl_easy facade dropped every static fact silently, so snapshots and IDB derivations re-evaluated against an empty EDB and returned no rows.
+
+### Documentation
+
+- **`docs/SEMANTICS.md`** (#718): New document recording the engine's stable semantic-model decisions. First entry: inline `.dl` fact loading rules, z-set host insert/remove model, and forward compatibility with the upcoming `wirelog_session_*` advanced surface.
+
 ## [0.30.0] - 2026-05-07
 
 ### Added
