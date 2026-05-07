@@ -1,16 +1,22 @@
 # wirelog Semantic Model
 
-This document records stable, observable semantic decisions in the
-wirelog engine. Each section is an ADR-style entry: a short statement
-of the rule, the rationale, and the public-API surfaces that promise it.
+This document records observable semantic decisions in the wirelog
+engine. Each section is an ADR-style entry: a short statement of the
+rule, the rationale, and the public-API surfaces that hold it today.
 
-The intent is forward compatibility: every entry here is a contract
-the engine honors for the lifetime of the major version it shipped in,
-unless a deprecation cycle is run through `docs/MIGRATION.md`.
+Each entry is tagged with its **Status**:
+
+- **Stable** — a contract the engine honors across a major version.
+  Changes go through a deprecation cycle in `docs/MIGRATION.md`.
+- **Current** — describes what the engine does today on the path to
+  1.0. May evolve before 1.0 GA based on review or implementation
+  realities. See `stable-release-plan.md` for the trajectory.
+
+Until 1.0 ships, expect most entries to be **Current**.
 
 ---
 
-## Inline `.dl` facts
+## Inline `.dl` facts (Status: Current)
 
 ### Rule
 
@@ -70,12 +76,16 @@ Two patterns are supported:
   weighted aggregates) are subject to the engine's
   multiplicity-tracking rules, not promised by this document.
 
-### Forward compatibility
+### Forward compatibility (Future work — not yet shipped)
 
-When `wirelog/wirelog-advanced.h` and the public `wirelog_session_*`
-surface land (see `stable-release-plan.md` §3), they will share this
-exact semantic model: open-time inline-fact seeding, z-set host
-insert/remove, optional pre-check via `wirelog_program_get_facts`.
+`wirelog/wirelog-advanced.h` and the public `wirelog_session_*` surface
+do not exist in the tree yet. They are planned per
+`stable-release-plan.md` §3 and, when they land, are intended to share
+this exact semantic model: open-time inline-fact seeding, z-set host
+insert/remove, optional pre-check via `wirelog_program_get_facts`. The
+intent here is to avoid drift between the easy facade and the future
+advanced surface; this paragraph is non-binding until those headers
+actually ship.
 
 ### References
 

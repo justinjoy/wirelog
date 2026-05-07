@@ -10,7 +10,7 @@ All notable changes to wirelog are documented in this file.
 
 ### Documentation
 
-- **`docs/SEMANTICS.md`** (#718): New document recording the engine's stable semantic-model decisions. First entry: inline `.dl` fact loading rules, z-set host insert/remove model, and forward compatibility with the upcoming `wirelog_session_*` advanced surface.
+- **`docs/SEMANTICS.md`** (#718): New document recording the engine's observable semantic-model decisions and the path toward 1.0 stabilization. First entry: inline `.dl` fact loading rules and the z-set host insert/remove model (status: Current).
 
 ## [0.30.0] - 2026-05-07
 

@@ -86,12 +86,16 @@ ensure_plan_built(wl_easy_session_t *s, uint32_t num_workers)
     }
 
     /* Issue #718: seed inline `.dl` facts into the freshly built session
-     * so snapshots and IDB derivations observe them, matching the CLI
-     * driver's order-of-operations (cli/driver.c:397).  The load runs
-     * exactly once on the lazy plan/session boundary, before any host
-     * delta callback can be installed, so col_session_insert takes the
-     * non-incremental path: no spurious static deltas on the first
-     * step() and no outer-epoch advance. */
+     * so snapshots and IDB derivations observe them.  This mirrors the
+     * fact-load step of the CLI driver's session-build sequence
+     * (cli/driver.c:397); the wider optimizer pipeline alignment
+     * between wl_easy (fusion + jpp + sip) and the CLI (which also
+     * runs subsumption + magic_sets) is tracked separately and is not
+     * in scope here.  The load runs exactly once on the lazy
+     * plan/session boundary, before any host delta callback can be
+     * installed, so col_session_insert takes the non-incremental path:
+     * no spurious static deltas on the first step() and no outer-epoch
+     * advance. */
     rc = wl_session_load_facts(session, s->prog);
     if (rc != 0) {
         wl_session_destroy(session);
