@@ -132,6 +132,15 @@ wl_easy_open_opts(const char *dl_src,
  * first step-class call; the intern table is shared through the whole
  * session lifetime.
  *
+ * Inline `.dl` facts (e.g. `edge("a", "b").`) are seeded into the session
+ * as base rows at first lazy build, before any host delta callback can be
+ * installed.  Snapshots and IDB derivations therefore observe them.  Host
+ * inserts of the same row add a second multiplicity (z-set semantics): a
+ * subsequent wl_easy_remove() decrements one multiplicity, so a host that
+ * mirrors a static fact and later retracts must mirror the retract too.
+ * Hosts that need to know which rows are already present from the source
+ * can read them via wirelog_program_get_facts().
+ *
  * Returns: WIRELOG_OK on success, WIRELOG_ERR_PARSE on parse failure,
  * WIRELOG_ERR_MEMORY on allocation failure, or another wirelog_error_t on
  * other failure modes.  *out is set to NULL on error.
