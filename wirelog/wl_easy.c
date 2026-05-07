@@ -30,6 +30,7 @@
 #include "wirelog/passes/jpp.h"
 #include "wirelog/passes/sip.h"
 #include "wirelog/session.h"
+#include "wirelog/session_facts.h"
 #include "wirelog/wirelog-parser.h"
 #include "wirelog/wirelog-types.h"
 
@@ -82,6 +83,20 @@ ensure_plan_built(wl_easy_session_t *s, uint32_t num_workers)
     if (rc != 0 || !session) {
         wl_plan_free(plan);
         return (rc == ENOMEM) ? WIRELOG_ERR_MEMORY : WIRELOG_ERR_EXEC;
+    }
+
+    /* Issue #718: seed inline `.dl` facts into the freshly built session
+     * so snapshots and IDB derivations observe them, matching the CLI
+     * driver's order-of-operations (cli/driver.c:397).  The load runs
+     * exactly once on the lazy plan/session boundary, before any host
+     * delta callback can be installed, so col_session_insert takes the
+     * non-incremental path: no spurious static deltas on the first
+     * step() and no outer-epoch advance. */
+    rc = wl_session_load_facts(session, s->prog);
+    if (rc != 0) {
+        wl_session_destroy(session);
+        wl_plan_free(plan);
+        return WIRELOG_ERR_EXEC;
     }
 
     s->plan = plan;

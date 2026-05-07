@@ -3541,6 +3541,25 @@ test_wl_easy_exe = executable(
 
 test('wl_easy', test_wl_easy_exe)
 
+# Issue #718: inline .dl static-fact materialization regression.
+test_wl_easy_inline_facts_exe = executable(
+  'test_wl_easy_inline_facts',
+  files('test_wl_easy_inline_facts.c'),
+  parser_src,
+  ir_src,
+  optimizer_src,
+  backend_src,
+  io_src,
+  arena_src,
+  thread_src,
+  workqueue_src,
+  '../wirelog/wl_easy.c',
+  include_directories: [wirelog_inc, wirelog_src_inc],
+  dependencies: [nanoarrow_dep, threads_dep, xxhash_dep, mbedtls_dep, math_dep],
+)
+
+test('wl_easy_inline_facts', test_wl_easy_inline_facts_exe)
+
 # ============================================================================
 # Baseline .input Fixture Snapshot Tests (Issue #448)
 # ============================================================================
