@@ -1472,6 +1472,17 @@ test_workqueue_exe = executable(
 
 test('workqueue', test_workqueue_exe)
 
+# Whitebox regression: test source includes workqueue.c exactly once.
+test_workqueue_drain_exe = executable(
+  'test_workqueue_drain',
+  files('test_workqueue_drain.c'),
+  thread_src,
+  include_directories: [wirelog_inc, wirelog_src_inc],
+  dependencies: [threads_dep],
+)
+
+test('workqueue_drain', test_workqueue_drain_exe, timeout: 30)
+
 # ============================================================================
 # Workqueue Capacity Tests (Issue #414)
 # ============================================================================
@@ -4965,7 +4976,9 @@ test_tdd_decision_stats_exe = executable(
   dependencies: [nanoarrow_dep, threads_dep, xxhash_dep, mbedtls_dep, math_dep],
 )
 
-test('tdd_decision_stats', test_tdd_decision_stats_exe)
+# The sanitizer matrix on ARM is substantially slower for the worker and
+# exchange stress cases than the default Meson 30-second test timeout.
+test('tdd_decision_stats', test_tdd_decision_stats_exe, timeout: 300)
 
 test_tdd_decision_stats_seq_exe = executable(
   'test_tdd_decision_stats_nofusion',
@@ -4976,7 +4989,7 @@ test_tdd_decision_stats_seq_exe = executable(
   include_directories: [wirelog_inc, wirelog_src_inc],
   dependencies: [nanoarrow_dep, threads_dep, xxhash_dep, mbedtls_dep, math_dep],
 )
-test('tdd_decision_stats_nofusion', test_tdd_decision_stats_seq_exe)
+test('tdd_decision_stats_nofusion', test_tdd_decision_stats_seq_exe, timeout: 300)
 test('tdd_execution_audit', bench_flowlog_json_py3,
      args: [files('test_tdd_execution_audit.py')[0],
             '--runtime-bin', test_tdd_decision_stats_exe.full_path(),

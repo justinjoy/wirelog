@@ -403,9 +403,8 @@ col_rel_set_column_types(col_rel_t *r, const wirelog_column_type_t *types,
             if (r->column_types[c] != WIRELOG_TYPE_FLOAT)
                 continue;
             for (uint32_t row = 0; row < r->nrows; row++) {
-                if (r->columns[c][row]
-                    == wl_columnar_float_to_bits(-0.0))
-                    r->columns[c][row] = wl_columnar_float_to_bits(0.0);
+                if (wl_columnar_float_bits_zero(r->columns[c][row]))
+                    r->columns[c][row] = 0;
             }
         }
     }
@@ -668,8 +667,8 @@ col_rel_append_row(col_rel_t *r, const int64_t *row)
     if (r->column_types) {
         for (uint32_t c = 0; c < r->ncols; c++) {
             if (r->column_types[c] == WIRELOG_TYPE_FLOAT
-                && r->columns[c][r->nrows] == wl_columnar_float_to_bits(-0.0))
-                r->columns[c][r->nrows] = wl_columnar_float_to_bits(0.0);
+                && wl_columnar_float_bits_zero(r->columns[c][r->nrows]))
+                r->columns[c][r->nrows] = 0;
         }
     }
     r->nrows++;
@@ -846,9 +845,8 @@ col_rel_append_all(col_rel_t *dst, const col_rel_t *src, wl_arena_t *arena)
             if (dst->column_types[c] != WIRELOG_TYPE_FLOAT)
                 continue;
             for (uint32_t row = dst_base; row < new_nrows; row++) {
-                if (dst->columns[c][row]
-                    == wl_columnar_float_to_bits(-0.0))
-                    dst->columns[c][row] = wl_columnar_float_to_bits(0.0);
+                if (wl_columnar_float_bits_zero(dst->columns[c][row]))
+                    dst->columns[c][row] = 0;
             }
         }
     }

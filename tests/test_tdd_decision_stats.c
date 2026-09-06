@@ -511,6 +511,8 @@ main(int argc, char **argv)
             return run_audit_boundary(1);
         if (strcmp(argv[1], "--audit-partial") == 0)
             return run_audit_boundary(3);
+        if (strcmp(argv[1], "--audit-unsafe") == 0)
+            return run_audit_boundary(2);
         if (strcmp(argv[1], "--audit-frames-off") == 0)
             unsetenv("WIRELOG_TDD_STRATUM_PROFILE");
         return run_snapshot_frames();
