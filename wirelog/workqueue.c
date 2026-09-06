@@ -56,6 +56,7 @@ struct wl_work_queue {
     /* Barrier tracking */
     uint32_t submitted; /* total items submitted in current batch */
     uint32_t completed; /* total items completed in current batch */
+    bool dispatch_enabled; /* protected by mutex; opened by wait_all */
 
     /* Shutdown flag */
     bool shutdown;
@@ -103,8 +104,9 @@ worker_thread(void *arg)
 
         mutex_lock(&wq->mutex);
 
-        /* Wait for work or shutdown */
-        while (wq->count == 0 && !wq->shutdown)
+        /* Submission alone does not dispatch a batch. Startup, late, and
+         * spuriously awakened workers must also respect the dispatch gate. */
+        while ((wq->count == 0 || !wq->dispatch_enabled) && !wq->shutdown)
             cond_wait(&wq->work_avail, &wq->mutex);
 
         if (wq->shutdown && wq->count == 0) {
@@ -245,10 +247,9 @@ wl_workqueue_submit(wl_work_queue_t *wq, void (*work_fn)(void *ctx), void *ctx)
     wq->count++;
     wq->submitted++;
 
-    /* Do NOT signal workers here — wl_workqueue_wait_all() broadcasts
-     * once all items are queued.  This ensures that wl_workqueue_drain()
-     * can dequeue every item on the calling thread without workers racing
-     * to steal from the ring between submit() and drain(). */
+    /* wait_all() opens the dispatch gate and wakes workers after submission.
+     * Suppressing signals alone would not prevent startup or late workers
+     * from consuming a submit-only batch intended for synchronous drain. */
     mutex_unlock(&wq->mutex);
 
     return 0;
@@ -263,11 +264,14 @@ wl_workqueue_wait_all(wl_work_queue_t *wq)
     mutex_lock(&wq->mutex);
 
     /* Wake all workers now that the batch is fully queued. */
+    wq->dispatch_enabled = true;
     cond_broadcast(&wq->work_avail);
 
     while (wq->completed < wq->submitted)
         cond_wait(&wq->all_done, &wq->mutex);
 
+    /* Close dispatch before the next submit-only batch becomes visible. */
+    wq->dispatch_enabled = false;
     /* Reset counters for next batch */
     wq->submitted = 0;
     wq->completed = 0;
@@ -283,17 +287,17 @@ wl_workqueue_drain(wl_work_queue_t *wq)
     if (!wq)
         return -1;
 
-    /*
-     * Execute all pending items synchronously on the calling thread.
-     * No lock needed for execution since drain bypasses the thread pool,
-     * but we lock to dequeue safely.
-     */
+    /* Stop further worker dequeues. Already-running callbacks must finish
+     * before this function releases ownership of caller-provided contexts. */
+    mutex_lock(&wq->mutex);
+    wq->dispatch_enabled = false;
     for (;;) {
         wl_work_item_t item;
 
-        mutex_lock(&wq->mutex);
         if (wq->count == 0) {
-            /* Reset counters */
+            /* An empty ring can still have callbacks executing on workers. */
+            while (wq->completed < wq->submitted)
+                cond_wait(&wq->all_done, &wq->mutex);
             wq->submitted = 0;
             wq->completed = 0;
             mutex_unlock(&wq->mutex);
@@ -306,6 +310,8 @@ wl_workqueue_drain(wl_work_queue_t *wq)
         mutex_unlock(&wq->mutex);
 
         item.fn(item.ctx);
+        mutex_lock(&wq->mutex);
+        wq->completed++;
     }
 }
 

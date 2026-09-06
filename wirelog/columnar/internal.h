@@ -62,23 +62,40 @@ wl_columnar_float_to_bits(double value)
     return bits;
 }
 
-static inline int
-wl_columnar_float_compare_bits(int64_t left_bits, int64_t right_bits)
-{
-    double left = wl_columnar_float_from_bits(left_bits);
-    double right = wl_columnar_float_from_bits(right_bits);
-    bool left_valid = isfinite(left);
-    bool right_valid = isfinite(right);
-    if (!left_valid || !right_valid) {
-        return WL_COLUMNAR_CMP_INCOMPATIBLE;
-    }
-    return left < right ? -1 : left > right ? 1 : 0;
-}
-
+/* These representation-only helpers deliberately avoid address-taken float
+ * temporaries. Inlining memcpy-based conversions into integer cell access
+ * also instruments that hot path with ASan fake-stack allocations on GCC/ARM.
+ * Float lanes already require IEEE binary64; arithmetic still uses the
+ * conversion helpers above. */
 static inline bool
 wl_columnar_float_bits_valid(int64_t bits)
 {
-    return isfinite(wl_columnar_float_from_bits(bits));
+    const uint64_t exponent = UINT64_C(0x7ff0000000000000);
+    return ((uint64_t)bits & exponent) != exponent;
+}
+
+static inline bool
+wl_columnar_float_bits_zero(int64_t bits)
+{
+    return ((uint64_t)bits & UINT64_C(0x7fffffffffffffff)) == 0;
+}
+
+static inline int
+wl_columnar_float_compare_bits(int64_t left_bits, int64_t right_bits)
+{
+    if (!wl_columnar_float_bits_valid(left_bits)
+        || !wl_columnar_float_bits_valid(right_bits))
+        return WL_COLUMNAR_CMP_INCOMPATIBLE;
+    if (wl_columnar_float_bits_zero(left_bits)
+        && wl_columnar_float_bits_zero(right_bits))
+        return 0;
+    const uint64_t sign = UINT64_C(0x8000000000000000);
+    uint64_t left = (uint64_t)left_bits;
+    uint64_t right = (uint64_t)right_bits;
+    /* Reverse the negative encodings and place positives above negatives. */
+    left = (left & sign) ? ~left : left ^ sign;
+    right = (right & sign) ? ~right : right ^ sign;
+    return left < right ? -1 : left > right ? 1 : 0;
 }
 
 #ifdef _MSC_VER
@@ -460,9 +477,8 @@ wl_columnar_relation_float_values_valid(const col_rel_t *rel)
 static inline uint64_t
 wl_columnar_float_canonical_bits(int64_t bits)
 {
-    double value = wl_columnar_float_from_bits(bits);
-    if (value == 0.0)
-        return (uint64_t)wl_columnar_float_to_bits(0.0);
+    if (wl_columnar_float_bits_zero(bits))
+        return 0;
     return (uint64_t)bits;
 }
 
@@ -526,8 +542,8 @@ col_rel_set(col_rel_t *r, uint32_t row, uint32_t col, int64_t val)
     if (r->column_types && r->column_types[col] == WIRELOG_TYPE_FLOAT) {
         if (!wl_columnar_float_bits_valid(val))
             return EINVAL;
-        if (val == wl_columnar_float_to_bits(-0.0))
-            val = wl_columnar_float_to_bits(0.0);
+        if (wl_columnar_float_bits_zero(val))
+            val = 0;
     }
     r->columns[col][row] = val;
     return 0;
@@ -579,8 +595,8 @@ col_rel_row_copy_in(col_rel_t *r, uint32_t row, const int64_t *src)
         int64_t value = 0;
         memcpy(&value, &src[c], sizeof(value));
         if (r->column_types && r->column_types[c] == WIRELOG_TYPE_FLOAT
-            && value == wl_columnar_float_to_bits(-0.0))
-            value = wl_columnar_float_to_bits(0.0);
+            && wl_columnar_float_bits_zero(value))
+            value = 0;
         memcpy(&r->columns[c][row], &value, sizeof(value));
     }
     return 0;

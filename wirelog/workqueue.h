@@ -29,7 +29,7 @@
  * The work queue owns a fixed-size pool of worker threads, created at
  * wl_workqueue_create() time and joined at wl_workqueue_destroy() time.
  *
- * Workers block on a condition variable until tasks are submitted.
+ * Workers block on a condition variable until wait_all dispatches a batch.
  * Tasks are dispatched from a ring buffer protected by a single mutex.
  *
  * The caller submits work items via wl_workqueue_submit(), then calls
@@ -39,6 +39,8 @@
  *
  * For single-threaded / embedded fallback, wl_workqueue_drain() executes
  * all pending tasks synchronously on the calling thread.
+ * The coordinator serializes submit, wait_all, drain, and destroy calls;
+ * these control operations must not overlap with each other.
  *
  * ========================================================================
  * Per-Worker Arena Cloning
@@ -163,10 +165,12 @@ wl_workqueue_wait_all(wl_work_queue_t *wq);
  *
  * Execute all pending work items synchronously on the calling thread.
  * Intended as a single-threaded fallback for embedded targets or
- * debugging (bypasses the thread pool entirely).
+ * debugging. A submit-only batch executes entirely on the caller. If tasks
+ * are already executing on workers, their completion is also awaited.
  *
- * Clears the task queue after execution.  The queue is ready for new
- * submit calls after this returns.
+ * Returns only after every submitted callback has finished, including any
+ * callback already dequeued by a worker. Contexts may then be released and
+ * the queue is ready for a new batch. Do not overlap with wait_all or submit.
  *
  * Returns:
  *    0: All tasks drained successfully.
