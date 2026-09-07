@@ -14,8 +14,12 @@
  *   6. subsystem over-budget detection
  *   7. backpressure threshold
  *   8. bytes_remaining computation
+ *   9. set_gauge moves the total by the difference and tracks the peak
+ *  10. snapshot mirrors every counter
+ *  11. subsystem table is complete (names, percentages sum to 100)
  *
  * Issue #224: Memory Observability and Graceful Degradation for DOOP OOM
+ * Issue #1380: gauge/snapshot API and the CHANNEL/STORED/TEMPORARY classes
  */
 
 #include "../wirelog/columnar/mem_ledger.h"
@@ -523,6 +527,156 @@ test_overflow_boundaries(void)
         percentage_sum += wl_mem_subsys_pct[i];
     if (percentage_sum != 100) {
         FAIL("subsystem percentages do not sum to 100");
+/* Test 9: set_gauge (Issue #1380)                                          */
+/* ======================================================================== */
+
+static int
+test_set_gauge(void)
+{
+    TEST("set_gauge moves total by the difference and tracks peak");
+
+    wl_mem_ledger_t ledger;
+    wl_mem_ledger_init(&ledger, 0);
+    wl_mem_ledger_alloc(&ledger, WL_MEM_SUBSYS_RELATION, 1000);
+
+    wl_mem_ledger_set_gauge(&ledger, WL_MEM_SUBSYS_STORED, 300);
+    wl_mem_ledger_set_gauge(&ledger, WL_MEM_SUBSYS_STORED, 500); /* up   */
+    wl_mem_ledger_set_gauge(&ledger, WL_MEM_SUBSYS_STORED, 200); /* down */
+
+    wl_mem_ledger_snapshot_t snap;
+    wl_mem_ledger_snapshot(&ledger, &snap);
+    if (snap.subsys_bytes[WL_MEM_SUBSYS_STORED] != 200) {
+        FAIL("STORED gauge should read the last value set");
+        return 1;
+    }
+    if (snap.subsys_peak[WL_MEM_SUBSYS_STORED] != 500) {
+        FAIL("STORED peak should be the largest gauge value");
+        return 1;
+    }
+    if (snap.current_bytes != 1200) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "current_bytes=%llu, want 1200",
+            (unsigned long long)snap.current_bytes);
+        FAIL(msg);
+        return 1;
+    }
+    if (snap.peak_bytes != 1500) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "peak_bytes=%llu, want 1500",
+            (unsigned long long)snap.peak_bytes);
+        FAIL(msg);
+        return 1;
+    }
+
+    /* Gauge to zero returns the total to the allocated remainder. */
+    wl_mem_ledger_set_gauge(&ledger, WL_MEM_SUBSYS_STORED, 0);
+    wl_mem_ledger_snapshot(&ledger, &snap);
+    if (snap.current_bytes != 1000
+        || snap.subsys_bytes[WL_MEM_SUBSYS_STORED] != 0) {
+        FAIL("gauge reset did not restore the total");
+        return 1;
+    }
+
+    /* Out-of-range subsystem and NULL ledger are ignored. */
+    wl_mem_ledger_set_gauge(&ledger, WL_MEM_SUBSYS_COUNT, 999);
+    wl_mem_ledger_set_gauge(NULL, WL_MEM_SUBSYS_STORED, 999);
+    wl_mem_ledger_snapshot(&ledger, &snap);
+    if (snap.current_bytes != 1000) {
+        FAIL("invalid gauge calls must not change the total");
+        return 1;
+    }
+
+    PASS();
+    return 0;
+}
+
+/* ======================================================================== */
+/* Test 10: snapshot (Issue #1380)                                          */
+/* ======================================================================== */
+
+static int
+test_snapshot(void)
+{
+    TEST("snapshot mirrors every counter");
+
+    wl_mem_ledger_t ledger;
+    wl_mem_ledger_init(&ledger, 4096);
+    for (int i = 0; i < WL_MEM_SUBSYS_COUNT; i++)
+        wl_mem_ledger_alloc(&ledger, i, (uint64_t)(i + 1) * 10);
+    wl_mem_ledger_free(&ledger, WL_MEM_SUBSYS_RELATION, 5);
+
+    wl_mem_ledger_snapshot_t snap;
+    wl_mem_ledger_snapshot(&ledger, &snap);
+    if (snap.total_budget != 4096) {
+        FAIL("budget not mirrored");
+        return 1;
+    }
+    uint64_t sum = 0;
+    for (int i = 0; i < WL_MEM_SUBSYS_COUNT; i++) {
+        uint64_t want = (uint64_t)(i + 1) * 10;
+        if (i == WL_MEM_SUBSYS_RELATION)
+            want -= 5;
+        if (snap.subsys_bytes[i] != want) {
+            FAIL("subsystem current not mirrored");
+            return 1;
+        }
+        if (snap.subsys_peak[i] != (uint64_t)(i + 1) * 10) {
+            FAIL("subsystem peak not mirrored");
+            return 1;
+        }
+        sum += want;
+    }
+    if (snap.current_bytes != sum || snap.peak_bytes != sum + 5) {
+        FAIL("total/peak not mirrored");
+        return 1;
+    }
+
+    /* NULL handling: NULL ledger zeroes the output, NULL output is a no-op. */
+    memset(&snap, 0xFF, sizeof(snap));
+    wl_mem_ledger_snapshot(NULL, &snap);
+    if (snap.current_bytes != 0 || snap.peak_bytes != 0) {
+        FAIL("NULL ledger must zero the snapshot");
+        return 1;
+    }
+    wl_mem_ledger_snapshot(&ledger, NULL);
+
+    PASS();
+    return 0;
+}
+
+/* ======================================================================== */
+/* Test 11: subsystem table (Issue #1380)                                   */
+/* ======================================================================== */
+
+static int
+test_subsys_table(void)
+{
+    TEST("subsystem table is complete and percentages sum to 100");
+
+    uint32_t pct = 0;
+    for (int i = 0; i < WL_MEM_SUBSYS_COUNT; i++) {
+        if (!wl_mem_subsys_names[i] || wl_mem_subsys_names[i][0] == '\0') {
+            FAIL("subsystem without a name");
+            return 1;
+        }
+        pct += wl_mem_subsys_pct[i];
+    }
+    if (pct != 100) {
+        FAIL("subsystem percentages must sum to 100");
+        return 1;
+    }
+    if (WL_MEM_SUBSYS_COUNT != 8
+        || strcmp(wl_mem_subsys_names[WL_MEM_SUBSYS_CHANNEL], "CHANNEL") != 0
+        || strcmp(wl_mem_subsys_names[WL_MEM_SUBSYS_STORED], "STORED") != 0
+        || strcmp(wl_mem_subsys_names[WL_MEM_SUBSYS_TEMPORARY],
+        "TEMPORARY") != 0) {
+        FAIL("Issue #1380 subsystems missing");
+        return 1;
+    }
+    /* The join operator polls RELATION at 80% of its cap; that share is
+     * part of the observable backpressure contract. */
+    if (wl_mem_subsys_pct[WL_MEM_SUBSYS_RELATION] != 50) {
+        FAIL("RELATION share must stay at 50%");
         return 1;
     }
 
@@ -551,6 +705,9 @@ main(void)
     test_backpressure_threshold();
     test_bytes_remaining();
     test_overflow_boundaries();
+    test_set_gauge();
+    test_snapshot();
+    test_subsys_table();
 
     printf("\n");
     printf("Passed: %d/%d\n", tests_passed, tests_run);

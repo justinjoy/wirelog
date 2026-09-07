@@ -110,6 +110,8 @@ static uint32_t g_last_tdd_fallback_no_exchange = 0;
 static uint32_t g_last_tdd_fallback_unsafe_plan = 0;
 static uint32_t g_last_tdd_fallback_adaptive_workers = 0;
 static const char *g_last_tdd_fallback_reason = "none";
+/* Issue #1380: memory instrumentation snapshot of the last run. */
+static wl_columnar_mem_stats_t g_last_mem_stats;
 
 static void
 repeat_progress_record(const char *kind, int repetition, int repeat,
@@ -438,6 +440,7 @@ run_pipeline_count(const char *source, uint32_t num_workers, int64_t *out_count,
         &g_last_tdd_fallback_unsafe_plan,
         &g_last_tdd_fallback_adaptive_workers,
         &g_last_tdd_fallback_reason);
+    col_session_get_mem_stats(sess, &g_last_mem_stats);
 
     wl_session_destroy(sess);
     wl_plan_free(plan);
@@ -1090,6 +1093,7 @@ run_tdd_bdx_pipeline(const int64_t *rows, uint32_t edge_count,
         &g_last_tdd_fallback_unsafe_plan,
         &g_last_tdd_fallback_adaptive_workers,
         &g_last_tdd_fallback_reason);
+    col_session_get_mem_stats(sess, &g_last_mem_stats);
 
     wl_session_destroy(sess);
     wl_plan_free(plan);
@@ -3054,6 +3058,30 @@ output_json_row(const char *wl_name, int32_t edges, uint32_t workers,
     double tdd_accounted_pct = g_last_tdd_total_ns > 0
         ? 100.0 * tdd_phase_ns / (double)g_last_tdd_total_ns
         : 0.0;
+    /* Issue #1380: memory instrumentation baseline.  ledger_peak_bytes is
+     * what the session accounted; peak_rss_kb above is what the OS saw.
+     * The gap is the unaccounted remainder (allocator overhead, thread
+     * stacks, parser/plan, intern table) -- see docs/MEMORY.md. */
+    printf("  \"ledger_peak_bytes\": %" PRIu64 ",\n",
+        g_last_mem_stats.peak_bytes);
+    printf("  \"ledger_budget_bytes\": %" PRIu64 ",\n",
+        g_last_mem_stats.budget_bytes);
+    printf("  \"ledger_worker_reports\": %" PRIu64 ",\n",
+        g_last_mem_stats.worker_reports);
+    printf("  \"ledger_worker_peak_max_bytes\": %" PRIu64 ",\n",
+        g_last_mem_stats.worker_peak_max_bytes);
+    printf("  \"ledger_worker_peak_sum_bytes\": %" PRIu64 ",\n",
+        g_last_mem_stats.worker_peak_sum_bytes);
+    printf("  \"ledger_subsys_peak_bytes\": {");
+    {
+        int subsys_count = 0;
+        (void)wl_columnar_mem_subsys_name(0, &subsys_count);
+        for (int i = 0; i < subsys_count; i++)
+            printf("%s\"%s\": %" PRIu64, i > 0 ? ", " : "",
+                wl_columnar_mem_subsys_name(i, NULL),
+                g_last_mem_stats.subsys_peak_bytes[i]);
+    }
+    printf("},\n");
     printf("  \"profiling_wall_ms\": %.3f,\n", g_last_wall_ms);
     printf("  \"tdd_active_workers\": %u,\n", g_last_tdd_active_workers);
     printf("  \"tdd_max_active_workers\": %u,\n",

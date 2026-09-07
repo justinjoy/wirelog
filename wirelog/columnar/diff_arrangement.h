@@ -44,7 +44,26 @@ typedef struct col_diff_arrangement {
     uint32_t *ht_next;
     uint32_t nbuckets;
     uint32_t ht_cap;
+    /* Issue #1380: when non-NULL, the struct, key_cols, ht_head and ht_next
+    * bytes are charged to WL_MEM_SUBSYS_ARRANGEMENT on this ledger.  NULL
+    * until col_diff_arrangement_attach_ledger(); deep copies start NULL. */
+    struct wl_mem_ledger *ledger;
 } col_diff_arrangement_t;
+
+/**
+ * col_diff_arrangement_bytes - Heap bytes owned by @arr (struct, key_cols,
+ * ht_head, ht_next).  Returns 0 for NULL.
+ */
+uint64_t col_diff_arrangement_bytes(const col_diff_arrangement_t *arr);
+
+/**
+ * col_diff_arrangement_attach_ledger - Start charging @arr's bytes to
+ * @ledger under WL_MEM_SUBSYS_ARRANGEMENT.  Charges the current footprint
+ * immediately; subsequent growth and destruction are reconciled
+ * automatically.  No-op when @arr is NULL or already attached.
+ */
+void col_diff_arrangement_attach_ledger(col_diff_arrangement_t *arr,
+    struct wl_mem_ledger *ledger);
 
 /**
  * col_diff_arrangement_create - Create a new differential arrangement.

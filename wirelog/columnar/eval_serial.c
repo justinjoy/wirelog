@@ -274,6 +274,7 @@ col_eval_stratum(const wl_plan_stratum_t *sp, wl_col_session_t *sess,
             }
         }
         col_mat_cache_clear(&sess->mat_cache);
+        col_session_mem_sample(sess); /* Issue #1380 */
         delta_pool_reset(sess->delta_pool);
         sess->rotation_ops->rotate_eval_arena(sess);
 
@@ -774,6 +775,8 @@ col_eval_stratum(const wl_plan_stratum_t *sp, wl_col_session_t *sess,
                     sess->cache_evict_threshold);
             }
 
+            col_session_mem_sample(sess); /* Issue #1380 */
+
             delta_pool_reset(sess->delta_pool);
             sess->rotation_ops->rotate_eval_arena(sess);
             /* Issue #560: Advance the compound-arena epoch frontier at the
@@ -883,6 +886,7 @@ stride_error:
     }
     free(snap);
     free((void *)delta_rels);
+    col_session_mem_sample(sess); /* Issue #1380 */
     delta_pool_reset(sess->delta_pool);
     sess->rotation_ops->rotate_eval_arena(sess);
     col_mat_cache_clear(&sess->mat_cache);

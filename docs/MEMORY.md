@@ -171,3 +171,274 @@ fixtures agree on:
 Resolver-provider, reservation-lifecycle, public-error, and allocation-site
 tests belong to #1368/#1369 and must be added there with their unimplemented
 symbols; this document does not claim those behaviors already exist.
+# wirelog Memory Instrumentation
+
+This document describes what the columnar engine measures about its own
+memory use, how to read the numbers, what they cost, and the baselines that
+bounded-memory work (Issue #1367 and its sub-issues) starts from.  It covers
+Issue #1380.
+
+Nothing here enforces a limit.  The ledger is an accounting instrument; the
+budget it carries (`WIRELOG_MEMORY_BUDGET`) only drives the join operator's
+backpressure poll described in §6.
+
+## 1. Units and conventions
+
+- Every value is a byte count of an exact allocation size as requested from
+  `malloc`/`calloc`/`realloc`, not a page count and not what the allocator
+  actually reserved.
+- The human-readable report uses binary prefixes: `1.0KB` is 1024 bytes,
+  `1.0MB` is 1048576 bytes, `1.0GB` is 1073741824 bytes, printed with one
+  decimal.
+- Peak RSS (`rss_peak`) comes from `getrusage(RUSAGE_SELF).ru_maxrss`.  It
+  is a process-wide, monotonically increasing kernel value: kilobytes on
+  Linux (converted to bytes), bytes on macOS, unavailable on Windows
+  (reported as 0).
+- `current` is the value at the moment of the report; `peak` is the
+  session-lifetime high-water mark of that counter.  Peaks are never reset
+  by a second `wl_session_snapshot()`.
+
+## 2. The ledger
+
+Each `wl_col_session_t` embeds one `wl_mem_ledger_t`
+(`wirelog/columnar/mem_ledger.h`).  It holds a total, a total peak and one
+current/peak pair per subsystem, all updated with relaxed atomics so that
+K-fusion branch threads and TDD workers can charge concurrently.  Two update
+styles exist:
+
+- **Event accounting** (`wl_mem_ledger_alloc`/`wl_mem_ledger_free`): the
+  owner of an allocation charges when it allocates and credits when it
+  frees.  Used where allocation and release are paired in code.
+- **Gauge sampling** (`wl_mem_ledger_set_gauge`): the session re-measures a
+  class it can enumerate and publishes the absolute value; the total moves
+  by the difference.  Used where objects are mutated by many code paths
+  without a single owner.
+
+TDD worker sessions are separate `wl_col_session_t` values with their own
+ledgers (budget = the per-party share, see §6).  Their peaks are folded into
+the coordinator's aggregates when a worker is torn down, which happens after
+every stratum that ran under TDD.
+
+### 2.1 Subsystems
+
+| Subsystem | Style | What is counted | Where |
+|---|---|---|---|
+| `RELATION` | event | Column buffers of operator output relations whose `col_rel_t.mem_ledger` is attached; today that is every join output (`col_join_attach_ledger`). Capacity-based (`capacity × owned columns × 8`). | `relation.c` growth, compaction and free paths |
+| `ARENA` | event | Fixed capacity of the session's delta pool (slot slab + data arena) and eval arena. Charged at creation, credited at destruction. `delta_pool_reset()`/`wl_arena_reset()` do not change it: the buffers are retained. K-fusion branch sessions charge their per-branch pool/arena to the parent. | `session.c`, `kfusion.c` |
+| `CACHE` | event | Materialization-cache entries. On insert the cached result is re-parented: its RELATION (and TIMESTAMP) charge is credited and the same bytes are charged to CACHE, so a cached join is counted once. Credited on eviction, truncation and clear. | `cache.c` |
+| `ARRANGEMENT` | event | Hash arrangements (`ht_head` + `ht_next`), delta and filtered arrangements, sorted copies for LFTJ (`nrows × ncols × 8`, a full duplicate of the relation) and differential arrangements (struct + keys + buckets + chain). Worker clones are charged to the worker ledger. | `arrangement.c`, `diff_arrangement.c` |
+| `TIMESTAMP` | event | `timestamps[]` arrays (24 bytes per row of capacity) of ledger-attached relations. Reconciled together with RELATION. | `relation.c` |
+| `CHANNEL` | event | TDD delta transport: the MPSC ring storage for the stratum (charged at queue creation) plus every delta payload (columns + timestamps) between the worker's enqueue and the coordinator's drain or discard. Charged on the coordinator's ledger because ownership transfers on enqueue. | `eval.c`, `eval_tdd_queue.c` |
+| `STORED` | gauge | Session-owned relations in `rels[]`: EDB and IDB relations on the coordinator, partitions on a worker. Column buffers plus timestamps; arena-owned columns count 0. | sampled, see §2.2 |
+| `TEMPORARY` | gauge | Delta-pool temporaries whose column buffers spilled to the heap because the pool arena was full (`pool_owned && !arena_owned`), excluding those already attached to RELATION. | sampled, see §2.2 |
+
+The per-subsystem cap printed in the report is `budget × share / 100` with
+shares `50/10/10/10/5/5/5/5` in the order above.  Only the RELATION share
+has an observable effect (§6); the others exist for the report.
+
+### 2.2 Sampling points
+
+`col_session_mem_sample()` re-measures STORED and TEMPORARY:
+
+- on the sequential evaluator, immediately before every `delta_pool_reset()`
+  (end of a non-recursive stratum, end of every recursive sub-pass, end of
+  the recursive stratum), which is the high-water point of the temporaries;
+- on a TDD worker, at the same point of its sub-pass;
+- on the TDD coordinator, once per outer iteration;
+- at the end of every `wl_session_snapshot()`, and once more in
+  `col_session_destroy()` when a report is requested.
+
+Cost is one pass over `nrels` plus the used pool slots, with no allocation.
+
+### 2.3 What is not counted
+
+The difference between `rss_peak` and the ledger peak is the unaccounted
+remainder.  Known contributors, in roughly decreasing order for large
+workloads:
+
+- **Allocator overhead and fragmentation.** The ledger records requested
+  sizes; glibc's arenas, per-thread caches and retained free chunks are
+  invisible to it.  This is the largest term on DOOP-sized runs.
+- **Delta-pool overflow structs.** When the slot slab is exhausted,
+  temporaries fall back to `calloc`'d `col_rel_t` structs that are not
+  enumerable from the pool and therefore not sampled into TEMPORARY.  Their
+  column buffers are still counted if they are join outputs (RELATION).
+- **K-fusion branch sessions.** A branch session is a struct copy of its
+  parent, including a bitwise copy of the ledger that is discarded at
+  teardown.  Branch arenas and pools are redirected to the parent (ARENA),
+  but join outputs, arrangements and caches created inside a parallel
+  branch (K ≥ 4) charge the throwaway copy.  #1375 retires this path.
+- Parser and IR, the execution plan, the intern table, nanoarrow schemas,
+  the compound-term arena, exchange buffers, thread stacks (8 MB per TDD
+  worker by default) and the work queue.
+
+## 3. Reading the report: `WL_MEM_REPORT`
+
+`WL_MEM_REPORT` is read once at session creation.
+
+| Value | Effect |
+|---|---|
+| unset, empty, `0` | No memory output. |
+| `1` | At `col_session_destroy()` print the coordinator summary: one header line with `rss_peak`, the ledger table, and one aggregate line for TDD workers. |
+| `2` | Additionally print the full ledger of every TDD worker when it is torn down (after every TDD stratum, so this is verbose). |
+
+Example (`W=8`, the 100-edge closure fixture, level 2, one worker shown):
+
+```
+[wirelog mem] scope=coordinator workers=8 rss_peak=9.0MB
+[wirelog mem] budget=94.3GB current=128.2MB peak=224.5MB
+  RELATION     current=0B         peak=1.0MB      cap=47.2GB
+  ARENA        current=128.1MB    peak=224.1MB    cap=9.4GB
+  CACHE        current=0B         peak=0B         cap=9.4GB
+  ARRANGEMENT  current=64.1KB     peak=64.1KB     cap=9.4GB
+  TIMESTAMP    current=0B         peak=0B         cap=4.7GB
+  CHANNEL      current=0B         peak=0B         cap=4.7GB
+  STORED       current=100.6KB    peak=248.6KB    cap=4.7GB
+  TEMPORARY    current=0B         peak=80.0KB     cap=4.7GB
+[wirelog mem] tdd_workers reports=8 peak_max=12.5MB peak_sum=98.8MB
+[wirelog mem] scope=worker id=0 workers=8
+[wirelog mem] budget=10.5GB current=12.3MB peak=12.5MB
+  RELATION     current=0B         peak=128.0KB    cap=5.2GB
+  ARENA        current=12.0MB     peak=12.0MB     cap=1.0GB
+  ...
+```
+
+`reports` is the number of worker teardowns folded in, `peak_max` the
+largest single worker peak and `peak_sum` the sum of all worker peaks (an
+upper bound on their concurrent footprint, since the same worker slot is
+recreated per stratum).
+
+The report is not async-signal-safe and goes to `stderr` unconditionally;
+it does not use `WL_LOG`.
+
+## 4. Programmatic access
+
+`col_session_get_mem_stats()` (`wirelog/columnar/columnar_nanoarrow.h`,
+internal) fills a `wl_columnar_mem_stats_t` with the same numbers: budget,
+current, peak, per-subsystem current/peak indexed by `WL_MEM_SUBSYS_*`,
+`rss_peak_bytes`, and the three worker aggregates.
+`wl_columnar_mem_subsys_name()` maps an index to its name.  The accessor is
+NULL-safe and never touches the atomics directly (it goes through
+`wl_mem_ledger_snapshot()`).
+
+`bench_flowlog --format json` emits the stats of the last run as
+`ledger_peak_bytes`, `ledger_budget_bytes`, `ledger_worker_reports`,
+`ledger_worker_peak_max_bytes`, `ledger_worker_peak_sum_bytes` and the
+object `ledger_subsys_peak_bytes`, next to the existing `peak_rss_kb`.
+
+## 5. Overhead
+
+- **Event accounting:** one relaxed `fetch_add` (plus a peak CAS loop) per
+  charge and one CAS loop per credit.  Charges happen on buffer growth, not
+  per row: a relation that doubles its capacity is charged once per
+  doubling.  The fast path of the join operator is unchanged.
+- **Gauge sampling:** O(`nrels` + used pool slots) at each point in §2.2,
+  typically a few hundred pointer reads per iteration.
+- **Report:** a handful of `fprintf` calls at session teardown; nothing at
+  all unless `WL_MEM_REPORT` is set.
+- **Result identity:** instrumentation is always on; `WL_MEM_REPORT` only
+  adds output.  `tests/test_mem_instrumentation.c` runs the fixture with the
+  variable unset, `1` and `2` at W=1 and W=8 and requires identical tuple
+  counts, iteration counts, relation contents and ledger peaks.
+
+The instrumentation adds one pointer to `col_arrangement_t`,
+`col_diff_arrangement_t`, `col_sorted_arr_t` and `col_mat_cache_t`, and one
+`uint64_t` to `col_rel_t` and `col_mat_entry_t`.
+
+## 6. Budget: `WIRELOG_MEMORY_BUDGET`
+
+`WIRELOG_MEMORY_BUDGET=<bytes>` sets the ledger budget; when unset or `0`,
+the budget is 75% of physical RAM (`col_detect_physical_memory()`), or
+unlimited (`0`) when RAM cannot be detected.  With `W > 1` the coordinator
+keeps the full budget and each active worker gets
+`budget / (W + 1)` scaled to the active width (`tdd_budget_per_party`).
+
+The only consumer is the join operator: when RELATION reaches 80% of its
+share (`wl_mem_ledger_should_backpressure(RELATION, 80)`), a worker session
+stops generating rows for the current join and reports the condition
+upstream.  The join row cap (`WIRELOG_JOIN_OUTPUT_LIMIT`, Issue #221) is a
+separate mechanism.  Replacing both with admission control is #1367
+(foundation in #1368).
+
+## 7. Baselines
+
+### 7.1 DOOP zxing (`bench_flowlog --workload doop`)
+
+Dataset checksum `154593343fefd18306d4098ba9f6286947b134b56ebcf83d8e8eae368d5867e7`,
+35 fact files, `--repeat 1`, release-like build, `WL_MEM_REPORT=1`, taken
+on 2026-09-06 with the ledger coverage that existed at the time (RELATION
+only; every other subsystem read 0).
+
+| workers | duration | OS peak RSS | ledger peak (RELATION) | tuples | iterations | status |
+|---:|---:|---:|---:|---:|---:|---|
+| 1 | 2,335,563 ms (38 min 56 s) | 54,646,124 KB (52.1 GiB) | 32.0 GB | 13,828,835 | 153 | OK |
+| 2 | 2,064,134 ms (34 min 24 s) | 56,718,660 KB (54.1 GiB) | 15.2 GB | 13,828,835 | 153 | OK |
+
+The W=2 ledger peak is lower because half of the join outputs were charged
+to worker ledgers, which were not aggregated at the time; OS RSS is higher
+at W=2.  The 20 to 39 GiB gap between RSS and the ledger is the §2.3
+remainder plus the classes that were not yet instrumented (stored
+relations, arrangements, transport).  A rerun with the current coverage is
+part of #1385; the nightly perf portfolio (§7.3) records the numbers per
+run from now on.
+
+### 7.2 Fixture: 100-edge chain closure (`tests/test_mem_instrumentation.c`)
+
+`r(x,y) :- edge(x,y).  r(x,z) :- r(x,y), r(y,z).`, 5050 closure rows,
+7 iterations, `WIRELOG_TDD_MIN_ROWS_PER_WORKER=1` for W=8 so the stratum
+runs under TDD.  Printed by the test on every CI run as `mem-baseline`
+lines; values in bytes, `current/peak`.
+
+| build | W | ledger peak | rss_peak | worker peak_max (reports) | RELATION | ARENA | ARRANGEMENT | CHANNEL | STORED | TEMPORARY |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| fused | 1 | 135,721,092 | 5,545,984 | 0 (0) | 0/1,048,576 | 134,303,744/134,303,744 | 65,604/65,604 | 0/0 | 103,040/254,528 | 0/81,920 |
+| fused | 8 | 134,961,176 | 5,750,784 | 13,055,492 (8) | 0/0 | 134,303,744/134,303,744 | 0/0 | 0/657,432 | 133,120/133,120 | 0/0 |
+| nofusion | 1 | 135,721,092 | 5,701,632 | 0 (0) | 0/1,048,576 | 134,303,744/134,303,744 | 65,604/65,604 | 0/0 | 103,040/254,528 | 0/81,920 |
+| nofusion | 8 | 134,961,176 | 8,491,008 | 13,055,300 (8) | 0/0 | 134,303,744/134,303,744 | 0/0 | 0/657,432 | 133,120/133,120 | 0/0 |
+
+Reading the table: at W=1 the coordinator runs the joins itself (RELATION
+and ARRANGEMENT non-zero); at W=8 they move to the workers (coordinator
+RELATION/ARRANGEMENT 0, worker peak 12.5 MB each of which 12 MB is the
+worker's own pool + arena), and the delta transport shows up as CHANNEL.
+ARENA on the coordinator is the 64 MB pool arena + 256 slots + 64 MB eval
+arena regardless of W.  `rss_peak` is below the ledger peak here because
+the arenas are reserved but never touched at this size.
+
+### 7.3 CI evidence
+
+- `meson test` runs `mem_instrumentation_default` and
+  `mem_instrumentation_nofusion` on every PR; their stdout carries the
+  `mem-baseline` lines above for the current commit.
+- `.github/workflows/perf-nightly.yml` runs `scripts/perf/run-flowlog-portfolio.py`,
+  which now records `ledger_peak_bytes`, `ledger_worker_peak_max_bytes` and
+  `ledger_subsys_peak_bytes` per (workload, workers) in `portfolio.jsonl`
+  and the first two in `portfolio.tsv`, uploaded as the
+  `perf-portfolio-<os>-<compiler>` artifact (35-day retention).
+
+### 7.4 Reproducing
+
+```
+# Fixture baselines (both builds)
+meson test -C build mem_instrumentation_default mem_instrumentation_nofusion -v
+
+# Any bench_flowlog workload, JSON with ledger fields
+./build/bench/bench_flowlog --workload tc --data bench/data/graph_100.csv \
+    --workers 8 --repeat 1 --format json
+
+# Human-readable report from any program
+WL_MEM_REPORT=1 ./build/wirelog_cli --workers 8 program.dl
+WL_MEM_REPORT=2 ./build/wirelog_cli --workers 8 program.dl   # + every worker
+
+# DOOP (needs bench/data/doop, ~40 GB peak, tens of minutes)
+WL_MEM_REPORT=1 ./build/bench/bench_flowlog --workload doop \
+    --data-doop bench/data/doop --workers 1 --repeat 1 --format json
+```
+
+## 8. Related
+
+- Issue #1380 (this instrumentation), #1385 (DOOP under a budget),
+  #1367 / #1368 (memory governor and admission), #1375 (K-fusion
+  retirement, which removes the branch-session gap in §2.3).
+- `docs/THREADING.md` §5.1 audits every atomic in `mem_ledger.c`.
+- `docs/STRESS_BASELINE.md` §Issue #598 for the rotation canary that
+  asserts `current_bytes` is unchanged across `wl_arena_reset()`.

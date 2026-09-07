@@ -143,13 +143,59 @@ col_mat_cache_key_content(const col_rel_t *rel)
     return hash;
 }
 
+/*
+ * mat_cache_entry_destroy: release one entry's result and its CACHE charge
+ * (Issue #1380).  Does not touch the entries[] array or total_bytes.
+ */
+static void
+mat_cache_entry_destroy(col_mat_cache_t *cache, col_mat_entry_t *e)
+{
+    if (cache->ledger && e->ledger_bytes > 0)
+        wl_mem_ledger_free(cache->ledger, WL_MEM_SUBSYS_CACHE,
+            e->ledger_bytes);
+    e->ledger_bytes = 0;
+    col_rel_destroy(e->result);
+    e->result = NULL;
+}
+
+/*
+ * mat_cache_evict_lru: drop the least recently used entry.  Caller
+ * guarantees cache->count > 0.
+ */
+static void
+mat_cache_evict_lru(col_mat_cache_t *cache)
+{
+    uint32_t lru = 0;
+    for (uint32_t i = 1; i < cache->count; i++) {
+        if (cache->entries[i].lru_clock < cache->entries[lru].lru_clock)
+            lru = i;
+    }
+    cache->total_bytes -= cache->entries[lru].mem_bytes;
+    mat_cache_entry_destroy(cache, &cache->entries[lru]);
+    memmove(&cache->entries[lru], &cache->entries[lru + 1],
+        (cache->count - lru - 1) * sizeof(col_mat_entry_t));
+    cache->count--;
+}
+
 void
 col_mat_cache_clear(col_mat_cache_t *cache)
 {
     for (uint32_t i = 0; i < cache->count; i++)
-        col_rel_destroy(cache->entries[i].result);
+        mat_cache_entry_destroy(cache, &cache->entries[i]);
     cache->count = 0;
     cache->total_bytes = 0;
+}
+
+void
+col_mat_cache_truncate(col_mat_cache_t *cache, uint32_t keep_count)
+{
+    if (!cache || keep_count >= cache->count)
+        return;
+    for (uint32_t i = keep_count; i < cache->count; i++) {
+        cache->total_bytes -= cache->entries[i].mem_bytes;
+        mat_cache_entry_destroy(cache, &cache->entries[i]);
+    }
+    cache->count = keep_count;
 }
 
 /**
@@ -167,18 +213,8 @@ col_mat_cache_clear(col_mat_cache_t *cache)
 void
 col_mat_cache_evict_until(col_mat_cache_t *cache, size_t target_bytes)
 {
-    while (cache->count > 0 && cache->total_bytes >= target_bytes) {
-        uint32_t lru = 0;
-        for (uint32_t i = 1; i < cache->count; i++) {
-            if (cache->entries[i].lru_clock < cache->entries[lru].lru_clock)
-                lru = i;
-        }
-        cache->total_bytes -= cache->entries[lru].mem_bytes;
-        col_rel_destroy(cache->entries[lru].result);
-        memmove(&cache->entries[lru], &cache->entries[lru + 1],
-            (cache->count - lru - 1) * sizeof(col_mat_entry_t));
-        cache->count--;
-    }
+    while (cache->count > 0 && cache->total_bytes >= target_bytes)
+        mat_cache_evict_lru(cache);
 }
 
 col_rel_t *
@@ -210,32 +246,12 @@ col_mat_cache_insert(col_mat_cache_t *cache, const col_rel_t *left,
 
     /* Evict LRU entries until within memory limit */
     while (cache->count > 0
-        && cache->total_bytes + result_bytes > COL_MAT_CACHE_LIMIT_BYTES) {
-        uint32_t lru = 0;
-        for (uint32_t i = 1; i < cache->count; i++) {
-            if (cache->entries[i].lru_clock < cache->entries[lru].lru_clock)
-                lru = i;
-        }
-        cache->total_bytes -= cache->entries[lru].mem_bytes;
-        col_rel_destroy(cache->entries[lru].result);
-        memmove(&cache->entries[lru], &cache->entries[lru + 1],
-            (cache->count - lru - 1) * sizeof(col_mat_entry_t));
-        cache->count--;
-    }
+        && cache->total_bytes + result_bytes > COL_MAT_CACHE_LIMIT_BYTES)
+        mat_cache_evict_lru(cache);
 
     /* Evict oldest entry if array is full */
-    if (cache->count >= COL_MAT_CACHE_MAX) {
-        uint32_t lru = 0;
-        for (uint32_t i = 1; i < cache->count; i++) {
-            if (cache->entries[i].lru_clock < cache->entries[lru].lru_clock)
-                lru = i;
-        }
-        cache->total_bytes -= cache->entries[lru].mem_bytes;
-        col_rel_destroy(cache->entries[lru].result);
-        memmove(&cache->entries[lru], &cache->entries[lru + 1],
-            (cache->count - lru - 1) * sizeof(col_mat_entry_t));
-        cache->count--;
-    }
+    if (cache->count >= COL_MAT_CACHE_MAX)
+        mat_cache_evict_lru(cache);
 
     col_mat_entry_t *e = &cache->entries[cache->count++];
     e->left_hash = col_mat_cache_key_content(left);
@@ -243,5 +259,21 @@ col_mat_cache_insert(col_mat_cache_t *cache, const col_rel_t *left,
     e->result = result;
     e->mem_bytes = result_bytes;
     e->lru_clock = ++cache->clock;
+    e->ledger_bytes = 0;
     cache->total_bytes += result_bytes;
+
+    /* Issue #1380: the cache now owns result, so its bytes move from
+     * RELATION (charged while the join was producing it) to CACHE.  Detach
+     * the relation's own ledger link so col_rel_destroy on eviction does
+     * not credit RELATION a second time. */
+    if (cache->ledger) {
+        uint64_t bytes = col_rel_transport_bytes(result);
+        if (result->mem_ledger) {
+            col_rel_ledger_release(result);
+            result->mem_ledger = NULL;
+        }
+        if (bytes > 0)
+            wl_mem_ledger_alloc(cache->ledger, WL_MEM_SUBSYS_CACHE, bytes);
+        e->ledger_bytes = bytes;
+    }
 }

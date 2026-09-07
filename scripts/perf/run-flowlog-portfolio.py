@@ -344,6 +344,11 @@ def summarize_bench(parsed: dict[str, Any] | None) -> dict[str, Any]:
         "iterations": parsed.get("iterations"),
         "peak_rss_kb": parsed.get("peak_rss_kb"),
         "median_ms": median_ms,
+        # Issue #1380: session-accounted peak next to the OS peak so the
+        # nightly artifact carries the memory baseline per (workload, W).
+        "ledger_peak_bytes": parsed.get("ledger_peak_bytes"),
+        "ledger_worker_peak_max_bytes": parsed.get("ledger_worker_peak_max_bytes"),
+        "ledger_subsys_peak_bytes": parsed.get("ledger_subsys_peak_bytes"),
     }
 
 
@@ -509,6 +514,8 @@ def write_tsv(path: Path, records: list[dict[str, Any]]) -> None:
         "tuples",
         "iterations",
         "peak_rss_kb",
+        "ledger_peak_bytes",
+        "ledger_worker_peak_max_bytes",
         "command",
     ]
     with path.open("w", encoding="utf-8") as f:
@@ -528,6 +535,10 @@ def write_tsv(path: Path, records: list[dict[str, Any]]) -> None:
                 "tuples": summary.get("tuples"),
                 "iterations": summary.get("iterations"),
                 "peak_rss_kb": summary.get("peak_rss_kb"),
+                "ledger_peak_bytes": summary.get("ledger_peak_bytes"),
+                "ledger_worker_peak_max_bytes": summary.get(
+                    "ledger_worker_peak_max_bytes"
+                ),
                 "command": " ".join(record.get("command") or []),
             }
             f.write("\t".join(tsv_value(row[col]) for col in columns))

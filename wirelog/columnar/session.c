@@ -30,6 +30,10 @@
 #elif defined(_WIN32)
 #include <windows.h>
 #endif
+/* Peak RSS sampling for the memory report (Issue #1380) */
+#if !defined(_WIN32)
+#include <sys/resource.h>
+#endif
 
 /* A uint64_t dependency mask cannot represent indices above 63.  Treat an
  * unrepresentable index as affected so a wide plan is evaluated conservatively
@@ -786,6 +790,191 @@ col_detect_physical_memory(void)
 #endif
 }
 
+/* ======================================================================== */
+/* Memory instrumentation (Issue #1380)                                     */
+/* ======================================================================== */
+
+int
+col_session_mem_report_level(void)
+{
+    const char *env = getenv("WL_MEM_REPORT");
+    if (!env || env[0] == '\0')
+        return 0;
+    if (env[0] == '0' && env[1] == '\0')
+        return 0;
+    if (env[0] == '2')
+        return 2;
+    return 1;
+}
+
+uint64_t
+col_session_peak_rss_bytes(void)
+{
+#if !defined(_WIN32)
+    struct rusage ru;
+    if (getrusage(RUSAGE_SELF, &ru) != 0 || ru.ru_maxrss <= 0)
+        return 0;
+#if defined(__APPLE__)
+    return (uint64_t)ru.ru_maxrss;          /* bytes */
+#else
+    return (uint64_t)ru.ru_maxrss * 1024u;  /* kilobytes */
+#endif
+#else
+    return 0;
+#endif
+}
+
+/*
+ * ledger_allocator_bytes: fixed-capacity bytes held by a session's delta
+ * pool and eval arena.  Charged to ARENA at creation and credited at
+ * destruction; delta_pool_reset()/wl_arena_reset() do not change it (the
+ * backing buffers are retained), which keeps the #598 rotation canary
+ * ("rotation does not mutate the ledger") true.
+ */
+static uint64_t
+ledger_allocator_bytes(const delta_pool_t *pool, const wl_arena_t *arena)
+{
+    uint64_t bytes = 0;
+    if (pool) {
+        bytes += (uint64_t)pool->slot_cap * (uint64_t)pool->slot_size;
+        bytes += (uint64_t)pool->arena_cap;
+    }
+    if (arena)
+        bytes += (uint64_t)arena->capacity;
+    return bytes;
+}
+
+static void
+ledger_charge_allocators(wl_col_session_t *sess)
+{
+    uint64_t bytes = ledger_allocator_bytes(sess->delta_pool,
+            sess->eval_arena);
+    if (bytes > 0)
+        wl_mem_ledger_alloc(&sess->mem_ledger, WL_MEM_SUBSYS_ARENA, bytes);
+}
+
+static void
+ledger_credit_allocators(wl_col_session_t *sess)
+{
+    uint64_t bytes = ledger_allocator_bytes(sess->delta_pool,
+            sess->eval_arena);
+    if (bytes > 0)
+        wl_mem_ledger_free(&sess->mem_ledger, WL_MEM_SUBSYS_ARENA, bytes);
+}
+
+void
+col_session_mem_sample(wl_col_session_t *sess)
+{
+    if (!sess)
+        return;
+
+    /* STORED: every session-owned relation (EDB, IDB, worker partitions).
+     * These never carry a col_rel_t.mem_ledger, so this is the only place
+     * their footprint is measured.  Arena-owned columns contribute 0 by
+     * construction (col_rel_owned_ledger_bytes). */
+    uint64_t stored = 0;
+    for (uint32_t i = 0; i < sess->nrels; i++) {
+        const col_rel_t *r = sess->rels[i];
+        if (!r)
+            continue;
+        uint64_t b = col_rel_transport_bytes(r);
+        stored = (b > UINT64_MAX - stored) ? UINT64_MAX : stored + b;
+    }
+    wl_mem_ledger_set_gauge(&sess->mem_ledger, WL_MEM_SUBSYS_STORED, stored);
+
+    /* TEMPORARY: pool-slot relations whose column buffers spilled to the
+     * heap because the pool arena was exhausted.  Slots already released
+     * through col_rel_free_contents are zeroed and contribute 0.  Pool
+     * temporaries that also carry a mem_ledger (join outputs) are charged
+     * to RELATION as they grow and are skipped here. */
+    uint64_t temporary = 0;
+    const delta_pool_t *dp = sess->delta_pool;
+    if (dp && dp->slab) {
+        for (uint32_t sidx = 0; sidx < dp->slot_used; sidx++) {
+            const col_rel_t *pr = (const col_rel_t *)(dp->slab
+                + (size_t)sidx * dp->slot_size);
+            if (pr->mem_ledger)
+                continue;
+            uint64_t b = col_rel_transport_bytes(pr);
+            temporary = (b > UINT64_MAX - temporary) ? UINT64_MAX
+                : temporary + b;
+        }
+    }
+    wl_mem_ledger_set_gauge(&sess->mem_ledger, WL_MEM_SUBSYS_TEMPORARY,
+        temporary);
+}
+
+void
+col_session_mem_note_worker(wl_col_session_t *coordinator,
+    const wl_col_session_t *worker)
+{
+    if (!coordinator || !worker)
+        return;
+    wl_mem_ledger_snapshot_t snap;
+    wl_mem_ledger_snapshot(&worker->mem_ledger, &snap);
+    coordinator->mem_worker_reports++;
+    if (snap.peak_bytes > coordinator->mem_worker_peak_max)
+        coordinator->mem_worker_peak_max = snap.peak_bytes;
+    coordinator->mem_worker_peak_sum
+        = (snap.peak_bytes > UINT64_MAX - coordinator->mem_worker_peak_sum)
+        ? UINT64_MAX
+        : coordinator->mem_worker_peak_sum + snap.peak_bytes;
+}
+
+void
+col_session_get_mem_stats(wl_session_t *session, wl_columnar_mem_stats_t *out)
+{
+    if (!out)
+        return;
+    memset(out, 0, sizeof(*out));
+    if (!session)
+        return;
+    wl_col_session_t *sess = COL_SESSION(session);
+
+    wl_mem_ledger_snapshot_t snap;
+    wl_mem_ledger_snapshot(&sess->mem_ledger, &snap);
+    out->budget_bytes = snap.total_budget;
+    out->current_bytes = snap.current_bytes;
+    out->peak_bytes = snap.peak_bytes;
+    for (int i = 0; i < WL_MEM_SUBSYS_COUNT && i < 8; i++) {
+        out->subsys_current_bytes[i] = snap.subsys_bytes[i];
+        out->subsys_peak_bytes[i] = snap.subsys_peak[i];
+    }
+    out->rss_peak_bytes = col_session_peak_rss_bytes();
+    out->worker_reports = sess->mem_worker_reports;
+    out->worker_peak_max_bytes = sess->mem_worker_peak_max;
+    out->worker_peak_sum_bytes = sess->mem_worker_peak_sum;
+}
+
+const char *
+wl_columnar_mem_subsys_name(int subsys, int *out_count)
+{
+    if (out_count)
+        *out_count = WL_MEM_SUBSYS_COUNT;
+    if (subsys < 0 || subsys >= WL_MEM_SUBSYS_COUNT)
+        return NULL;
+    return wl_mem_subsys_names[subsys];
+}
+
+/*
+ * mem_report_bytes: human-readable byte formatting for the coordinator
+ * summary lines (binary units, same convention as wl_mem_ledger_report).
+ */
+static const char *
+mem_report_bytes(uint64_t bytes, char *buf, size_t len)
+{
+    if (bytes >= (uint64_t)1024 * 1024 * 1024)
+        snprintf(buf, len, "%.1fGB",
+            (double)bytes / ((double)1024 * 1024 * 1024));
+    else if (bytes >= (uint64_t)1024 * 1024)
+        snprintf(buf, len, "%.1fMB", (double)bytes / ((double)1024 * 1024));
+    else if (bytes >= 1024)
+        snprintf(buf, len, "%.1fKB", (double)bytes / 1024.0);
+    else
+        snprintf(buf, len, "%lluB", (unsigned long long)bytes);
+    return buf;
+}
+
 /*
  * col_compute_worker_cap: RAM-aware worker cap formula (Issue #409).
  * See declaration in internal.h for full rationale and examples.
@@ -1076,6 +1265,14 @@ col_session_create(const wl_plan_t *plan, uint32_t num_workers,
         wl_mem_ledger_init(&sess->mem_ledger, budget);
     }
 
+    /* Issue #1380: memory instrumentation wiring.  The delta pool and eval
+     * arena above were created before the ledger existed, so charge their
+     * fixed capacity now; the materialization cache re-parents cached join
+     * results onto this ledger from here on. */
+    sess->mem_report_level = col_session_mem_report_level();
+    sess->mat_cache.ledger = &sess->mem_ledger;
+    ledger_charge_allocators(sess);
+
     /* Issue #264: Initialize differential path master switch.
      * Default: enabled (true). Users can disable via WIRELOG_DIFF_ENABLED=0
      * to force epoch-based evaluation regardless of affected_strata. */
@@ -1307,14 +1504,24 @@ col_session_destroy(wl_session_t *session)
     wl_col_session_t *sess = COL_SESSION(session);
     wl_columnar_delta_events_clear(sess);
 
-    /* Issue #1380: emit the session-owned ledger snapshot before teardown
-     * when explicitly requested.  This reports only allocations charged to
-     * the five ledger domains; it is not a complete RSS/allocation census.
-     * Keep the report opt-in so normal runs and their stderr remain unchanged. */
-    if (getenv("WL_MEM_REPORT")) {
-        fprintf(stderr, "[wirelog mem] scope=coordinator workers=%u\n",
-            sess->num_workers);
+    /* Issue #1380: emit the memory baseline before teardown when explicitly
+     * requested (WL_MEM_REPORT=1 or 2).  The ledger is session-owned, so
+     * this is the last point at which current and peak values for every
+     * subsystem are available.  Keep the report opt-in so normal runs and
+     * their stderr remain unchanged. */
+    if (sess->mem_report_level > 0) {
+        char b1[32], b2[32], b3[32];
+        col_session_mem_sample(sess);
+        fprintf(stderr,
+            "[wirelog mem] scope=coordinator workers=%u rss_peak=%s\n",
+            sess->num_workers,
+            mem_report_bytes(col_session_peak_rss_bytes(), b1, sizeof(b1)));
         wl_mem_ledger_report(&sess->mem_ledger);
+        fprintf(stderr,
+            "[wirelog mem] tdd_workers reports=%llu peak_max=%s peak_sum=%s\n",
+            (unsigned long long)sess->mem_worker_reports,
+            mem_report_bytes(sess->mem_worker_peak_max, b2, sizeof(b2)),
+            mem_report_bytes(sess->mem_worker_peak_sum, b3, sizeof(b3)));
     }
 
     /* Issue #959: report the join-output high-water mark before teardown.
@@ -1385,6 +1592,7 @@ col_session_destroy(wl_session_t *session)
             }
         }
     }
+    ledger_credit_allocators(sess); /* Issue #1380 */
     delta_pool_destroy(sess->delta_pool);
     wl_arena_free(sess->eval_arena);
     /* Free exchange buffer matrix (Issue #316): coordinator-owned W x W grid */
@@ -1552,6 +1760,14 @@ col_worker_session_create(wl_col_session_t *coordinator,
             / active_workers;
     }
     wl_mem_ledger_init(&out_worker->mem_ledger, worker_budget);
+    /* Issue #1380: the bitwise copy carried the coordinator's cache ledger
+     * link and aggregate counters; workers account against their own
+     * ledger and never aggregate. */
+    out_worker->mat_cache.ledger = &out_worker->mem_ledger;
+    out_worker->mem_channel_ring_bytes = 0;
+    out_worker->mem_worker_reports = 0;
+    out_worker->mem_worker_peak_max = 0;
+    out_worker->mem_worker_peak_sum = 0;
 
     /* Issue #426: Scale join_output_limit per worker.
      * The bitwise copy above gave the worker the coordinator's full limit;
@@ -1603,6 +1819,7 @@ col_worker_session_create(wl_col_session_t *coordinator,
             = delta_pool_create(pool_slots, sizeof(col_rel_t), pool_arena);
         /* Non-fatal if NULL: operators fall back to malloc */
     }
+    ledger_charge_allocators(out_worker); /* Issue #1380: ARENA */
 
     /* Step 9: Deep-clone arrangement registries */
     if (coordinator->arr_count > 0) {
@@ -1612,6 +1829,11 @@ col_worker_session_create(wl_col_session_t *coordinator,
         if (rc != 0)
             goto cleanup;
         out_worker->arr_count = coordinator->arr_count;
+        /* Issue #1380: the clones are worker-owned copies; charge them to
+         * the worker ledger (the clone path bypasses arr_build_full). */
+        for (uint32_t i = 0; i < out_worker->arr_count; i++)
+            col_arr_attach_ledger(&out_worker->arr_entries[i].arr,
+                &out_worker->mem_ledger);
     }
     if (coordinator->diff_arr_count > 0) {
         int rc = col_diff_arr_entries_clone(coordinator->diff_arr_entries,
@@ -1620,6 +1842,10 @@ col_worker_session_create(wl_col_session_t *coordinator,
         if (rc != 0)
             goto cleanup;
         out_worker->diff_arr_count = coordinator->diff_arr_count;
+        for (uint32_t i = 0; i < out_worker->diff_arr_count; i++)
+            col_diff_arrangement_attach_ledger(
+                out_worker->diff_arr_entries[i].diff_arr,
+                &out_worker->mem_ledger);
     }
 
     return 0;
@@ -1642,10 +1868,14 @@ col_worker_session_destroy(wl_col_session_t *worker)
     wl_columnar_delta_events_clear(worker);
 
     /* Issue #1380: worker ledgers are independent copies with their own
-     * charged allocations and lifetime peaks.  Report them before freeing
-     * worker-owned state; these values are not a simultaneous process RSS
-     * peak and must not be summed as one. */
-    if (getenv("WL_MEM_REPORT")) {
+     * allocations and peaks.  Take a final gauge sample, fold the peak into
+     * the coordinator aggregates (printed once in the coordinator report),
+     * and print the full worker breakdown only at WL_MEM_REPORT=2 -- TDD
+     * workers are torn down after every stratum, so per-worker lines are
+     * noisy at level 1. */
+    col_session_mem_sample(worker);
+    col_session_mem_note_worker(worker->coordinator, worker);
+    if (worker->mem_report_level >= 2) {
         fprintf(stderr, "[wirelog mem] scope=worker id=%u workers=%u\n",
             worker->worker_id, worker->num_workers);
         wl_mem_ledger_report(&worker->mem_ledger);
@@ -1691,6 +1921,7 @@ col_worker_session_destroy(wl_col_session_t *worker)
             }
         }
     }
+    ledger_credit_allocators(worker); /* Issue #1380 */
     delta_pool_destroy(worker->delta_pool);
     wl_arena_free(worker->eval_arena);
 
@@ -2846,6 +3077,9 @@ col_session_snapshot(wl_session_t *session, wirelog_on_tuple_fn callback,
         if (r)
             col_rel_compact(r);
     }
+
+    /* Issue #1380: final STORED/TEMPORARY gauge sample for this pass. */
+    col_session_mem_sample(sess);
 
     int snapshot_rc = col_session_emit_snapshot(plan, sess, callback,
             user_data);

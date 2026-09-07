@@ -395,6 +395,7 @@ external-consumer audit.
 - [docs/EMBEDDED.md](docs/EMBEDDED.md) -- embedded integration posture, build options, and host responsibilities
 - [docs/INTERNALS.md](docs/INTERNALS.md) -- maintainer map of internal subsystems and public/private boundaries
 - [docs/ERROR_MODEL.md](docs/ERROR_MODEL.md) -- error reporting, logging safety, fork/signal constraints, and restart handoff
+- [docs/MEMORY.md](docs/MEMORY.md) -- memory ledger subsystems, `WL_MEM_REPORT`, measurement overhead, and DOOP/fixture baselines
 - [CONTRIBUTING.md](CONTRIBUTING.md) -- development workflow, CI/CD, PR requirements
 - [SECURITY.md](SECURITY.md) -- vulnerability disclosure
 - [docs/SIGNING.md](docs/SIGNING.md) -- verifying a release: checksums, Sigstore signatures, and provenance
