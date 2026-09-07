@@ -25,6 +25,8 @@ DECISION_FLAGS = ("recursive", "snapshot", "exchange", "safe", "global_read_cand
 DECISION_COUNTS = ("idb_atoms", "segments", "segment_seed", "segment_global_read",
                    "segment_unsafe", "segment_max_idb", "segment_max_joins")
 FALLBACKS = ("none", "non_recursive", "snapshot_ineligible", "no_exchange", "unsafe_plan", "adaptive_workers")
+RESULT_CONTENT_HEADER = b"wirelog-result-content-v1\n"
+RESULT_VALUE_TYPES = ("int32", "int64", "uint32", "uint64", "bool", "float64", "string", "compound")
 
 
 def require(condition, message):
@@ -36,6 +38,84 @@ def number(value):
     result = float(value)
     require(math.isfinite(result) and result >= 0, f"invalid nonnegative number: {value}")
     return result
+
+
+def canonical_value(value_type, value):
+    """Validate a logical value without exposing process-local identifiers."""
+    require(value_type in RESULT_VALUE_TYPES, f"unknown result value type: {value_type}")
+    if value_type in ("int32", "int64", "uint32", "uint64"):
+        require(isinstance(value, int) and not isinstance(value, bool),
+                f"{value_type} requires an integer")
+        limits = {"int32": (-2**31, 2**31 - 1), "int64": (-2**63, 2**63 - 1),
+                  "uint32": (0, 2**32 - 1), "uint64": (0, 2**64 - 1)}
+        require(limits[value_type][0] <= value <= limits[value_type][1],
+                f"{value_type} out of range")
+    elif value_type == "bool":
+        require(isinstance(value, bool), "bool requires a boolean")
+    elif value_type == "float64":
+        require(isinstance(value, (int, float)) and not isinstance(value, bool),
+                "float64 requires a number")
+        require(math.isfinite(float(value)), "float64 must be finite")
+    elif value_type == "string":
+        require(isinstance(value, str), "string requires text")
+    else:
+        require(isinstance(value, dict) and isinstance(value.get("functor"), str)
+                and value["functor"], "compound requires a functor")
+        args = value.get("args")
+        require(isinstance(args, list), "compound requires an argument list")
+        for arg in args:
+            require(isinstance(arg, dict) and set(arg) == {"type", "value"},
+                    "compound arguments must be typed values")
+            canonical_value(arg["type"], arg["value"])
+    return value
+
+
+def canonical_tuple_line(relation, columns, values):
+    """Encode one relation-qualified, type-aware result tuple deterministically."""
+    require(isinstance(relation, str) and relation, "missing result relation")
+    require(isinstance(columns, list) and isinstance(values, list)
+            and len(columns) == len(values), "result schema/value mismatch")
+    names, normalized = set(), []
+    for column, value in zip(columns, values):
+        require(isinstance(column, dict) and set(column) == {"name", "type"},
+                "result columns must contain name and type")
+        name, value_type = column["name"], column["type"]
+        require(isinstance(name, str) and name and name not in names, "invalid result column name")
+        names.add(name)
+        normalized.append({"name": name, "type": value_type,
+                           "value": canonical_value(value_type, value)})
+    return (json.dumps({"columns": normalized, "relation": relation},
+                       ensure_ascii=True, allow_nan=False,
+                       separators=(",", ":"), sort_keys=True) + "\n").encode()
+
+
+def parse_result_content_stream(source):
+    """Validate a canonical stream and return its canonical tuple lines."""
+    raw = source.read_bytes() if isinstance(source, Path) else source
+    require(isinstance(raw, bytes) and raw.startswith(RESULT_CONTENT_HEADER),
+            "missing result-content header")
+    body = raw[len(RESULT_CONTENT_HEADER):]
+    require(body and body.endswith(b"\n"), "truncated result-content stream")
+    lines = body.splitlines(keepends=True)
+    require(all(line.endswith(b"\n") for line in lines), "unterminated result-content tuple")
+    canonical = []
+    for line in lines:
+        try:
+            item = json.loads(line)
+            columns = item["columns"]
+            values = [column["value"] for column in columns]
+            canonical.append(canonical_tuple_line(item["relation"],
+                                                   [{"name": c["name"], "type": c["type"]}
+                                                    for c in columns], values))
+        except (json.JSONDecodeError, KeyError, TypeError) as error:
+            raise ValueError(f"invalid result-content tuple: {error}") from error
+    require(canonical == sorted(canonical), "result-content tuples are not canonically sorted")
+    return canonical
+
+
+def compare_result_content_streams(left, right):
+    """Compare canonical streams exactly, including duplicate tuple multiplicity."""
+    return parse_result_content_stream(left) == parse_result_content_stream(right)
 
 
 def fields(line, skip=2):

@@ -45,6 +45,55 @@ def evidence(framed=True, **changes):
 
 
 class AuditTests(unittest.TestCase):
+    def test_result_content_encoding_is_type_and_relation_qualified(self):
+        negative_zero = audit.canonical_tuple_line(
+            "facts", [{"name": "value", "type": "float64"}], [-0.0])
+        positive_zero = audit.canonical_tuple_line(
+            "facts", [{"name": "value", "type": "float64"}], [0.0])
+        self.assertIn(b'"relation":"facts"', negative_zero)
+        self.assertNotEqual(negative_zero, positive_zero)
+        self.assertNotEqual(
+            audit.canonical_tuple_line("facts", [{"name": "value", "type": "int64"}], [1]),
+            audit.canonical_tuple_line("facts", [{"name": "value", "type": "string"}], ["1"]))
+
+    def test_result_content_reordering_and_multiplicity(self):
+        rows = [
+            audit.canonical_tuple_line("r", [{"name": "x", "type": "int64"}], [1]),
+            audit.canonical_tuple_line("r", [{"name": "x", "type": "int64"}], [1]),
+            audit.canonical_tuple_line("s", [{"name": "x", "type": "int64"}], [2]),
+        ]
+        left = audit.RESULT_CONTENT_HEADER + b"".join(sorted(rows))
+        right = audit.RESULT_CONTENT_HEADER + b"".join(sorted(reversed(rows)))
+        # A producer may emit rows in any order, but persisted evidence is
+        # canonical before comparison; repeated rows remain repeated.
+        self.assertTrue(audit.compare_result_content_streams(left, left))
+        self.assertTrue(audit.compare_result_content_streams(left, right))
+        missing_duplicate = audit.RESULT_CONTENT_HEADER + b"".join(sorted(rows[:1] + rows[2:]))
+        self.assertFalse(audit.compare_result_content_streams(left, missing_duplicate))
+
+    def test_result_content_rejects_changed_values_and_malformed_streams(self):
+        def stream(relation="r", value=1):
+            return audit.RESULT_CONTENT_HEADER + audit.canonical_tuple_line(
+                relation, [{"name": "x", "type": "int64"}], [value])
+
+        self.assertFalse(audit.compare_result_content_streams(stream(), stream(value=2)))
+        self.assertFalse(audit.compare_result_content_streams(stream(), stream(relation="s")))
+        for bad in (b"", audit.RESULT_CONTENT_HEADER, stream()[:-1],
+                    stream().replace(b'"type":"int64"', b'"type":"unknown"')):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                audit.parse_result_content_stream(bad)
+
+    def test_result_content_value_domains_and_compounds(self):
+        with self.assertRaises(ValueError):
+            audit.canonical_value("uint32", -1)
+        with self.assertRaises(ValueError):
+            audit.canonical_value("float64", float("inf"))
+        compound = {"functor": "pair", "args": [
+            {"type": "string", "value": "left"},
+            {"type": "int32", "value": 2}]}
+        line = audit.canonical_tuple_line("r", [{"name": "p", "type": "compound"}], [compound])
+        self.assertIn(b'"functor":"pair"', line)
+
     def test_complete_pair_prefix_is_not_complete_inventory(self):
         root = Path(__file__).resolve().parents[1]
         inventory = json.loads((root / "docs/tdd-execution-audit/inventory.json").read_text())
