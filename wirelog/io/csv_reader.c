@@ -280,10 +280,8 @@ csv_next_line(csv_line_reader_t *r, char **out_line, size_t *out_len)
         /* base aliases r->chunk; csv_reader_dispose owns its lifetime. */
         // NOLINTNEXTLINE(clang-analyzer-unix.Malloc)
         int rc = csv_line_append(r, base, take);
-        if (rc != WL_CSV_OK) {
-            csv_reader_dispose(r);
+        if (rc != WL_CSV_OK)
             return rc;
-        }
         spilled = 1;
         r->chunk_pos += take;
         if (nl)
@@ -735,6 +733,91 @@ wl_csv_read_file_via_ctx(
 
     *out_data = buf;
     return 0;
+}
+
+int
+wl_csv_read_file_via_ctx_stream(
+    const char *filepath,
+    char delimiter,
+    const wirelog_column_type_t *col_types,
+    uint32_t num_cols,
+    uint32_t max_batch_rows,
+    wl_csv_batch_cb batch_cb,
+    void *opaque,
+    int64_t (*intern_cb)(void *opaque, const char *str),
+    void *intern_opaque)
+{
+    if (!filepath || !col_types || num_cols == 0 || max_batch_rows == 0
+        || !batch_cb || !intern_cb)
+        return WL_CSV_ERR_ARGS;
+
+    FILE *f = fopen(filepath, "r");
+    if (!f)
+        return WL_CSV_ERR_ARGS;
+
+    int64_t *batch = (int64_t *)malloc((size_t)max_batch_rows * num_cols
+            * sizeof(*batch));
+    int64_t *row_values = (int64_t *)malloc((size_t)num_cols
+            * sizeof(*row_values));
+    if (!batch || !row_values) {
+        free(batch);
+        free(row_values);
+        fclose(f);
+        return WL_CSV_ERR_MEMORY;
+    }
+
+    csv_line_reader_t reader;
+    int rc = csv_reader_init(&reader, f);
+    if (rc != WL_CSV_OK) {
+        free(batch);
+        free(row_values);
+        fclose(f);
+        return rc;
+    }
+    csv_scratch_t scratch = { NULL, 0 };
+    uint32_t batch_rows = 0;
+    char *line = NULL;
+    size_t len = 0;
+    int lrc;
+
+    while ((lrc = csv_next_line(&reader, &line, &len)) == 1) {
+        if (len == 0)
+            continue;
+
+        uint32_t col_count = 0;
+        rc = csv_parse_line_via_ctx(line, delimiter, col_types, num_cols,
+                row_values, num_cols, &col_count,
+                intern_cb, intern_opaque, &scratch);
+        if (rc != 0 || col_count != num_cols) {
+            lrc = (rc == WL_CSV_ERR_MEMORY) ? rc : WL_CSV_ERR_PARSE;
+            break;
+        }
+
+        memcpy(batch + (size_t)batch_rows * num_cols, row_values,
+            (size_t)num_cols * sizeof(*row_values));
+        batch_rows++;
+        if (batch_rows == max_batch_rows) {
+            rc = batch_cb(opaque, batch, batch_rows, num_cols);
+            if (rc != 0) {
+                lrc = rc < 0 ? rc : WL_CSV_ERR_ARGS;
+                break;
+            }
+            batch_rows = 0;
+        }
+    }
+
+    if (lrc >= 0 && batch_rows > 0) {
+        rc = batch_cb(opaque, batch, batch_rows, num_cols);
+        if (rc != 0)
+            lrc = rc < 0 ? rc : WL_CSV_ERR_ARGS;
+    }
+
+    csv_scratch_dispose(&scratch);
+    csv_reader_dispose(&reader);
+    free(row_values);
+    free(batch);
+    fclose(f);
+    return lrc < 0 ? lrc : WL_CSV_OK;
 }
 
 /* ======================================================================== */

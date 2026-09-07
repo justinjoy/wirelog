@@ -457,6 +457,17 @@ test_csv_exe = executable(
 
 test('csv', test_csv_exe)
 
+test_csv_streaming_exe = executable(
+  'test_csv_streaming',
+  files('test_csv_streaming.c'),
+  csv_src,
+  intern_src,
+  include_directories: [wirelog_inc, wirelog_src_inc],
+  dependencies: [threads_dep],
+)
+
+test('csv_streaming', test_csv_streaming_exe)
+
 # Issue #508: bench_argv shim unit tests. Header-only, portable by
 # construction; runs on every platform including MSVC.
 test_bench_argv_exe = executable(

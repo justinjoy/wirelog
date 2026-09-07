@@ -18,6 +18,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
+typedef int (*wl_csv_batch_cb)(void *opaque, const int64_t *rows,
+    uint32_t nrows, uint32_t ncols);
+
 /**
  * WL_CSV_MAX_LINE:
  *
@@ -195,5 +198,23 @@ wl_csv_read_file_via_ctx(
     uint32_t *out_ncols,
     int64_t (*intern_cb)(void *opaque, const char *str),
     void *opaque);
+
+/*
+ * Stream decoded rows in bounded batches.  The callback does not retain
+ * @rows; its storage is reused after it returns.  A non-zero callback
+ * result stops the read and is returned to the caller (positive values are
+ * normalized to -1).
+ */
+int
+wl_csv_read_file_via_ctx_stream(
+    const char *filepath,
+    char delimiter,
+    const wirelog_column_type_t *col_types,
+    uint32_t num_cols,
+    uint32_t max_batch_rows,
+    wl_csv_batch_cb batch_cb,
+    void *opaque,
+    int64_t (*intern_cb)(void *opaque, const char *str),
+    void *intern_opaque);
 
 #endif /* WIRELOG_IO_CSV_READER_H */

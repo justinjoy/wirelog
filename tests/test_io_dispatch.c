@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <errno.h>
 
 #ifndef TEST_DISPATCH_PRESENT
 #define TEST_DISPATCH_PRESENT
@@ -46,6 +47,9 @@ static int passed = 0, failed = 0, skipped = 0;
 /* ---- Mock backend (accepts any insert) ---- */
 
 static int s_insert_called;
+static int s_insert_calls;
+static int s_fail_insert_at;
+static int s_snapshot_called;
 
 static int
 mock_insert(wl_session_t *session, const char *relation,
@@ -54,6 +58,20 @@ mock_insert(wl_session_t *session, const char *relation,
     (void)session; (void)relation; (void)data;
     (void)num_rows; (void)num_cols;
     s_insert_called = 1;
+    s_insert_calls++;
+    if (s_fail_insert_at != 0 && s_insert_calls >= s_fail_insert_at)
+        return ENOMEM;
+    return 0;
+}
+
+static int
+mock_snapshot(wl_session_t *session, wirelog_on_tuple_fn callback,
+    void *user_data)
+{
+    (void)session;
+    (void)callback;
+    (void)user_data;
+    s_snapshot_called++;
     return 0;
 }
 
@@ -65,7 +83,7 @@ static const wl_compute_backend_t s_mock_backend = {
     .session_remove = NULL,
     .session_step = NULL,
     .session_set_delta_cb = NULL,
-    .session_snapshot = NULL,
+    .session_snapshot = mock_snapshot,
 };
 
 /* ---- Mock I/O adapter ---- */
@@ -193,7 +211,7 @@ test_dispatch_mock_adapter(void)
     }
 
     /* Create a mock session backed by our mock backend */
-    wl_session_t sess;
+    wl_session_t sess = {0};
     sess.backend = &s_mock_backend;
 
     int rc = wl_session_load_input_files(&sess, prog);
@@ -252,7 +270,7 @@ test_dispatch_csv_default(void)
     }
 
     /* Mock session */
-    wl_session_t sess;
+    wl_session_t sess = {0};
     sess.backend = &s_mock_backend;
 
     int rc = wl_session_load_input_files(&sess, prog);
@@ -291,7 +309,7 @@ test_dispatch_unknown_scheme_error(void)
     }
 
     /* Mock session */
-    wl_session_t sess;
+    wl_session_t sess = {0};
     sess.backend = &s_mock_backend;
 
     int rc = wl_session_load_input_files(&sess, prog);
@@ -308,6 +326,58 @@ test_dispatch_unknown_scheme_error(void)
 #endif
 }
 
+static void
+test_dispatch_stream_failure_poison(void)
+{
+    TEST("stream failure poisons session");
+#ifdef TEST_DISPATCH_PRESENT
+    const char *pnames[] = { "filename" };
+    const char *tmpdir = getenv("TMPDIR");
+    if (!tmpdir) tmpdir = getenv("TMP");
+    if (!tmpdir) tmpdir = getenv("TEMP");
+    if (!tmpdir) tmpdir = "/tmp";
+    char csv_path[512];
+    snprintf(csv_path, sizeof(csv_path),
+        "%s/wirelog_test_dispatch_stream_failure.csv", tmpdir);
+    FILE *f = fopen(csv_path, "w");
+    if (!f) {
+        FAIL("could not create temp CSV file");
+        return;
+    }
+    for (int i = 0; i < 1025; i++)
+        fprintf(f, "%d\n", i);
+    fclose(f);
+
+    const char *pvalues[] = { csv_path };
+    struct wirelog_program *prog = make_program(NULL, pnames, pvalues, 1);
+    if (!prog) {
+        FAIL("failed to create program");
+        remove(csv_path);
+        return;
+    }
+
+    s_insert_calls = 0;
+    s_fail_insert_at = 2;
+    s_snapshot_called = 0;
+    wl_session_t sess = {0};
+    sess.backend = &s_mock_backend;
+    int load_rc = wl_session_load_input_files(&sess, prog);
+    int snapshot_rc = wl_session_snapshot(&sess, NULL, NULL);
+
+    s_fail_insert_at = 0;
+    free_program(prog);
+    remove(csv_path);
+
+    if (load_rc != 0 && snapshot_rc != 0 && s_insert_calls == 2
+        && s_snapshot_called == 0)
+        PASS();
+    else
+        FAIL("partial stream failure remained evaluable");
+#else
+    SKIP("dispatch rewrite not yet implemented (#458)");
+#endif
+}
+
 /* ======================================================================== */
 /* Main                                                                     */
 /* ======================================================================== */
@@ -317,6 +387,7 @@ int main(void) {
     test_dispatch_mock_adapter();
     test_dispatch_csv_default();
     test_dispatch_unknown_scheme_error();
+    test_dispatch_stream_failure_poison();
     printf("=== Results: %d passed, %d failed, %d skipped ===\n",
         passed, failed, skipped);
     return failed > 0 ? 1 : 0;
