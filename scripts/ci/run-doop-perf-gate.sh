@@ -7,17 +7,22 @@
 set -euo pipefail
 
 SKIP=77
+script_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # The target is deliberately supplied by the provisioned runner: the checked-
 # in README DOOP row is repeat=1, not the required 5-repetition calibration.
 # A runner must record its 5-rep median and pass median*1.05 here.
 WL_DOOP_PERF_GATE_TARGET_MS="${WL_DOOP_PERF_GATE_TARGET_MS:-}"
-EXPECTED_TUPLES=6276657
-EXPECTED_ITERS="${WL_DOOP_PERF_GATE_EXPECTED_ITERS:-28}"
 WORKERS=8
 REPEAT=5
 
 skip() { echo "doop_w8_gate: SKIP: $*" >&2; exit "$SKIP"; }
 fail() { echo "doop_w8_gate: FAIL: $*" >&2; exit 1; }
+required_or_skip() {
+    if [[ "${WIRELOG_PERF_REQUIRE:-0}" == 1 ]]; then
+        fail "$*"
+    fi
+    skip "$*"
+}
 
 [[ "${WIRELOG_PERF_GATE:-0}" == 1 ]] || \
     skip "set WIRELOG_PERF_GATE=1 to run on dedicated performance hardware"
@@ -37,8 +42,8 @@ if [[ "${WIRELOG_PERF_LOG_COMPILE_MAX_LEVEL:-1}" -gt 1 ]]; then
     skip "log compile ceiling is above ERROR"
 fi
 
+governor_file="${WIRELOG_DOOP_PERF_GATE_GOVERNOR_FILE:-/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor}"
 if [[ "${WIRELOG_PERF_REQUIRE:-0}" == 1 ]]; then
-    governor_file=/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
     if [[ ! -r "$governor_file" ]]; then
         fail "WIRELOG_PERF_REQUIRE=1 but cpufreq governor is unavailable"
     fi
@@ -46,7 +51,6 @@ if [[ "${WIRELOG_PERF_REQUIRE:-0}" == 1 ]]; then
     [[ "$governor" == performance ]] || \
         fail "WIRELOG_PERF_REQUIRE=1 but cpufreq governor is '$governor'"
 else
-    governor_file=/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
     [[ -r "$governor_file" ]] || skip "cpufreq governor is unavailable"
     [[ "$(<"$governor_file")" == performance ]] || \
         skip "cpufreq governor is not 'performance'"
@@ -54,18 +58,64 @@ fi
 
 data_dir="${WIRELOG_DOOP_DATA_DIR:-bench/data/doop}"
 bench_bin="${WIRELOG_DOOP_BENCH_BIN:-bench/bench_flowlog}"
-[[ -d "$data_dir" ]] || skip "DOOP data directory not found: $data_dir"
+[[ -d "$data_dir" ]] || \
+    required_or_skip "DOOP data directory not found: $data_dir"
 [[ -x "$bench_bin" ]] || fail "bench_flowlog not found or not executable: $bench_bin"
 
 [[ -n "$WL_DOOP_PERF_GATE_TARGET_MS" ]] || \
-    skip "no calibrated 5-repetition W=8 target; set WL_DOOP_PERF_GATE_TARGET_MS"
+    required_or_skip "no calibrated 5-repetition W=8 target; set WL_DOOP_PERF_GATE_TARGET_MS"
 
-# The 6,276,657 oracle belongs to the recovered zxing artifact.  Require the
-# provisioned runner to pin its sorted .facts manifest so a refreshed upstream
-# archive cannot silently turn this into a different benchmark.
-expected_manifest="${WIRELOG_DOOP_DATASET_MANIFEST_SHA256:-}"
-[[ -n "$expected_manifest" ]] || \
-    skip "DOOP dataset manifest is not pinned; set WIRELOG_DOOP_DATASET_MANIFEST_SHA256"
+oracle_file="$script_dir/../release/downstream-matrix-oracles.tsv"
+[[ -r "$oracle_file" ]] || \
+    required_or_skip "DOOP oracle file not found or unreadable: $oracle_file"
+
+expected_header='# schema=2 workload tuple_oracle iteration_oracle data_path data_manifest_sha256 provenance_id acquisition_command'
+actual_header=$(awk 'NF { print; exit }' "$oracle_file")
+[[ "$actual_header" == "$expected_header" ]] || \
+    fail "DOOP oracle file does not use the expected schema 2 header"
+
+if ! awk -F '\t' '
+    /^[[:space:]]*$/ || /^#/ { next }
+    NF != 7 { exit 1 }
+' "$oracle_file"; then
+    fail "DOOP oracle file contains a row without exactly seven fields"
+fi
+
+doop_rows=0
+EXPECTED_TUPLES=
+EXPECTED_ITERS=
+expected_manifest=
+manifest_re='^archive:[0-9a-f]{64};files:[0-9a-f]{64}$'
+while IFS=$'\t' read -r workload tuples iterations oracle_data_path \
+        oracle_manifest provenance acquisition; do
+    [[ -z "$workload" || "$workload" == \#* ]] && continue
+    [[ "$workload" == doop ]] || continue
+
+    doop_rows=$((doop_rows + 1))
+    [[ "$doop_rows" -eq 1 ]] || \
+        fail "DOOP oracle file contains more than one doop row"
+    [[ -n "$tuples" && -n "$iterations" && -n "$oracle_data_path" && \
+       -n "$oracle_manifest" && -n "$provenance" && -n "$acquisition" ]] || \
+        fail "DOOP oracle row contains an empty field"
+    [[ "$tuples" =~ ^[0-9]+$ && "$iterations" =~ ^[0-9]+$ ]] || \
+        fail "DOOP tuple and iteration oracles must be unsigned decimal integers"
+    [[ "$oracle_data_path" == bench/data/doop ]] || \
+        fail "DOOP oracle data path is '$oracle_data_path', expected bench/data/doop"
+    [[ "$oracle_manifest" =~ $manifest_re ]] || \
+        fail "DOOP oracle manifest must contain archive and files SHA256 values"
+
+    EXPECTED_TUPLES=$tuples
+    EXPECTED_ITERS=$iterations
+    expected_manifest=${oracle_manifest#*;files:}
+done < "$oracle_file"
+
+[[ "$doop_rows" -eq 1 ]] || fail "DOOP oracle file contains no doop row"
+[[ "$expected_manifest" =~ ^[0-9a-f]{64}$ ]] || \
+    fail "DOOP oracle files manifest is not a lowercase SHA256"
+
+# The schema 2 DOOP row records both the downloaded archive and the sorted
+# .facts manifest.  The performance gate consumes only the files: component:
+# the benchmark reads extracted facts, not the archive that transported them.
 # The manifest must be a function of the dataset -- the file names and their
 # contents -- and of nothing else.  Two things that are not the dataset used to
 # leak into it, and both surfaced as the same message below, which reads as
@@ -120,20 +170,6 @@ doop_dataset_manifest() {
         | sha256sum | awk '{print $1}' )
 }
 
-actual_manifest=$(doop_dataset_manifest "$data_dir")
-# The message names the formula change. WIRELOG_DOOP_DATASET_MANIFEST_SHA256 is
-# set out-of-band -- nothing in this repository pins it -- so an operator who
-# recorded a value under the old formula gets a mismatch on the first run after
-# this change. Without saying so, that reads as dataset substitution, which is
-# the accusation #1294 and #1297 both exist to stop the gate making falsely.
-[[ "$actual_manifest" == "$expected_manifest" ]] || \
-    fail "DOOP dataset manifest $actual_manifest != pinned $expected_manifest
-  If this is the first run since #1297, the pin is stale rather than the data
-  wrong: the manifest no longer embeds the directory path it is given.
-  Re-pin with the value above after confirming the dataset is the one you
-  expect. For the zxing dataset that value is the files: field of
-  scripts/release/downstream-matrix-oracles.tsv."
-
 # Validate the complete catalogue before starting a multi-minute run.
 for fact in \
     DirectSuperclass DirectSuperinterface MainClass FormalParam ComponentType \
@@ -145,8 +181,12 @@ for fact in \
     StoreArrayIndex LoadArrayIndex Return ClassHeap MethodHandleConstant \
     MethodTypeConstant; do
     [[ -s "$data_dir/$fact.facts" ]] || \
-        skip "missing or empty DOOP input: $data_dir/$fact.facts"
+        required_or_skip "missing or empty DOOP input: $data_dir/$fact.facts"
 done
+
+actual_manifest=$(doop_dataset_manifest "$data_dir")
+[[ "$actual_manifest" == "$expected_manifest" ]] || \
+    fail "DOOP dataset files manifest $actual_manifest != oracle $expected_manifest"
 
 tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT

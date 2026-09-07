@@ -1146,6 +1146,17 @@ if host_machine.system() == 'linux' and sh.found()
        suite: 'abi')
 endif
 
+# Issue #1161: the W=8 perf gate consumes the schema 2 downstream DOOP row
+# for tuple, iteration, and extracted-files manifest oracles.  This fixture
+# uses a fake 35-file dataset and benchmark, so it proves the contract without
+# downloading zxing or requiring a physical performance governor.
+if host_machine.system() == 'linux' and sh.found()
+  test('doop_perf_gate_oracle', sh,
+       args: [meson.project_source_root() / 'scripts/ci/test-doop-perf-gate-oracle.sh',
+              meson.project_source_root()],
+       suite: 'abi')
+endif
+
 # Issue #1294: two release gates hash a sorted file list and compare it against
 # a pinned or committed value.  Unpinned collation made a non-C runner produce a
 # different manifest, failing with a message that accuses the dataset.
