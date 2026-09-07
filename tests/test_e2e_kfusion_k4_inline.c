@@ -187,16 +187,18 @@ make_auth_program_with_facts(int insert_count, int retract_count)
     return buf;
 }
 
-static void
+static int
 test_e2e_kfusion_k4_inline_basic(void)
 {
+    int status = EXIT_FAILURE;
+
     printf("TEST: K=4 inline compound basic (20 inserts) ... ");
     fflush(stdout);
 
     char *prog = make_auth_program_with_facts(20, 0);
     if (!prog) {
         printf("FAIL: allocation\n");
-        return;
+        return status;
     }
 
     uint64_t fp_k1 = 0, fp_k4 = 0;
@@ -205,39 +207,44 @@ test_e2e_kfusion_k4_inline_basic(void)
     int rc = eval_fingerprint_k(prog, 1, &fp_k1, &cnt_k1);
     if (rc != 0) {
         printf("FAIL: K=1 eval\n");
-        free(prog);
-        return;
+        goto cleanup;
     }
 
     rc = eval_fingerprint_k(prog, 4, &fp_k4, &cnt_k4);
     if (rc != 0) {
         printf("FAIL: K=4 eval\n");
-        free(prog);
-        return;
+        goto cleanup;
     }
 
     if (fp_k1 != fp_k4 || cnt_k1 != cnt_k4) {
         printf("FAIL: K=1 (fp=0x%016" PRIx64 " cnt=%" PRId64 ") != "
             "K=4 (fp=0x%016" PRIx64 " cnt=%" PRId64 ")\n",
             fp_k1, cnt_k1, fp_k4, cnt_k4);
-        free(prog);
-        return;
+        goto cleanup;
     }
 
+    status = EXIT_SUCCESS;
+
+cleanup:
     free(prog);
+    if (status != EXIT_SUCCESS)
+        return status;
     printf("PASS\n");
+    return status;
 }
 
-static void
+static int
 test_e2e_kfusion_k4_inline_medium(void)
 {
+    int status = EXIT_FAILURE;
+
     printf("TEST: K=4 inline compound medium (50 inserts) ... ");
     fflush(stdout);
 
     char *prog = make_auth_program_with_facts(50, 0);
     if (!prog) {
         printf("FAIL: allocation\n");
-        return;
+        return status;
     }
 
     uint64_t fp_k1 = 0, fp_k4 = 0;
@@ -246,28 +253,31 @@ test_e2e_kfusion_k4_inline_medium(void)
     int rc = eval_fingerprint_k(prog, 1, &fp_k1, &cnt_k1);
     if (rc != 0) {
         printf("FAIL: K=1 eval\n");
-        free(prog);
-        return;
+        goto cleanup;
     }
 
     rc = eval_fingerprint_k(prog, 4, &fp_k4, &cnt_k4);
     if (rc != 0) {
         printf("FAIL: K=4 eval\n");
-        free(prog);
-        return;
+        goto cleanup;
     }
 
-    if (fp_k1 != fp_k4) {
+    if (fp_k1 != fp_k4 || cnt_k1 != cnt_k4) {
         printf(
-            "FAIL: fingerprint mismatch (K=1: 0x%016" PRIx64 " K=4: 0x%016"
-            PRIx64 ")\n",
-            fp_k1, fp_k4);
-        free(prog);
-        return;
+            "FAIL: K=1 (fp=0x%016" PRIx64 " cnt=%" PRId64 ") != "
+            "K=4 (fp=0x%016" PRIx64 " cnt=%" PRId64 ")\n",
+            fp_k1, cnt_k1, fp_k4, cnt_k4);
+        goto cleanup;
     }
 
+    status = EXIT_SUCCESS;
+
+cleanup:
     free(prog);
+    if (status != EXIT_SUCCESS)
+        return status;
     printf("PASS\n");
+    return status;
 }
 
 int
@@ -276,9 +286,13 @@ main(void)
     printf(
         "===== K=4 Multi-Worker Inline Compound Authorization E2E Tests =====\n\n");
 
-    test_e2e_kfusion_k4_inline_basic();
-    test_e2e_kfusion_k4_inline_medium();
+    int failures = 0;
+
+    if (test_e2e_kfusion_k4_inline_basic() != EXIT_SUCCESS)
+        failures++;
+    if (test_e2e_kfusion_k4_inline_medium() != EXIT_SUCCESS)
+        failures++;
 
     printf("\n===== Tests Complete =====\n");
-    return 0;
+    return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }
