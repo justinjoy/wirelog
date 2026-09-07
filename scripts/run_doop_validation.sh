@@ -14,6 +14,9 @@
 #                                  [--repeat N] [--baseline FILE]
 #                                  [--expected-tuples N]
 #                                  [--expected-iterations N] [--save-results]
+#   scripts/run_doop_validation.sh --calibration [--evidence-dir DIR]
+#                                  --memory-limit-kb N [--wall-timeout SECONDS]
+#                                  [--oracle-file FILE]
 #
 # Options:
 #   --build-dir DIR   Meson build directory (default: build)
@@ -31,6 +34,14 @@
 #                     DOOP_EXPECTED_ITERATIONS when set; otherwise defaults
 #                     to 153 for the bundled dataset.  See "Oracles" below.
 #   --save-results    Write a validation TSV under docs/performance
+#   --calibration     Run the fixed W=8, repeat=5 calibration with evidence
+#   --evidence-dir DIR
+#                     Preserve calibration logs and metadata in DIR
+#   --wall-timeout N  Calibration wall timeout in seconds (default: 7200)
+#   --memory-limit-kb N
+#                     Required positive Linux cgroup-v2 memory.max bound
+#   --oracle-file FILE
+#                     Calibration oracle TSV (default: release manifest)
 #
 # Environment:
 #   DOOP_DATA_DIR     Override for the DOOP .facts data directory
@@ -97,10 +108,17 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BUILD_DIR="${BUILD_DIR:-build}"
 WORKERS="${WORKERS:-1}"
 REPEAT="${REPEAT:-1}"
+WORKERS_SET=0
+REPEAT_SET=0
 BASELINE_FILE=""
 EXPECTED_TUPLES="${DOOP_EXPECTED_TUPLES:-}"
 EXPECTED_ITERATIONS="${DOOP_EXPECTED_ITERATIONS:-}"
 SAVE_RESULTS=0
+CALIBRATION=0
+EVIDENCE_DIR=""
+WALL_TIMEOUT_SECONDS="${DOOP_CALIBRATION_WALL_TIMEOUT_SECONDS:-7200}"
+MEMORY_LIMIT_KB=""
+ORACLE_FILE=""
 
 # Number of .facts files the bundled dataset must contain.  Kept in step with
 # download.sh, doop_edbs[], and doop_fact_files[] by
@@ -119,10 +137,12 @@ while [[ $# -gt 0 ]]; do
             ;;
         --workers)
             WORKERS="$2"
+            WORKERS_SET=1
             shift 2
             ;;
         --repeat)
             REPEAT="$2"
+            REPEAT_SET=1
             shift 2
             ;;
         --baseline)
@@ -141,6 +161,26 @@ while [[ $# -gt 0 ]]; do
             SAVE_RESULTS=1
             shift
             ;;
+        --calibration)
+            CALIBRATION=1
+            shift
+            ;;
+        --evidence-dir)
+            EVIDENCE_DIR="$2"
+            shift 2
+            ;;
+        --wall-timeout)
+            WALL_TIMEOUT_SECONDS="$2"
+            shift 2
+            ;;
+        --memory-limit-kb)
+            MEMORY_LIMIT_KB="$2"
+            shift 2
+            ;;
+        --oracle-file)
+            ORACLE_FILE="$2"
+            shift 2
+            ;;
         -h|--help)
             # Print the whole leading comment block, however long it grows;
             # a fixed head -N silently truncated the options list once.
@@ -153,6 +193,23 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if [[ "$CALIBRATION" -eq 1 ]]; then
+    if [[ "$WORKERS_SET" -eq 0 ]]; then WORKERS=8; fi
+    if [[ "$REPEAT_SET" -eq 0 ]]; then REPEAT=5; fi
+    if [[ "$WORKERS" != 8 || "$REPEAT" != 5 ]]; then
+        echo "ERROR: calibration requires --workers 8 --repeat 5" >&2
+        exit 1
+    fi
+    if [[ ! "$WALL_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
+        echo "ERROR: calibration wall timeout must be a positive integer" >&2
+        exit 1
+    fi
+    if [[ ! "$MEMORY_LIMIT_KB" =~ ^[1-9][0-9]*$ ]]; then
+        echo "ERROR: calibration requires a positive --memory-limit-kb" >&2
+        exit 1
+    fi
+fi
 
 # -------------------------------------------------------------------------
 # Resolve paths
@@ -173,6 +230,10 @@ echo "Workers      : $WORKERS"
 echo "Repeat       : $REPEAT"
 echo "DOOP data    : $DOOP_DATA"
 echo "Save results : $([[ "$SAVE_RESULTS" -eq 1 ]] && echo yes || echo no)"
+echo "Calibration  : $([[ "$CALIBRATION" -eq 1 ]] && echo yes || echo no)"
+if [[ "$CALIBRATION" -eq 1 ]]; then
+    echo "Wall timeout : ${WALL_TIMEOUT_SECONDS}s"
+fi
 echo ""
 
 # Check bench binary
@@ -244,6 +305,146 @@ TOTAL_MB=$(( TOTAL_BYTES / 1048576 ))
 echo "Dataset size : ~${TOTAL_MB} MB"
 echo ""
 
+facts_manifest() {
+    ( CDPATH= cd -- "$1" && sha256sum -- *.facts | LC_ALL=C sort -k2 |
+        sha256sum | awk '{print $1}' )
+}
+
+if [[ "$CALIBRATION" -eq 1 ]]; then
+    if [[ -z "$EVIDENCE_DIR" ]]; then
+        EVIDENCE_DIR="${DOOP_EVIDENCE_DIR:-$PROJECT_ROOT/docs/performance/doop-calibration-$(date +%Y-%m-%d-%H%M%S)}"
+    fi
+    mkdir -p "$EVIDENCE_DIR"
+    PROGRESS_FILE="$EVIDENCE_DIR/repeat-progress.tsv"
+    BENCH_LOG="$EVIDENCE_DIR/bench-output.log"
+    METADATA_FILE="$EVIDENCE_DIR/metadata.tsv"
+    FINAL_FILE="$EVIDENCE_DIR/final.tsv"
+    FINAL_TMP="$EVIDENCE_DIR/final.tsv.tmp.$$"
+    LAUNCH_GATE="$EVIDENCE_DIR/launch-gate.$$"
+    CGROUP_ROOT="${DOOP_CGROUP_ROOT:-/sys/fs/cgroup}"
+    CGROUP_DIR=""
+    CGROUP_EVENTS_RECORDED=0
+    CGROUP_CLEANUP_FAILED=0
+    : > "$PROGRESS_FILE"
+    : > "$BENCH_LOG"
+    rm -f "$FINAL_FILE" "$FINAL_TMP"
+    facts_manifest=$(facts_manifest "$DOOP_DATA")
+    {
+        printf 'field\tvalue\n'
+        printf 'host_uname\t%s\nstarted_at\t%s\n' "$(uname -a)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        printf 'workload\tdoop\nworkers\t%s\nrepeat\t%s\n' "$WORKERS" "$REPEAT"
+        printf 'wall_timeout_seconds\t%s\n' "$WALL_TIMEOUT_SECONDS"
+        printf 'memory_limit_kb\t%s\n' "$MEMORY_LIMIT_KB"
+        printf 'data_dir\t%s\nfacts_manifest_sha256\t%s\n' "$DOOP_DATA" "$facts_manifest"
+        printf 'expected_tuples\t%s\nexpected_iterations\t%s\n' \
+            "${EXPECTED_TUPLES:-}" "${EXPECTED_ITERATIONS:-}"
+        printf 'rss\tobservation_only\n'
+    } > "$METADATA_FILE"
+
+    ORACLE_FILE="${ORACLE_FILE:-$PROJECT_ROOT/scripts/release/downstream-matrix-oracles.tsv}"
+    oracle_header='# schema=2 workload tuple_oracle iteration_oracle data_path data_manifest_sha256 provenance_id acquisition_command'
+    if [[ ! -r "$ORACLE_FILE" ]] ||
+        [[ "$(awk 'NF { print; exit }' "$ORACLE_FILE")" != "$oracle_header" ]]; then
+        printf 'oracle_failure\tmissing_or_invalid_header\n' >> "$METADATA_FILE"
+        exit 1
+    fi
+    oracle_rows=$(awk -F '\t' '$1 == "doop" { print }' "$ORACLE_FILE")
+    if [[ "$(printf '%s\n' "$oracle_rows" | sed '/^$/d' | wc -l | tr -d ' ')" -ne 1 ]]; then
+        printf 'oracle_failure\texpected_one_doop_row\n' >> "$METADATA_FILE"
+        exit 1
+    fi
+    IFS=$'\t' read -r oracle_workload oracle_tuples oracle_iterations oracle_data_path \
+        oracle_manifest oracle_provenance oracle_acquisition <<< "$oracle_rows"
+    if [[ "$oracle_workload" != doop || ! "$oracle_tuples" =~ ^[0-9]+$ ||
+        ! "$oracle_iterations" =~ ^[0-9]+$ || "$oracle_data_path" != bench/data/doop ||
+        ! "$oracle_manifest" =~ ^archive:[0-9a-f]{64}\;files:[0-9a-f]{64}$ ]]; then
+        printf 'oracle_failure\tmalformed_doop_row\n' >> "$METADATA_FILE"
+        exit 1
+    fi
+    EXPECTED_TUPLES="$oracle_tuples"
+    EXPECTED_ITERATIONS="$oracle_iterations"
+    EXPECTED_FILES_MANIFEST="${oracle_manifest#*;files:}"
+    actual_facts_manifest=$(facts_manifest "$DOOP_DATA")
+    printf 'oracle_tuples\t%s\noracle_iterations\t%s\n' \
+        "$EXPECTED_TUPLES" "$EXPECTED_ITERATIONS" >> "$METADATA_FILE"
+    printf 'facts_manifest_expected\t%s\nfacts_manifest_actual\t%s\n' \
+        "$EXPECTED_FILES_MANIFEST" "$actual_facts_manifest" >> "$METADATA_FILE"
+    if [[ "$actual_facts_manifest" != "$EXPECTED_FILES_MANIFEST" ]]; then
+        printf 'oracle_failure\tfacts_manifest_mismatch\n' >> "$METADATA_FILE"
+        exit 1
+    fi
+
+    cleanup_cgroup() {
+        if [[ -n "$CGROUP_DIR" && "$CGROUP_EVENTS_RECORDED" -eq 0 &&
+            -r "$CGROUP_DIR/memory.events" ]]; then
+            printf 'memory_events_oom\t%s\n' \
+                "$(awk '$1 == "oom" { print $2 + 0 }' "$CGROUP_DIR/memory.events")" \
+                >> "$METADATA_FILE"
+            printf 'memory_events_oom_kill\t%s\n' \
+                "$(awk '$1 == "oom_kill" { print $2 + 0 }' "$CGROUP_DIR/memory.events")" \
+                >> "$METADATA_FILE"
+            CGROUP_EVENTS_RECORDED=1
+        fi
+        if [[ -n "$CGROUP_DIR" && -d "$CGROUP_DIR" ]]; then
+            if [[ -n "${DOOP_CGROUP_ROOT:-}" ]]; then
+                rm -f "$CGROUP_DIR/memory.max" "$CGROUP_DIR/cgroup.procs" \
+                    "$CGROUP_DIR/memory.events"
+            fi
+            if ! rmdir "$CGROUP_DIR" 2>/dev/null || [[ -d "$CGROUP_DIR" ]]; then
+                printf 'cgroup_cleanup_failure\t%s\n' "$CGROUP_DIR" >> "$METADATA_FILE"
+                CGROUP_CLEANUP_FAILED=1
+            fi
+        fi
+    }
+    cleanup_calibration_artifacts() {
+        local status=$?
+        rm -f "$FINAL_TMP" "$LAUNCH_GATE"
+        cleanup_cgroup
+        if [[ "$status" -eq 0 && "$CGROUP_CLEANUP_FAILED" -ne 0 ]]; then
+            status=1
+        fi
+        return "$status"
+    }
+    trap cleanup_calibration_artifacts EXIT
+
+    memory_limit_bytes=$(awk -v kb="$MEMORY_LIMIT_KB" \
+        'BEGIN { printf "%.0f\n", kb * 1024 }')
+    memory_bound_refused() {
+        local reason=$1
+        printf 'memory_bound_refused\t%s\n' "$reason" >> "$METADATA_FILE"
+        exit 1
+    }
+    if [[ ! -d "$CGROUP_ROOT" || ! -r "$CGROUP_ROOT" || ! -w "$CGROUP_ROOT" ]]; then
+        memory_bound_refused "cgroup_root_unavailable"
+    fi
+    if [[ ! -r "$CGROUP_ROOT/cgroup.controllers" ]] ||
+        ! grep -Eq '(^|[[:space:]])memory([[:space:]]|$)' "$CGROUP_ROOT/cgroup.controllers" ||
+        [[ ! -e "$CGROUP_ROOT/cgroup.procs" || ! -w "$CGROUP_ROOT/cgroup.procs" ]]; then
+        memory_bound_refused "memory_controller_unavailable"
+    fi
+    CGROUP_DIR="$CGROUP_ROOT/wirelog-doop-$$"
+    if ! mkdir "$CGROUP_DIR" 2>/dev/null; then
+        memory_bound_refused "cgroup_create_failed"
+    fi
+    # An injected root is a regular-filesystem fixture; real cgroup-v2 creates
+    # these files with the directory. Never synthesize them for the real root.
+    if [[ -n "${DOOP_CGROUP_ROOT:-}" ]]; then
+        : > "$CGROUP_DIR/memory.max"
+        : > "$CGROUP_DIR/cgroup.procs"
+        printf 'oom 0\noom_kill 0\n' > "$CGROUP_DIR/memory.events"
+    fi
+    if [[ ! -w "$CGROUP_DIR/memory.max" || ! -w "$CGROUP_DIR/cgroup.procs" ||
+        ! -r "$CGROUP_DIR/memory.events" ]] ||
+        ! printf '%s\n' "$memory_limit_bytes" > "$CGROUP_DIR/memory.max"; then
+        memory_bound_refused "cgroup_setup_unavailable"
+    fi
+    memory_oom_before=$(awk '$1 == "oom" { print $2 + 0 }' "$CGROUP_DIR/memory.events")
+    memory_oom_kill_before=$(awk '$1 == "oom_kill" { print $2 + 0 }' "$CGROUP_DIR/memory.events")
+    printf 'memory_events_oom_before\t%s\nmemory_events_oom_kill_before\t%s\n' \
+        "$memory_oom_before" "$memory_oom_kill_before" >> "$METADATA_FILE"
+    printf 'memory_bound\tcgroup_v2_memory.max\n' >> "$METADATA_FILE"
+fi
+
 # -------------------------------------------------------------------------
 # Run benchmark
 # -------------------------------------------------------------------------
@@ -251,19 +452,264 @@ echo ""
 echo "Running DOOP benchmark..."
 echo ""
 
-# Run and capture output
-set +e
-BENCH_OUTPUT=$("$BENCH_BIN" \
-    --workload doop \
-    --data-doop "$DOOP_DATA" \
-    --workers "$WORKERS" \
-    --repeat "$REPEAT" \
-    2>&1)
-BENCH_RC=$?
-set -e
+# Run and capture output. Calibration runs keep the process in its own
+# session so timeout and interruption cleanup reaches stubborn descendants.
+if [[ "$CALIBRATION" -eq 1 ]]; then
+    calibration_pid=""
+    calibration_pgid=""
+    interrupted=0
+    leader_early=0
+    group_exists() {
+        [[ -n "$calibration_pgid" ]] && kill -0 -- "-$calibration_pgid" 2>/dev/null
+    }
+    stop_calibration_group() {
+        if group_exists; then
+            kill -TERM -- "-$calibration_pgid" 2>/dev/null || true
+            for _ in 1 2 3 4 5; do
+                group_exists || break
+                sleep 1
+            done
+            if group_exists; then
+                kill -KILL -- "-$calibration_pgid" 2>/dev/null || true
+                for _ in 1 2 3 4 5; do
+                    group_exists || break
+                    sleep 1
+                done
+            fi
+        fi
+    }
+    calibration_interrupt() {
+        interrupted=1
+        stop_calibration_group
+    }
+    export WIRELOG_DOOP_CGROUP_DIR="$CGROUP_DIR"
+    export WIRELOG_DOOP_CGROUP_MARKER="${DOOP_CGROUP_MARKER:-}"
+    trap calibration_interrupt INT TERM HUP
+    rm -f "$LAUNCH_GATE"
+    setsid --wait bash -c \
+        'while [[ ! -e "$1" ]]; do sleep 0.05; done; shift; exec "$@"' \
+        bash "$LAUNCH_GATE" "$BENCH_BIN" \
+        --workload doop \
+        --data-doop "$DOOP_DATA" \
+        --workers "$WORKERS" \
+        --repeat "$REPEAT" \
+        --repeat-progress "$PROGRESS_FILE" \
+        >"$BENCH_LOG" 2>&1 &
+    calibration_pid=$!
+    calibration_pgid=$(ps -o pgid= -p "$calibration_pid" 2>/dev/null | tr -d ' ')
+    shell_pgid=$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')
+    if [[ ! "$calibration_pgid" =~ ^[0-9]+$ || "$calibration_pgid" == "$shell_pgid" ]]; then
+        echo "ERROR: could not isolate calibration process group" >&2
+        stop_calibration_group
+        wait "$calibration_pid" 2>/dev/null || true
+        exit 1
+    fi
+    if ! printf '%s\n' "$calibration_pid" > "$CGROUP_DIR/cgroup.procs"; then
+        printf 'memory_bound_refused\tcgroup_attach_failed\n' >> "$METADATA_FILE"
+        stop_calibration_group
+        wait "$calibration_pid" 2>/dev/null || true
+        exit 1
+    fi
+    : > "$LAUNCH_GATE"
+    deadline=$((SECONDS + WALL_TIMEOUT_SECONDS))
+    timed_out=0
+    while group_exists; do
+        if ! kill -0 "$calibration_pid" 2>/dev/null; then
+            leader_early=1
+            stop_calibration_group
+            break
+        fi
+        if (( SECONDS >= deadline )); then
+            timed_out=1
+            stop_calibration_group
+            break
+        fi
+        sleep 1
+    done
+    set +e
+    wait "$calibration_pid"
+    BENCH_RC=$?
+    set -e
+    trap - INT TERM HUP
+    memory_oom_after=$(awk '$1 == "oom" { print $2 + 0 }' "$CGROUP_DIR/memory.events")
+    memory_oom_kill_after=$(awk '$1 == "oom_kill" { print $2 + 0 }' "$CGROUP_DIR/memory.events")
+    memory_oom_delta=$(( memory_oom_after - memory_oom_before ))
+    memory_oom_kill_delta=$(( memory_oom_kill_after - memory_oom_kill_before ))
+    printf 'memory_events_oom_after\t%s\nmemory_events_oom_kill_after\t%s\n' \
+        "$memory_oom_after" "$memory_oom_kill_after" >> "$METADATA_FILE"
+    printf 'memory_events_oom_delta\t%s\nmemory_events_oom_kill_delta\t%s\n' \
+        "$memory_oom_delta" "$memory_oom_kill_delta" >> "$METADATA_FILE"
+    CGROUP_EVENTS_RECORDED=1
+    if [[ "$memory_oom_delta" -gt 0 || "$memory_oom_kill_delta" -gt 0 ]]; then
+        BENCH_RC=137
+        oom_reason=memory_oom
+    else
+        oom_reason=""
+    fi
+    if [[ "$timed_out" -eq 1 ]]; then
+        BENCH_RC=124
+        printf 'calibration_timeout\tseconds=%s\n' "$WALL_TIMEOUT_SECONDS" >> "$BENCH_LOG"
+    elif [[ "$interrupted" -eq 1 ]]; then
+        BENCH_RC=130
+        printf 'calibration_interrupted\n' >> "$BENCH_LOG"
+    elif [[ "$leader_early" -eq 1 ]]; then
+        BENCH_RC=125
+        printf 'calibration_leader_exit\n' >> "$BENCH_LOG"
+    elif [[ -n "$oom_reason" ]]; then
+        printf 'calibration_oom\n' >> "$BENCH_LOG"
+    fi
+    BENCH_OUTPUT=$(<"$BENCH_LOG")
+else
+    set +e
+    BENCH_OUTPUT=$("$BENCH_BIN" \
+        --workload doop \
+        --data-doop "$DOOP_DATA" \
+        --workers "$WORKERS" \
+        --repeat "$REPEAT" \
+        2>&1)
+    BENCH_RC=$?
+    set -e
+fi
 
 echo "$BENCH_OUTPUT"
 echo ""
+
+if [[ "$CALIBRATION" -eq 1 ]]; then
+    synthesize_failure_progress() {
+        local reason=$1 rc=$2 starts completes failed next_rep
+        failed=$(awk -F '\t' '$1 == "repeat_complete" && $9 == "status=FAIL" { n++ } END { print n + 0 }' "$PROGRESS_FILE")
+        if [[ "$failed" -eq 0 ]]; then
+            starts=$(awk -F '\t' '$1 == "repeat_start" { n = $3; sub("repetition=", "", n); last = n } END { print last + 0 }' "$PROGRESS_FILE")
+            completes=$(awk -F '\t' '$1 == "repeat_complete" { n = $3; sub("repetition=", "", n); last = n } END { print last + 0 }' "$PROGRESS_FILE")
+            if [[ "$starts" -gt "$completes" ]]; then
+                next_rep=$starts
+            else
+                next_rep=$((completes + 1))
+            fi
+            if [[ "$next_rep" -le "$REPEAT" ]]; then
+                if [[ "$starts" -le "$completes" ]]; then
+                    printf 'repeat_start\tworkload=doop\trepetition=%s\trepeat=%s\tworkers=8\n' \
+                        "$next_rep" "$REPEAT" >> "$PROGRESS_FILE"
+                fi
+                printf 'repeat_complete\tworkload=doop\trepetition=%s\trepeat=%s\tworkers=8\tduration_ms=0\trss_kb=0\trc=%s\tstatus=FAIL\tfailure_reason=%s\n' \
+                    "$next_rep" "$REPEAT" "$rc" "$reason" >> "$PROGRESS_FILE"
+            fi
+        fi
+        printf 'calibration_failure\tworkload=doop\trepeat=%s\tworkers=8\trc=%s\tstatus=FAIL\tfailure_reason=%s\n' \
+            "$REPEAT" "$rc" "$reason" >> "$PROGRESS_FILE"
+    }
+    if [[ "$BENCH_RC" -ne 0 ]]; then
+        failure_reason=process_exit
+        [[ "$timed_out" -eq 1 ]] && failure_reason=timeout
+        [[ "$interrupted" -eq 1 ]] && failure_reason=signal
+        [[ "$leader_early" -eq 1 ]] && failure_reason=leader_exit
+        [[ "${oom_reason:-}" == memory_oom ]] && failure_reason=memory_oom
+        synthesize_failure_progress "$failure_reason" "$BENCH_RC"
+    elif [[ "${oom_reason:-}" == memory_oom ]]; then
+        synthesize_failure_progress memory_oom 137
+    fi
+    validate_progress() {
+        awk -F '\t' -v want_repeat="$REPEAT" '
+            function field(i, expected, pattern, pair) {
+                split($i, pair, "=");
+                return pair[1] == expected && pair[2] ~ pattern && pair[2] != "";
+            }
+            BEGIN { next_rep = 1; started = 0; complete = 0; failed = 0; in_rep = 0; done = 0; bad = 0 }
+            $1 == "repeat_start" {
+                if (NF != 5 || !field(2, "workload", "^doop$") ||
+                    !field(3, "repetition", "^[1-9][0-9]*$") ||
+                    !field(4, "repeat", "^[1-9][0-9]*$") ||
+                    !field(5, "workers", "^[1-9][0-9]*$") ||
+                    $3 != "repetition=" next_rep || $4 != "repeat=" want_repeat ||
+                    $5 != "workers=8" || in_rep) bad = 1;
+                started++;
+                in_rep = 1;
+                next;
+            }
+            $1 == "repeat_complete" {
+                if (NF == 10 && field(9, "status", "^FAIL$") &&
+                    field(2, "workload", "^doop$") &&
+                    field(3, "repetition", "^[1-9][0-9]*$") &&
+                    field(4, "repeat", "^[1-9][0-9]*$") &&
+                    field(5, "workers", "^[1-9][0-9]*$") &&
+                    field(6, "duration_ms", "^[0-9]+([.][0-9]+)?$") &&
+                    field(7, "rss_kb", "^[0-9]+$") &&
+                    field(8, "rc", "^-?[0-9]+$") && $8 != "rc=0" &&
+                    field(10, "failure_reason", "^.+$")) {
+                    if ($3 != "repetition=" next_rep || $4 != "repeat=" want_repeat ||
+                        $5 != "workers=8" || !in_rep) bad = 1;
+                    failed++;
+                    next_rep++;
+                    complete++;
+                    in_rep = 0;
+                    next;
+                }
+                if (NF != 11 || !field(2, "workload", "^doop$") ||
+                    !field(3, "repetition", "^[1-9][0-9]*$") ||
+                    !field(4, "repeat", "^[1-9][0-9]*$") ||
+                    !field(5, "workers", "^[1-9][0-9]*$") ||
+                    !field(6, "duration_ms", "^[0-9]+([.][0-9]+)?$") ||
+                    !field(7, "rss_kb", "^[0-9]+$") ||
+                    !field(8, "rc", "^[0-9]+$") ||
+                    !field(9, "status", "^OK$") ||
+                    !field(10, "tuples", "^[0-9]+$") ||
+                    !field(11, "iterations", "^[0-9]+$") ||
+                    $3 != "repetition=" next_rep || $4 != "repeat=" want_repeat ||
+                    $5 != "workers=8" || $8 != "rc=0" || !in_rep) bad = 1;
+                next_rep++;
+                complete++;
+                in_rep = 0;
+                next;
+            }
+            $1 == "calibration_failure" {
+                if (NF != 7 || !field(2, "workload", "^doop$") ||
+                    !field(3, "repeat", "^[1-9][0-9]*$") ||
+                    !field(4, "workers", "^[1-9][0-9]*$") ||
+                    !field(5, "rc", "^-?[0-9]+$") || $5 == "rc=0" ||
+                    !field(6, "status", "^FAIL$") ||
+                    !field(7, "failure_reason", "^.+$")) bad = 1;
+                failed++;
+                next;
+            }
+            $1 == "DONE" {
+                if (NF != 5 || !field(2, "workload", "^doop$") ||
+                    !field(3, "repeat", "^[1-9][0-9]*$") ||
+                    !field(4, "workers", "^[1-9][0-9]*$") ||
+                    !field(5, "status", "^OK$") ||
+                    $3 != "repeat=" want_repeat || $4 != "workers=8" || done || in_rep ||
+                    complete != want_repeat) bad = 1;
+                done++;
+                next;
+            }
+            { bad = 1 }
+            END {
+                if (failed == 0 && (next_rep != want_repeat + 1 || started != want_repeat ||
+                    complete != want_repeat || in_rep || done != 1)) bad = 1;
+                if (bad) exit 1;
+                if (failed > 0) exit 2;
+                exit 0;
+            }
+        ' "$PROGRESS_FILE"
+    }
+    progress_status=0
+    if [[ ! -s "$PROGRESS_FILE" ||
+        "$(tail -c 1 "$PROGRESS_FILE" | od -An -t x1 | tr -d ' ')" != "0a" ]]; then
+        progress_status=1
+    elif validate_progress; then
+        progress_status=0
+    else
+        progress_status=$?
+    fi
+    if [[ "$progress_status" -eq 2 ]]; then
+        echo "RESULT: FAIL - calibration recorded a failed repetition"
+        printf 'exit_reason\trepetition_failed\n' >> "$METADATA_FILE"
+        exit 1
+    elif [[ "$progress_status" -ne 0 ]]; then
+        echo "RESULT: FAIL - calibration progress is incomplete or malformed"
+        printf 'exit_reason\tprogress_invalid\n' >> "$METADATA_FILE"
+        exit 1
+    fi
+fi
 
 # -------------------------------------------------------------------------
 # Parse results
@@ -285,6 +731,13 @@ if [[ "$FIELD_COUNT" -ne 12 ]]; then
     echo "Row: $DOOP_ROW"
     exit 1
 fi
+if [[ "$CALIBRATION" -eq 1 ]]; then
+    if [[ "$BENCH_RC" -ne 0 ]]; then
+        echo "RESULT: FAIL - calibration process exited with code $BENCH_RC"
+        printf 'exit_reason\tprocess_exit_%s\n' "$BENCH_RC" >> "$METADATA_FILE"
+        exit 1
+    fi
+fi
 
 NODES=$(awk -F '\t' '{ print $2 }' <<< "$DOOP_ROW")
 EDGES=$(awk -F '\t' '{ print $3 }' <<< "$DOOP_ROW")
@@ -297,6 +750,13 @@ PEAK_RSS_KB=$(awk -F '\t' '{ print $9 }' <<< "$DOOP_ROW")
 TUPLES=$(awk -F '\t' '{ print $10 }' <<< "$DOOP_ROW")
 ITERATIONS=$(awk -F '\t' '{ print $11 }' <<< "$DOOP_ROW")
 STATUS=$(awk -F '\t' '{ print $12 }' <<< "$DOOP_ROW")
+
+if [[ "$CALIBRATION" -eq 1 &&
+    ( "$ROW_WORKERS" != 8 || "$ROW_REPEAT" != 5 ) ]]; then
+    echo "RESULT: FAIL - calibration row is not W=8 repeat=5"
+    printf 'exit_reason\trow_configuration_mismatch\n' >> "$METADATA_FILE"
+    exit 1
+fi
 
 # -------------------------------------------------------------------------
 # Report metrics
@@ -344,8 +804,18 @@ else
     echo "Iterations: not checked (no oracle supplied)"
 fi
 
+if [[ "$CALIBRATION" -eq 1 ]]; then
+    # Keep the candidate off the evidence path until all correctness and
+    # optional baseline/oracle checks below have passed.
+    printf '%s\n' "$DOOP_ROW" > "$FINAL_TMP"
+fi
+
 echo "RESULT: PASS - DOOP completed successfully"
 echo ""
+
+if [[ "$CALIBRATION" -eq 1 ]]; then
+    printf 'exit_reason\tcomplete_success\n' >> "$METADATA_FILE"
+fi
 
 # -------------------------------------------------------------------------
 # Baseline comparison (optional)
@@ -410,6 +880,10 @@ if [[ -n "$BASELINE_FILE" && -f "$BASELINE_FILE" ]]; then
         echo "Performance: ${MEDIAN_MS}ms vs baseline ${BASE_MEDIAN}ms"
     fi
     echo ""
+fi
+
+if [[ "$CALIBRATION" -eq 1 ]]; then
+    mv -f "$FINAL_TMP" "$FINAL_FILE"
 fi
 
 # -------------------------------------------------------------------------
