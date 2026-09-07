@@ -63,6 +63,36 @@ fmt_bytes(uint64_t bytes, char *buf, size_t len)
     return buf;
 }
 
+/* Return floor(value * percentage / 100) without overflowing value *
+ * percentage.  The percentage tables and public threshold inputs are
+ * uint32_t, so the quotient/remainder form keeps the multiplication bounded
+ * even for UINT64_MAX-scale budgets. */
+static uint64_t
+percent_of(uint64_t value, uint32_t percentage)
+{
+    uint64_t quotient = value / 100;
+    uint64_t remainder = value % 100;
+    return quotient * (uint64_t)percentage
+           + (remainder * (uint64_t)percentage) / 100;
+}
+
+/* The accounting API has no failure return.  Saturating increments preserve
+ * the invariant that a counter never wraps into a deceptively small value;
+ * admission and allocation failure remain responsibilities of the governor
+ * and allocator layers described in docs/MEMORY.md. */
+static uint64_t
+saturating_add(wl_atomic_u64 *counter, uint64_t bytes)
+{
+    uint64_t old = atomic_load_explicit(counter, memory_order_relaxed);
+    for (;;) {
+        uint64_t next = (UINT64_MAX - old < bytes) ? UINT64_MAX : old + bytes;
+        if (atomic_compare_exchange_weak_explicit(counter, &old, next,
+            memory_order_relaxed,
+            memory_order_relaxed))
+            return next;
+    }
+}
+
 /*
  * update_peak: atomically update @peak_atom to max(*peak_atom, new_val).
  * Uses compare-exchange loop.
@@ -104,16 +134,11 @@ wl_mem_ledger_alloc(wl_mem_ledger_t *ledger, int subsys, uint64_t bytes)
         return;
 
     /* Update subsystem counter */
-    uint64_t subsys_new
-        = atomic_fetch_add_explicit(&ledger->subsys_bytes[subsys], bytes,
-            memory_order_relaxed)
-        + bytes;
+    uint64_t subsys_new = saturating_add(&ledger->subsys_bytes[subsys], bytes);
     update_peak(&ledger->subsys_peak[subsys], subsys_new);
 
     /* Update total counter */
-    uint64_t total_new = atomic_fetch_add_explicit(&ledger->current_bytes,
-            bytes, memory_order_relaxed)
-        + bytes;
+    uint64_t total_new = saturating_add(&ledger->current_bytes, bytes);
     update_peak(&ledger->peak_bytes, total_new);
 }
 
@@ -177,7 +202,7 @@ wl_mem_ledger_subsys_over_budget(const wl_mem_ledger_t *ledger, int subsys)
         = atomic_load_explicit(&ledger->total_budget, memory_order_relaxed);
     if (budget == 0)
         return false;
-    uint64_t cap = (budget * wl_mem_subsys_pct[subsys]) / 100;
+    uint64_t cap = percent_of(budget, wl_mem_subsys_pct[subsys]);
     uint64_t current = atomic_load_explicit(&ledger->subsys_bytes[subsys],
             memory_order_relaxed);
     return current > cap;
@@ -193,13 +218,15 @@ wl_mem_ledger_should_backpressure(const wl_mem_ledger_t *ledger, int subsys,
         = atomic_load_explicit(&ledger->total_budget, memory_order_relaxed);
     if (budget == 0)
         return false;
-    uint64_t cap = (budget * wl_mem_subsys_pct[subsys]) / 100;
+    uint64_t cap = percent_of(budget, wl_mem_subsys_pct[subsys]);
     if (cap == 0)
+        return false;
+    if (threshold_pct > 100)
         return false;
     uint64_t current = atomic_load_explicit(&ledger->subsys_bytes[subsys],
             memory_order_relaxed);
     /* current >= cap * threshold_pct / 100 */
-    return current >= (cap * threshold_pct) / 100;
+    return current >= percent_of(cap, threshold_pct);
 }
 
 uint64_t
@@ -245,7 +272,8 @@ wl_mem_ledger_report(const wl_mem_ledger_t *ledger)
                 memory_order_relaxed);
         uint64_t sp = atomic_load_explicit(&ledger->subsys_peak[i],
                 memory_order_relaxed);
-        uint64_t cap = (budget > 0) ? (budget * wl_mem_subsys_pct[i]) / 100 : 0;
+        uint64_t cap = (budget > 0) ? percent_of(budget,
+                wl_mem_subsys_pct[i]) : 0;
         fprintf(stderr,
             "  %-12s current=%-10s peak=%-10s cap=%s current_bytes=%llu "
             "peak_bytes=%llu cap_bytes=%llu\n",

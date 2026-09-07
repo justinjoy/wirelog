@@ -8,7 +8,9 @@
  * INTERNAL HEADER - not installed, not part of public API.
  *
  * Thread-safe memory accounting ledger with per-subsystem tracking,
- * budget enforcement, and human-readable reporting.
+ * budget accounting, pressure hints, and human-readable reporting.  Admission
+ * enforcement is owned by the memory governor, not this post-allocation
+ * ledger.
  *
  * Issue #224: Memory Observability and Graceful Degradation for DOOP OOM
  */
@@ -75,11 +77,26 @@ wl_atomic_fetch_sub_internal(volatile __int64 *ptr, __int64 dec)
         wl_atomic_fetch_add_internal((volatile __int64 *)(ptr), (__int64)(inc))
 #define atomic_fetch_sub_explicit(ptr, dec, order) \
         wl_atomic_fetch_sub_internal((volatile __int64 *)(ptr), (__int64)(dec))
+
+static inline bool
+wl_atomic_compare_exchange_weak_internal(volatile __int64 *ptr,
+    uint64_t *expected, uint64_t desired)
+{
+    __int64 expected_value = (__int64)*expected;
+    __int64 observed = _InterlockedCompareExchange64(
+        ptr, (__int64)desired, expected_value);
+    if (observed != expected_value) {
+        *expected = (uint64_t)observed;
+        return false;
+    }
+    return true;
+}
+
 #define atomic_compare_exchange_weak_explicit(ptr, expected, desired,        \
             succ_order, fail_order)        \
-        (_InterlockedCompareExchange64((volatile __int64 *)(ptr),                \
-        (__int64)(desired), (__int64)*(expected)) \
-        == (__int64)*(expected))
+        wl_atomic_compare_exchange_weak_internal(                              \
+            (volatile __int64 *)(ptr), (uint64_t *)(expected), \
+            (uint64_t)(desired))
 
 /* Memory orders (ignored on MSVC - intrinsics always use acquire/release semantics) */
 #define memory_order_relaxed 0
@@ -160,7 +177,9 @@ wl_mem_ledger_init(wl_mem_ledger_t *ledger, uint64_t budget_bytes);
  * wl_mem_ledger_alloc:
  * @ledger:    Ledger to update.
  * @subsys:    WL_MEM_SUBSYS_* identifier.
- * @bytes:     Number of bytes allocated.
+ * @bytes:     Number of bytes allocated.  Accounting saturates at
+ *             UINT64_MAX; this function does not reserve memory or reject an
+ *             allocation.
  *
  * Records an allocation.  Updates current_bytes, peak_bytes,
  * subsys_bytes[subsys], and subsys_peak[subsys] atomically.
@@ -212,6 +231,8 @@ wl_mem_ledger_subsys_over_budget(const wl_mem_ledger_t *ledger, int subsys);
  * @threshold: Fraction (0-100) of subsystem cap at which to signal pressure.
  *
  * Returns true when the subsystem has consumed >= threshold% of its cap.
+ * Values above 100 are invalid and return false.  This accounting hint is
+ * not an admission decision.
  * Callers use this to trigger cache eviction, worker scaling, etc.
  * Returns false when budget is 0 (unlimited).
  * Thread-safe.
