@@ -7,7 +7,7 @@
  *
  * Tests:
  *   1. alloc/free tracking accuracy
- *   2. budget enforcement (over_budget)
+ *   2. post-allocation budget observation (over_budget)
  *   3. peak_bytes high-water mark
  *   4. concurrent thread consistency
  *   5. human-readable report output (smoke test)
@@ -114,13 +114,13 @@ test_alloc_free_accuracy(void)
 }
 
 /* ======================================================================== */
-/* Test 2: budget enforcement (over_budget)                                 */
+/* Test 2: post-allocation budget observation (over_budget)                   */
 /* ======================================================================== */
 
 static int
 test_budget_enforcement(void)
 {
-    TEST("budget enforcement (over_budget)");
+    TEST("post-allocation budget observation (over_budget)");
 
     wl_mem_ledger_t ledger;
     wl_mem_ledger_init(&ledger, 1000); /* 1000 byte budget */
@@ -460,6 +460,77 @@ test_bytes_remaining(void)
 }
 
 /* ======================================================================== */
+/* Test 9: UINT64_MAX and invalid threshold boundaries                       */
+/* ======================================================================== */
+
+static int
+test_overflow_boundaries(void)
+{
+    TEST("overflow-safe boundaries");
+
+    wl_mem_ledger_t ledger;
+    wl_mem_ledger_init(&ledger, UINT64_MAX);
+    wl_mem_ledger_alloc(&ledger, WL_MEM_SUBSYS_RELATION, UINT64_MAX);
+    wl_mem_ledger_alloc(&ledger, WL_MEM_SUBSYS_RELATION, 1);
+
+    uint64_t current = (uint64_t)atomic_load_explicit(
+        &ledger.current_bytes, memory_order_relaxed);
+    uint64_t relation = (uint64_t)atomic_load_explicit(
+        &ledger.subsys_bytes[WL_MEM_SUBSYS_RELATION], memory_order_relaxed);
+    if (current != UINT64_MAX || relation != UINT64_MAX) {
+        FAIL("large accounting increment wrapped instead of saturating");
+        return 1;
+    }
+    if (wl_mem_ledger_bytes_remaining(&ledger) != 0
+        || wl_mem_ledger_over_budget(&ledger)) {
+        FAIL("UINT64_MAX budget boundary was not handled deterministically");
+        return 1;
+    }
+
+    wl_mem_ledger_t threshold;
+    wl_mem_ledger_init(&threshold, 1000);
+    wl_mem_ledger_alloc(&threshold, WL_MEM_SUBSYS_CACHE, 100);
+    if (!wl_mem_ledger_should_backpressure(
+            &threshold, WL_MEM_SUBSYS_CACHE, 0)
+        || !wl_mem_ledger_should_backpressure(
+            &threshold, WL_MEM_SUBSYS_CACHE, 100)
+        || wl_mem_ledger_should_backpressure(
+            &threshold, WL_MEM_SUBSYS_CACHE, 101)) {
+        FAIL("threshold 100/>100 boundary is incorrect");
+        return 1;
+    }
+
+    /* The RELATION cap is floor(UINT64_MAX * 50 / 100), not a wrapped value. */
+    wl_mem_ledger_t max_cap;
+    wl_mem_ledger_init(&max_cap, UINT64_MAX);
+    uint64_t relation_cap = (UINT64_MAX / 100) * 50
+        + ((UINT64_MAX % 100) * 50) / 100;
+    wl_mem_ledger_alloc(&max_cap, WL_MEM_SUBSYS_RELATION, relation_cap);
+    if (wl_mem_ledger_subsys_over_budget(
+            &max_cap, WL_MEM_SUBSYS_RELATION)) {
+        FAIL("exact UINT64_MAX subsystem cap was over budget");
+        return 1;
+    }
+    wl_mem_ledger_alloc(&max_cap, WL_MEM_SUBSYS_RELATION, 1);
+    if (!wl_mem_ledger_subsys_over_budget(
+            &max_cap, WL_MEM_SUBSYS_RELATION)) {
+        FAIL("UINT64_MAX subsystem cap did not advance at cap + 1");
+        return 1;
+    }
+
+    uint32_t percentage_sum = 0;
+    for (int i = 0; i < WL_MEM_SUBSYS_COUNT; i++)
+        percentage_sum += wl_mem_subsys_pct[i];
+    if (percentage_sum != 100) {
+        FAIL("subsystem percentages do not sum to 100");
+        return 1;
+    }
+
+    PASS();
+    return 0;
+}
+
+/* ======================================================================== */
 /* Main                                                                     */
 /* ======================================================================== */
 
@@ -479,6 +550,7 @@ main(void)
     test_subsys_over_budget();
     test_backpressure_threshold();
     test_bytes_remaining();
+    test_overflow_boundaries();
 
     printf("\n");
     printf("Passed: %d/%d\n", tests_passed, tests_run);

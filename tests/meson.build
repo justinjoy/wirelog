@@ -1277,6 +1277,16 @@ test_intern_exe = executable(
 
 test('intern', test_intern_exe)
 
+# Issue #1381: execute the memory-ledger arithmetic contract.  This remains
+# accounting-only; reservation/admission is owned by the #1368/#1369 units.
+test_mem_ledger_exe = executable(
+  'test_mem_ledger',
+  files('test_mem_ledger.c', '../wirelog/columnar/mem_ledger.c') + thread_src,
+  include_directories: [wirelog_inc, wirelog_src_inc],
+  dependencies: [threads_dep],
+)
+test('mem_ledger_contract', test_mem_ledger_exe, suite: 'unit')
+
 # ============================================================================
 # Plan Generator + Session Facts Tests (Phase 2C columnar backend)
 # ============================================================================
