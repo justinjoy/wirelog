@@ -206,11 +206,58 @@ arr_memory_bytes(const col_arrangement_t *arr, size_t *out)
  * key_cols is NOT freed here — it is always owned by the registry entry
  * (col_arr_entry_t.key_cols) and freed separately in col_session_destroy.
  */
+/*
+ * arr_ledger_bytes: current ht_head + ht_next footprint for accounting;
+ * 0 when the size is not representable (arr_memory_bytes already rejects
+ * such tables at build time).
+ */
+static uint64_t
+arr_ledger_bytes(const col_arrangement_t *arr)
+{
+    size_t bytes = 0;
+    if (!arr || !arr_memory_bytes(arr, &bytes))
+        return 0;
+    return (uint64_t)bytes;
+}
+
+/*
+ * arr_ledger_sync: charge or credit the difference between @before and the
+ * arrangement's current footprint under ARRANGEMENT (Issue #1380).
+ */
+static void
+arr_ledger_sync(col_arrangement_t *arr, uint64_t before)
+{
+    if (!arr || !arr->ledger)
+        return;
+    uint64_t after = arr_ledger_bytes(arr);
+    if (after > before)
+        wl_mem_ledger_alloc(arr->ledger, WL_MEM_SUBSYS_ARRANGEMENT,
+            after - before);
+    else if (before > after)
+        wl_mem_ledger_free(arr->ledger, WL_MEM_SUBSYS_ARRANGEMENT,
+            before - after);
+}
+
+void
+col_arr_attach_ledger(col_arrangement_t *arr, wl_mem_ledger_t *ledger)
+{
+    if (!arr || arr->ledger || !ledger)
+        return;
+    arr->ledger = ledger;
+    arr_ledger_sync(arr, 0);
+}
+
 void
 arr_free_contents(col_arrangement_t *arr)
 {
     if (!arr)
         return;
+    if (arr->ledger) {
+        uint64_t bytes = arr_ledger_bytes(arr);
+        if (bytes > 0)
+            wl_mem_ledger_free(arr->ledger, WL_MEM_SUBSYS_ARRANGEMENT,
+                bytes);
+    }
     free(arr->ht_head);
     free(arr->ht_next);
     arr->ht_head = NULL;
@@ -223,7 +270,7 @@ arr_free_contents(col_arrangement_t *arr)
 
 /* Full rebuild: index all nrows rows in rel into arr. */
 static int
-arr_build_full(col_arrangement_t *arr, const col_rel_t *rel)
+arr_build_full_impl(col_arrangement_t *arr, const col_rel_t *rel)
 {
     uint32_t nrows = rel->nrows;
     uint32_t nbuckets = arr_next_pow2(nrows > 0 ? nrows * 2u : 16u);
@@ -330,9 +377,21 @@ arr_build_full(col_arrangement_t *arr, const col_rel_t *rel)
     return 0;
 }
 
+/* Ledger-aware wrapper: the build may free and reallocate ht_head/ht_next
+ * on several paths, so the charge is reconciled once from the before/after
+ * footprint instead of at each malloc (Issue #1380). */
+static int
+arr_build_full(col_arrangement_t *arr, const col_rel_t *rel)
+{
+    uint64_t before = arr->ledger ? arr_ledger_bytes(arr) : 0;
+    int rc = arr_build_full_impl(arr, rel);
+    arr_ledger_sync(arr, before);
+    return rc;
+}
+
 /* Incremental update: index only rows [old_nrows..rel->nrows). */
 static int
-arr_update_incremental(col_arrangement_t *arr, const col_rel_t *rel,
+arr_update_incremental_impl(col_arrangement_t *arr, const col_rel_t *rel,
     uint32_t old_nrows)
 {
     uint32_t nrows = rel->nrows;
@@ -389,6 +448,16 @@ arr_update_incremental(col_arrangement_t *arr, const col_rel_t *rel,
 /* ======================================================================== */
 /* Arrangement Cache LRU Eviction (Issue #216)                              */
 /* ======================================================================== */
+
+static int
+arr_update_incremental(col_arrangement_t *arr, const col_rel_t *rel,
+    uint32_t old_nrows)
+{
+    uint64_t before = arr->ledger ? arr_ledger_bytes(arr) : 0;
+    int rc = arr_update_incremental_impl(arr, rel, old_nrows);
+    arr_ledger_sync(arr, before);
+    return rc;
+}
 
 /*
  * col_arr_cache_evict_lru: evict arrangement cache entries until arr_total_bytes
@@ -579,6 +648,7 @@ col_session_get_arrangement(wl_session_t *sess, const char *rel_name,
     e->key_count = key_count;
     e->arr.key_cols = e->key_cols; /* shared view; key_cols owned by entry */
     e->arr.key_count = key_count;
+    e->arr.ledger = &cs->mem_ledger; /* Issue #1380: ARRANGEMENT accounting */
 
     /* Initial build. */
     if (arr_build_full(&e->arr, rel) != 0) {
@@ -815,6 +885,7 @@ col_session_get_delta_arrangement(wl_col_session_t *cs, const char *rel_name,
     e->key_count = key_count;
     e->arr.key_cols = e->key_cols; /* shared view; owned by entry */
     e->arr.key_count = key_count;
+    e->arr.ledger = &cs->mem_ledger; /* Issue #1380 */
     cs->darr_count++;
 
     /* Initial build. */
@@ -928,6 +999,7 @@ col_session_get_filt_arrangement(wl_col_session_t *cs, const char *rel_name,
     e->filter_hash = filter_hash;
     e->arr.key_cols = e->key_cols; /* shared view; owned by entry */
     e->arr.key_count = key_count;
+    e->arr.ledger = &cs->mem_ledger; /* Issue #1380 */
     cs->filt_arr_count++;
 
     if (filtered_rel->nrows > 0
@@ -988,11 +1060,25 @@ col_session_get_frontier(wl_session_t *session, uint32_t stratum_idx,
  * Frees any previous sorted buffer and allocates a fresh one.
  * Returns 0 on success, ENOMEM on allocation failure.
  */
+/*
+ * sarr_release: free sorted[] and credit its ARRANGEMENT charge
+ * (Issue #1380).
+ */
+static void
+sarr_release(col_sorted_arr_t *sarr)
+{
+    if (sarr->ledger && sarr->ledger_bytes > 0)
+        wl_mem_ledger_free(sarr->ledger, WL_MEM_SUBSYS_ARRANGEMENT,
+            sarr->ledger_bytes);
+    sarr->ledger_bytes = 0;
+    free(sarr->sorted);
+    sarr->sorted = NULL;
+}
+
 static int
 sarr_build(col_sorted_arr_t *sarr, const col_rel_t *rel, uint32_t key_col)
 {
-    free(sarr->sorted);
-    sarr->sorted = NULL;
+    sarr_release(sarr);
     sarr->nrows = 0;
     sarr->ncols = rel->ncols;
     sarr->key_col = key_col;
@@ -1005,6 +1091,10 @@ sarr_build(col_sorted_arr_t *sarr, const col_rel_t *rel, uint32_t key_col)
     sarr->sorted = (int64_t *)malloc(bytes);
     if (!sarr->sorted)
         return ENOMEM;
+    if (sarr->ledger) {
+        wl_mem_ledger_alloc(sarr->ledger, WL_MEM_SUBSYS_ARRANGEMENT, bytes);
+        sarr->ledger_bytes = bytes;
+    }
 
     for (uint32_t r = 0; r < rel->nrows; r++)
         col_rel_row_copy_out(rel, r, sarr->sorted + (size_t)r * rel->ncols);
@@ -1015,8 +1105,7 @@ sarr_build(col_sorted_arr_t *sarr, const col_rel_t *rel, uint32_t key_col)
      * ENOMEM so the caller can react. */
     if (col_radix_sort_rows_by_key(sarr->sorted, rel->nrows, rel->ncols,
         key_col) != 0) {
-        free(sarr->sorted);
-        sarr->sorted = NULL;
+        sarr_release(sarr);
         return ENOMEM;
     }
     sarr->nrows = rel->nrows;
@@ -1080,6 +1169,7 @@ col_session_get_sorted_arrangement(wl_col_session_t *cs, const char *rel_name,
 
     e->key_col = key_col;
     e->sarr.key_col = key_col;
+    e->sarr.ledger = &cs->mem_ledger; /* Issue #1380 */
     cs->sarr_count++;
 
     if (sarr_build(&e->sarr, rel, key_col) != 0) {
@@ -1104,7 +1194,7 @@ col_session_free_sorted_arrangements(wl_col_session_t *cs)
         return;
     for (uint32_t i = 0; i < cs->sarr_count; i++) {
         free(cs->sarr_entries[i].rel_name);
-        free(cs->sarr_entries[i].sarr.sorted);
+        sarr_release(&cs->sarr_entries[i].sarr);
     }
     free(cs->sarr_entries);
     cs->sarr_entries = NULL;
@@ -1184,6 +1274,7 @@ col_session_get_diff_arrangement(wl_col_session_t *cs, const char *rel_name,
         memset(e, 0, sizeof(*e));
         return NULL;
     }
+    col_diff_arrangement_attach_ledger(e->diff_arr, &cs->mem_ledger);
     cs->diff_arr_count++;
     return e->diff_arr;
 }

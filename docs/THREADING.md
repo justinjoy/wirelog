@@ -152,7 +152,7 @@ explicitly (audit in [§5](#5-atomics-audit)).
 
 ### 4.2 MSVC shim in `mem_ledger.h`
 
-`wirelog/columnar/mem_ledger.h:24-86` reimplements the subset of C11
+`wirelog/columnar/mem_ledger.h:24-89` reimplements the subset of C11
 atomics that `mem_ledger.c` needs by routing through
 `_InterlockedCompareExchange64`. Notes:
 
@@ -168,7 +168,7 @@ atomics that `mem_ledger.c` needs by routing through
 - `atomic_compare_exchange_weak_explicit` is `_InterlockedCompareExchange64`
   with one comparison, returning `true` on success.
 - **Memory orders are ignored** under this shim. The macros at
-  `mem_ledger.h:84-86` define `memory_order_relaxed`/`_release`/`_acquire`
+  `mem_ledger.h:87-89` define `memory_order_relaxed`/`_release`/`_acquire`
   as integer constants only; the intrinsics provide the order the
   hardware already gives. The portable code in `mem_ledger.c` continues
   to pass explicit orders so the GCC/Clang path is correct; the MSVC
@@ -228,16 +228,19 @@ These exist so struct fields can be declared portably; the audit in
 
 Every `atomic_*` call site in `wirelog/` production sources. Counted
 mechanically by `scripts/ci/check-threading-doc.sh`; row count must
-match the script's count (currently **53**).
+match the script's count (currently **52**).
 
 Format: `file:function[#N]` | field | operation | order | justification.
 
-### 5.1 `wirelog/columnar/mem_ledger.c` — accounting (22 rows)
+### 5.1 `wirelog/columnar/mem_ledger.c` — accounting (21 rows)
 
 | Anchor (`file:function[#N]`) | Field | Op | Order | Justification |
 |---|---|---|---|---|
 | `mem_ledger.c:update_peak` | `*peak_atom` (subsys or global) | `atomic_load_explicit` | `relaxed` | Read-current for monotone peak-update CAS loop; no happens-before edge required |
 | `mem_ledger.c:update_peak#2` | `*peak_atom` | `atomic_compare_exchange_weak_explicit` | `relaxed`/`relaxed` | Monotone high-water bump; if another thread won, retry; observed values are non-decreasing |
+| `mem_ledger.c:total_add` | `ledger->current_bytes` | `atomic_fetch_add_explicit` | `relaxed` | Aggregate accounting counter shared by alloc and set_gauge; per-allocator skew is tolerated |
+| `mem_ledger.c:counter_sub_clamped` | `*counter` (subsys or global) | `atomic_load_explicit` | `relaxed` | Read-current for the clamp-to-zero subtract path |
+| `mem_ledger.c:counter_sub_clamped#2` | `*counter` | `atomic_compare_exchange_weak_explicit` | `relaxed`/`relaxed` | Clamp-to-zero CAS loop shared by free and set_gauge; loss-of-race retries |
 | `mem_ledger.c:wl_mem_ledger_init` | `ledger->total_budget` | `atomic_store_explicit` | `relaxed` | Set-once at init; readers see the value eventually via per-counter relaxed loads |
 | `mem_ledger.c:saturating_add` | `*counter` (subsys or global) | `atomic_load_explicit` | `relaxed` | Read-current before overflow-safe saturating increment |
 | `mem_ledger.c:saturating_add#2` | `*counter` (subsys or global) | `atomic_compare_exchange_weak_explicit` | `relaxed`/`relaxed` | Atomic saturating increment; retry with the observed value and never wrap |
@@ -245,6 +248,8 @@ Format: `file:function[#N]` | field | operation | order | justification.
 | `mem_ledger.c:wl_mem_ledger_free#2` | `ledger->subsys_bytes[subsys]` | `atomic_compare_exchange_weak_explicit` | `relaxed`/`relaxed` | Clamp-to-zero CAS loop; loss-of-race retries |
 | `mem_ledger.c:wl_mem_ledger_free#3` | `ledger->current_bytes` | `atomic_load_explicit` | `relaxed` | Read-current for clamp-to-zero free path |
 | `mem_ledger.c:wl_mem_ledger_free#4` | `ledger->current_bytes` | `atomic_compare_exchange_weak_explicit` | `relaxed`/`relaxed` | Clamp-to-zero CAS loop |
+| `mem_ledger.c:wl_mem_ledger_alloc` | `ledger->subsys_bytes[subsys]` | `atomic_fetch_add_explicit` | `relaxed` | Per-subsystem counter; ordering of distinct subsystems is independent |
+| `mem_ledger.c:wl_mem_ledger_set_gauge` | `ledger->subsys_bytes[subsys]` | `atomic_exchange_explicit` | `relaxed` | Gauge replace (Issue #1380); returns the previous value so the total can move by the difference |
 | `mem_ledger.c:wl_mem_ledger_over_budget` | `ledger->total_budget` | `atomic_load_explicit` | `relaxed` | Query path; no edge required |
 | `mem_ledger.c:wl_mem_ledger_over_budget#2` | `ledger->current_bytes` | `atomic_load_explicit` | `relaxed` | Query path |
 | `mem_ledger.c:wl_mem_ledger_subsys_over_budget` | `ledger->total_budget` | `atomic_load_explicit` | `relaxed` | Query path |
@@ -253,15 +258,15 @@ Format: `file:function[#N]` | field | operation | order | justification.
 | `mem_ledger.c:wl_mem_ledger_should_backpressure#2` | `ledger->subsys_bytes[subsys]` | `atomic_load_explicit` | `relaxed` | Query path |
 | `mem_ledger.c:wl_mem_ledger_bytes_remaining` | `ledger->total_budget` | `atomic_load_explicit` | `relaxed` | Snapshot path |
 | `mem_ledger.c:wl_mem_ledger_bytes_remaining#2` | `ledger->current_bytes` | `atomic_load_explicit` | `relaxed` | Snapshot path |
-| `mem_ledger.c:wl_mem_ledger_report` | `ledger->total_budget` | `atomic_load_explicit` | `relaxed` | Reporter path |
-| `mem_ledger.c:wl_mem_ledger_report#2` | `ledger->current_bytes` | `atomic_load_explicit` | `relaxed` | Reporter path |
-| `mem_ledger.c:wl_mem_ledger_report#3` | `ledger->peak_bytes` | `atomic_load_explicit` | `relaxed` | Reporter path |
-| `mem_ledger.c:wl_mem_ledger_report#4` | `ledger->subsys_bytes[i]` | `atomic_load_explicit` | `relaxed` | Reporter per-subsys path |
-| `mem_ledger.c:wl_mem_ledger_report#5` | `ledger->subsys_peak[i]` | `atomic_load_explicit` | `relaxed` | Reporter per-subsys path |
+| `mem_ledger.c:wl_mem_ledger_snapshot` | `ledger->total_budget` | `atomic_load_explicit` | `relaxed` | Reporter/stats snapshot path (Issue #1380); `wl_mem_ledger_report` consumes the plain copy |
+| `mem_ledger.c:wl_mem_ledger_snapshot#2` | `ledger->current_bytes` | `atomic_load_explicit` | `relaxed` | Snapshot path |
+| `mem_ledger.c:wl_mem_ledger_snapshot#3` | `ledger->peak_bytes` | `atomic_load_explicit` | `relaxed` | Snapshot path |
+| `mem_ledger.c:wl_mem_ledger_snapshot#4` | `ledger->subsys_bytes[i]` | `atomic_load_explicit` | `relaxed` | Snapshot per-subsys path |
+| `mem_ledger.c:wl_mem_ledger_snapshot#5` | `ledger->subsys_peak[i]` | `atomic_load_explicit` | `relaxed` | Snapshot per-subsys path |
 
 The ledger's design accepts **accounting skew** between
 `current_bytes` and the sum of `subsys_bytes[]`; this is documented in
-`mem_ledger.h:179` and is the reason every counter operation uses
+`mem_ledger.h:217` and is the reason every counter operation uses
 `memory_order_relaxed` instead of any stronger order.
 
 ### 5.2 `wirelog/util/lockfree_queue.c` — SPSC ring buffer (4 rows)
@@ -356,7 +361,7 @@ named in the justification.
 
 ### 5.9 Total
 
-22 + 4 + 2 + 19 + 1 + 1 + 1 + 3 = **53 atomic call sites**.
+21 + 4 + 2 + 19 + 1 + 1 + 1 + 3 = **52 atomic call sites**.
 
 The `#N` suffix counts all atomic sites in a symbol, regardless of operation;
 the first site remains unsuffixed. `scripts/ci/check-threading-doc.sh` uses

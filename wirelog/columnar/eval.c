@@ -1541,9 +1541,14 @@ tdd_worker_subpass_fn(void *arg)
              * after barrier.
              * Fallback to ctx write when queue unavailable (alloc failure). */
             if (sess->coordinator && sess->coordinator->delta_queue) {
+                /* Issue #1380: mirror of eval_tdd_queue.c publish. */
+                uint64_t transport_bytes = col_rel_transport_bytes(delta);
                 int enq_rc = wl_mpsc_enqueue(
                     sess->coordinator->delta_queue,
                     sess->worker_id, delta, ctx->stratum_idx, ri);
+                if (enq_rc == 0)
+                    wl_mem_ledger_alloc(&sess->coordinator->mem_ledger,
+                        WL_MEM_SUBSYS_CHANNEL, transport_bytes);
                 if (enq_rc != 0) {
                     /* Queue full — signal error; destroy orphaned delta. */
                     col_rel_destroy(delta);
@@ -1565,6 +1570,10 @@ tdd_worker_subpass_fn(void *arg)
     }
 
     free(snap);
+
+    /* Issue #1380: sample STORED/TEMPORARY at the high-water point, just
+     * before the per-sub-pass temporaries are released. */
+    col_session_mem_sample(sess);
 
     /* Reset per-sub-pass allocators and cache (eval_serial.c:701-712) */
     delta_pool_reset(sess->delta_pool);
@@ -4233,6 +4242,11 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
      * state allocation, using the evaluator's ENOMEM failure signal. */
     coord->delta_queue = wl_mpsc_queue_create_with_destructor(
         W, delta_queue_capacity, tdd_destroy_delta_payload);
+    /* Issue #1380: ring storage is fixed for the stratum; charge once. */
+    coord->mem_channel_ring_bytes
+        = wl_mpsc_queue_footprint_bytes(coord->delta_queue);
+    wl_mem_ledger_alloc(&coord->mem_ledger, WL_MEM_SUBSYS_CHANNEL,
+        coord->mem_channel_ring_bytes);
 
     /* Issue #390: BDX snap array — pre-subpass IDB sizes per worker/relation.
      * Used to truncate worker IDB back to clean partition state after each
@@ -4407,8 +4421,8 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
             coord->tdd_submit_loop_ns += submit_ns;
 
             if (!submit_ok) {
-                wl_columnar_eval_tdd_queue_discard_delta_queue(
-                    coord->delta_queue, W, nrels);
+                wl_columnar_eval_tdd_queue_discard_delta_queue_ledger(
+                    coord->delta_queue, &coord->mem_ledger);
                 for (uint32_t w = 0; w < W; w++)
                     for (uint32_t ri = 0; ri < nrels; ri++)
                         col_rel_destroy(ctxs[w].delta_rels[ri]);
@@ -4458,8 +4472,8 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
                     fprintf(stderr,
                         "TDD worker error stratum=%u iter=%u rc=%d\n",
                         stratum_idx, eff_iter, rc);
-                wl_columnar_eval_tdd_queue_discard_delta_queue(
-                    coord->delta_queue, W, nrels);
+                wl_columnar_eval_tdd_queue_discard_delta_queue_ledger(
+                    coord->delta_queue, &coord->mem_ledger);
                 for (uint32_t w = 0; w < W; w++)
                     for (uint32_t ri = 0; ri < nrels; ri++)
                         col_rel_destroy(ctxs[w].delta_rels[ri]);
@@ -4474,8 +4488,8 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
                 size_t matrix_count = 0;
                 if (wl_columnar_eval_tdd_matrix_size(W, nrels,
                     sizeof(wl_delta_msg_t), &matrix_count) != 0) {
-                    wl_columnar_eval_tdd_queue_discard_delta_queue(
-                        coord->delta_queue, W, nrels);
+                    wl_columnar_eval_tdd_queue_discard_delta_queue_ledger(
+                        coord->delta_queue, &coord->mem_ledger);
                     rc = EOVERFLOW;
                     goto done;
                 }
@@ -4486,14 +4500,24 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
                     /* Queue-only workers have not written ctxs yet.  Drain
                      * and destroy their queued deltas before aborting; do
                      * not continue with a silently empty exchange. */
-                    wl_columnar_eval_tdd_queue_discard_delta_queue(
-                        coord->delta_queue, W, nrels);
+                    wl_columnar_eval_tdd_queue_discard_delta_queue_ledger(
+                        coord->delta_queue, &coord->mem_ledger);
                     rc = ENOMEM;
                     coord->tdd_queue_drain_ns += now_ns() - queue_t0;
                     goto done;
                 }
                 uint32_t msg_count = wl_mpsc_dequeue_all(
                     coord->delta_queue, msgs, max_msgs);
+                /* Issue #1380: payloads leave the channel here; whatever
+                 * the matrix keeps becomes a coordinator-side delta. */
+                for (uint32_t mi = 0; mi < msg_count && mi < max_msgs;
+                    mi++) {
+                    if (msgs[mi].delta)
+                        wl_mem_ledger_free(&coord->mem_ledger,
+                            WL_MEM_SUBSYS_CHANNEL,
+                            col_rel_transport_bytes(
+                                (const col_rel_t *)msgs[mi].delta));
+                }
 
                 /* Clear and reconstruct from queue messages. */
                 for (uint32_t w = 0; w < W; w++)
@@ -4625,6 +4649,10 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
                 final_eff_iter = eff_iter;
         } /* end sub loop */
 
+        /* Issue #1380: coordinator-side STORED/TEMPORARY sample per outer
+         * iteration (worker partitions are sampled by the workers). */
+        col_session_mem_sample(coord);
+
         if (stride_all_skipped)
             continue;
         if (outer_continue_next)
@@ -4635,6 +4663,13 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
 
 done:
     /* Issue #410: Destroy MPSC delta queue created for this stratum eval. */
+    /* Issue #1380: drain with accounting first so the destructor path has
+     * nothing left to reclaim, then release the ring charge. */
+    wl_columnar_eval_tdd_queue_discard_delta_queue_ledger(coord->delta_queue,
+        &coord->mem_ledger);
+    wl_mem_ledger_free(&coord->mem_ledger, WL_MEM_SUBSYS_CHANNEL,
+        coord->mem_channel_ring_bytes);
+    coord->mem_channel_ring_bytes = 0;
     wl_mpsc_queue_destroy(coord->delta_queue);
     coord->delta_queue = NULL;
 

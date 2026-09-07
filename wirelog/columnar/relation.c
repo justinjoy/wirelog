@@ -147,6 +147,47 @@ col_rel_owned_ledger_bytes(const col_rel_t *r)
     return owned_cols * r->capacity * sizeof(int64_t);
 }
 
+uint64_t
+col_rel_timestamp_ledger_bytes(const col_rel_t *r)
+{
+    if (!r || !r->timestamps || r->capacity == 0)
+        return 0;
+    /* capacity is uint32_t, so the product cannot overflow uint64_t. */
+    return (uint64_t)r->capacity * sizeof(col_delta_timestamp_t);
+}
+
+uint64_t
+col_rel_transport_bytes(const col_rel_t *r)
+{
+    uint64_t cols = col_rel_owned_ledger_bytes(r);
+    uint64_t ts = col_rel_timestamp_ledger_bytes(r);
+    if (cols > UINT64_MAX - ts)
+        return UINT64_MAX;
+    return cols + ts;
+}
+
+/*
+ * ledger_sync_timestamps: bring the TIMESTAMP charge for r->timestamps in
+ * line with its current size (Issue #1380).  Every relation.c growth and
+ * shrink path already brackets the column change with
+ * col_rel_ledger_reconcile(), so piggybacking here covers the realloc of
+ * timestamps in the same paths, plus any eval-layer calloc of timestamps
+ * on an attached relation at its next reconcile or release.
+ */
+static void
+ledger_sync_timestamps(col_rel_t *r)
+{
+    uint64_t now = col_rel_timestamp_ledger_bytes(r);
+    if (now > r->ledger_ts_bytes) {
+        wl_mem_ledger_alloc(r->mem_ledger, WL_MEM_SUBSYS_TIMESTAMP,
+            now - r->ledger_ts_bytes);
+    } else if (r->ledger_ts_bytes > now) {
+        wl_mem_ledger_free(r->mem_ledger, WL_MEM_SUBSYS_TIMESTAMP,
+            r->ledger_ts_bytes - now);
+    }
+    r->ledger_ts_bytes = now;
+}
+
 void
 col_rel_ledger_reconcile(col_rel_t *r, uint64_t before_bytes)
 {
@@ -160,6 +201,7 @@ col_rel_ledger_reconcile(col_rel_t *r, uint64_t before_bytes)
         wl_mem_ledger_free(r->mem_ledger, WL_MEM_SUBSYS_RELATION,
             before_bytes - after_bytes);
     }
+    ledger_sync_timestamps(r);
 }
 
 void
@@ -170,6 +212,11 @@ col_rel_ledger_release(col_rel_t *r)
     uint64_t bytes = col_rel_owned_ledger_bytes(r);
     if (bytes > 0)
         wl_mem_ledger_free(r->mem_ledger, WL_MEM_SUBSYS_RELATION, bytes);
+    if (r->ledger_ts_bytes > 0) {
+        wl_mem_ledger_free(r->mem_ledger, WL_MEM_SUBSYS_TIMESTAMP,
+            r->ledger_ts_bytes);
+        r->ledger_ts_bytes = 0;
+    }
 }
 
 /* ---- lifecycle ---------------------------------------------------------- */

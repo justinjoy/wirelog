@@ -533,14 +533,7 @@ cleanup:
     /* Trim mat_cache back to pre-dispatch baseline. Entries added by branches
      * are owned by the cache and must be freed the same way the parallel path
      * frees its worker caches. */
-    {
-        col_mat_cache_t *mc = &sess->mat_cache;
-        for (uint32_t i = mat_base; i < mc->count; i++) {
-            col_rel_destroy(mc->entries[i].result);
-            mc->total_bytes -= mc->entries[i].mem_bytes;
-        }
-        mc->count = mat_base;
-    }
+    col_mat_cache_truncate(&sess->mat_cache, mat_base);
     /* Sweep any pool slots allocated during branch eval (#549 ASAN fix).
      * Slots whose relations were already col_rel_destroy'd upstream are
      * zeroed and this walk is a safe no-op for them (free(NULL) chains).
@@ -771,6 +764,11 @@ col_op_k_fusion_dispatch(const wl_plan_op_t *op, eval_stack_t *stack,
                 worker_cap = 8 * 1024 * 1024; /* 8MB minimum */
             worker_sess[d].eval_arena = wl_arena_create(worker_cap);
             /* NULL arena is handled gracefully: operators check before use */
+            /* Issue #1380: branch sessions are struct copies whose embedded
+             * ledger is discarded at teardown, so charge the parent. */
+            if (worker_sess[d].eval_arena)
+                wl_mem_ledger_alloc(&sess->mem_ledger, WL_MEM_SUBSYS_ARENA,
+                    worker_sess[d].eval_arena->capacity);
         }
         /* Issue #196: Scale per-worker delta_pool inversely with active
          * branch count to keep aggregate memory ~constant. */
@@ -783,6 +781,11 @@ col_op_k_fusion_dispatch(const wl_plan_op_t *op, eval_stack_t *stack,
                 pool_slots = 16;
             worker_sess[d].delta_pool
                 = delta_pool_create(pool_slots, sizeof(col_rel_t), pool_arena);
+            if (worker_sess[d].delta_pool) {
+                const delta_pool_t *dp = worker_sess[d].delta_pool;
+                wl_mem_ledger_alloc(&sess->mem_ledger, WL_MEM_SUBSYS_ARENA,
+                    (uint64_t)dp->slot_cap * dp->slot_size + dp->arena_cap);
+            }
         }
 
         workers[d].plan_data.name = "<k_fusion_copy>";
@@ -946,11 +949,11 @@ cleanup_wq:
      * its isolated cache — no races at cleanup time. */
     for (uint32_t d = 0; d < live_count; d++) {
         eval_stack_drain(&workers[d].stack);
-        col_mat_cache_t *wc = &worker_sess[d].mat_cache;
         /* Issue #196: worker mat_cache starts empty (zeroed above), so ALL
-         * entries were created by this worker — free from index 0. */
-        for (uint32_t i = 0; i < wc->count; i++)
-            col_rel_destroy(wc->entries[i].result);
+         * entries were created by this worker — free from index 0.  The
+         * worker cache has no ledger (Issue #1380), so this is a plain
+         * destroy of every entry. */
+        col_mat_cache_clear(&worker_sess[d].mat_cache);
         /* Issue #216: merge worker lru_clocks back into coordinator so
          * arrangements accessed by any worker are counted as recently used.
          * Worker entries were cloned in the same order as coordinator entries,
@@ -1005,6 +1008,19 @@ cleanup_wq:
                     col_rel_free_contents(pr);
                 }
             }
+        }
+        /* Issue #1380: credit the parent ledger for the branch allocators. */
+        {
+            const delta_pool_t *dp = worker_sess[d].delta_pool;
+            uint64_t bytes = 0;
+            if (dp)
+                bytes += (uint64_t)dp->slot_cap * dp->slot_size
+                    + dp->arena_cap;
+            if (worker_sess[d].eval_arena)
+                bytes += worker_sess[d].eval_arena->capacity;
+            if (bytes > 0)
+                wl_mem_ledger_free(&sess->mem_ledger, WL_MEM_SUBSYS_ARENA,
+                    bytes);
         }
         delta_pool_destroy(worker_sess[d].delta_pool);
         wl_arena_free(worker_sess[d].eval_arena);

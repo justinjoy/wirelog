@@ -106,6 +106,23 @@ wl_columnar_eval_tdd_queue_discard_delta_queue_with_destroyer(
 }
 
 void
+wl_columnar_eval_tdd_queue_discard_delta_queue_ledger(wl_mpsc_queue_t *queue,
+    wl_mem_ledger_t *ledger)
+{
+    if (!queue)
+        return;
+    wl_delta_msg_t msg;
+    while (wl_mpsc_dequeue(queue, &msg)) {
+        if (!msg.delta)
+            continue;
+        /* Issue #1380: the payload leaves the channel here. */
+        wl_mem_ledger_free(ledger, WL_MEM_SUBSYS_CHANNEL,
+            col_rel_transport_bytes((const col_rel_t *)msg.delta));
+        tdd_destroy_delta_payload(msg.delta);
+    }
+}
+
+void
 wl_columnar_eval_tdd_queue_discard_delta_queue(wl_mpsc_queue_t *queue,
     uint32_t W, uint32_t nrels)
 {
@@ -143,12 +160,19 @@ wl_columnar_eval_tdd_queue_publish_delta(col_eval_tdd_worker_ctx_t *ctx,
     }
 
     if (sess->coordinator && sess->coordinator->delta_queue) {
+        /* Issue #1380: ownership transfers to the coordinator on success,
+         * so the in-flight bytes are charged to the coordinator's CHANNEL
+         * and credited when it drains the queue.  Measure before the
+         * enqueue; the payload must not be touched afterwards. */
+        uint64_t transport_bytes = col_rel_transport_bytes(delta);
         int rc = wl_mpsc_enqueue(sess->coordinator->delta_queue,
                 sess->worker_id, delta, ctx->stratum_idx, rel_idx);
         if (rc != 0) {
             col_rel_destroy(delta);
             return ENOMEM;
         }
+        wl_mem_ledger_alloc(&sess->coordinator->mem_ledger,
+            WL_MEM_SUBSYS_CHANNEL, transport_bytes);
     } else {
         ctx->delta_rels[rel_idx] = delta;
     }

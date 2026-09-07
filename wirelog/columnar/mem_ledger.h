@@ -97,6 +97,8 @@ wl_atomic_compare_exchange_weak_internal(volatile __int64 *ptr,
         wl_atomic_compare_exchange_weak_internal(                              \
             (volatile __int64 *)(ptr), (uint64_t *)(expected), \
             (uint64_t)(desired))
+#define atomic_exchange_explicit(ptr, val, order) \
+        _InterlockedExchange64((volatile __int64 *)(ptr), (__int64)(val))
 
 /* Memory orders (ignored on MSVC - intrinsics always use acquire/release semantics) */
 #define memory_order_relaxed 0
@@ -114,19 +116,41 @@ typedef _Atomic uint64_t wl_atomic_u64;
 
 /*
  * Memory subsystem identifiers.
- * Each subsystem gets a fraction of the total budget:
- *   RELATION:    50% - IDB relation data buffers
- *   ARENA:       20% - Worker arenas and delta pools
- *   CACHE:       10% - Materialization cache
- *   ARRANGEMENT: 10% - Hash and sorted arrangements
- *   TIMESTAMP:   10% - Timestamp arrays and delta relations
+ * Each subsystem gets a fraction of the total budget (the per-subsystem
+ * caps only drive wl_mem_ledger_subsys_over_budget() and
+ * wl_mem_ledger_should_backpressure(); the RELATION share is the one the
+ * join operator polls, so it is kept at 50%):
+ *   RELATION:    50% - operator output relations (join outputs) whose
+ *                      col_rel_t.mem_ledger is attached
+ *   ARENA:       10% - eval arenas and delta pools (fixed capacity,
+ *                      charged at create, credited at destroy)
+ *   CACHE:       10% - materialization cache entries (re-parented from
+ *                      RELATION on insert)
+ *   ARRANGEMENT: 10% - hash, delta, filtered, sorted and differential
+ *                      arrangements
+ *   TIMESTAMP:    5% - timestamp arrays of ledger-attached relations
+ *   CHANNEL:      5% - TDD delta transport: MPSC ring storage plus
+ *                      payloads in flight between publish and drain
+ *   STORED:       5% - session-owned relations (EDB/IDB and worker
+ *                      partitions); a gauge sampled at iteration
+ *                      boundaries, see wl_mem_ledger_set_gauge()
+ *   TEMPORARY:    5% - heap-backed delta_pool temporaries; a gauge
+ *                      sampled just before each delta_pool_reset()
+ *
+ * Issue #1380: CHANNEL, STORED and TEMPORARY were added so the ledger
+ * covers every allocation class that a bounded-memory TDD run has to
+ * reason about.  Byte units are exact allocation sizes (binary, 1 KB =
+ * 1024 B in the report), see docs/MEMORY.md.
  */
 #define WL_MEM_SUBSYS_RELATION 0
 #define WL_MEM_SUBSYS_ARENA 1
 #define WL_MEM_SUBSYS_CACHE 2
 #define WL_MEM_SUBSYS_ARRANGEMENT 3
 #define WL_MEM_SUBSYS_TIMESTAMP 4
-#define WL_MEM_SUBSYS_COUNT 5
+#define WL_MEM_SUBSYS_CHANNEL 5
+#define WL_MEM_SUBSYS_STORED 6
+#define WL_MEM_SUBSYS_TEMPORARY 7
+#define WL_MEM_SUBSYS_COUNT 8
 
 /* Human-readable subsystem names (parallel array, indexed by subsystem ID) */
 extern const char *wl_mem_subsys_names[WL_MEM_SUBSYS_COUNT];
@@ -150,13 +174,26 @@ extern const uint32_t wl_mem_subsys_pct[WL_MEM_SUBSYS_COUNT];
  * @subsys_bytes:  Per-subsystem current allocation in bytes.
  * @subsys_peak:   Per-subsystem high-water mark.
  */
-typedef struct {
+typedef struct wl_mem_ledger {
     wl_atomic_u64 total_budget;
     wl_atomic_u64 current_bytes;
     wl_atomic_u64 peak_bytes;
     wl_atomic_u64 subsys_bytes[WL_MEM_SUBSYS_COUNT];
     wl_atomic_u64 subsys_peak[WL_MEM_SUBSYS_COUNT];
 } wl_mem_ledger_t;
+
+/*
+ * wl_mem_ledger_snapshot_t: plain (non-atomic) copy of a ledger, taken by
+ * wl_mem_ledger_snapshot().  This is the type reporters and stats
+ * accessors consume so that they never touch the atomics directly.
+ */
+typedef struct {
+    uint64_t total_budget;
+    uint64_t current_bytes;
+    uint64_t peak_bytes;
+    uint64_t subsys_bytes[WL_MEM_SUBSYS_COUNT];
+    uint64_t subsys_peak[WL_MEM_SUBSYS_COUNT];
+} wl_mem_ledger_snapshot_t;
 
 /* ======================================================================== */
 /* API                                                                      */
@@ -253,6 +290,34 @@ uint64_t
 wl_mem_ledger_bytes_remaining(const wl_mem_ledger_t *ledger);
 
 /*
+ * wl_mem_ledger_set_gauge:
+ * @ledger:  Ledger to update.
+ * @subsys:  WL_MEM_SUBSYS_* identifier.
+ * @bytes:   New absolute value for the subsystem.
+ *
+ * Replaces the subsystem's current byte count with @bytes and moves the
+ * total by the difference, updating both peaks.  Used for classes that
+ * are enumerated and re-measured at well-defined points (STORED and
+ * TEMPORARY) instead of being charged per allocation.  Mixing alloc/free
+ * and set_gauge on the same subsystem is not supported.
+ * Thread-safe.
+ */
+void
+wl_mem_ledger_set_gauge(wl_mem_ledger_t *ledger, int subsys, uint64_t bytes);
+
+/*
+ * wl_mem_ledger_snapshot:
+ * @ledger:  Ledger to read.
+ * @out:     Receives a plain copy of every counter.
+ *
+ * Relaxed loads; counters may be mutually skewed by concurrent updates.
+ * Thread-safe.
+ */
+void
+wl_mem_ledger_snapshot(const wl_mem_ledger_t *ledger,
+    wl_mem_ledger_snapshot_t *out);
+
+/*
  * wl_mem_ledger_report:
  * @ledger:  Ledger to report.
  *
@@ -264,7 +329,10 @@ wl_mem_ledger_bytes_remaining(const wl_mem_ledger_t *ledger);
  *     ARENA        current=1.1GB  peak=2.0GB   cap=9.6GB
  *     CACHE        current=0.3GB  peak=0.5GB   cap=4.8GB
  *     ARRANGEMENT  current=0.4GB  peak=0.6GB   cap=4.8GB
- *     TIMESTAMP    current=0.1GB  peak=0.2GB   cap=4.8GB
+ *     TIMESTAMP    current=0.1GB  peak=0.2GB   cap=2.4GB
+ *     CHANNEL      current=0B     peak=0.3GB   cap=2.4GB
+ *     STORED       current=2.0GB  peak=2.0GB   cap=2.4GB
+ *     TEMPORARY    current=0B     peak=1.2GB   cap=2.4GB
  *
  * The exact *_bytes fields use IEC byte counts and are stable for parsers;
  * the human-readable fields are retained for operator diagnostics.

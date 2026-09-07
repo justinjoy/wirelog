@@ -345,6 +345,11 @@ typedef struct {
      * WL_MEM_SUBSYS_RELATION.  Set by operators that produce output
      * relations (e.g. col_op_join).  NULL for EDB and pool temporaries. */
     wl_mem_ledger_t *mem_ledger;
+    /* Bytes currently charged to WL_MEM_SUBSYS_TIMESTAMP for this relation's
+     * timestamps[] array (Issue #1380).  Maintained by
+     * col_rel_ledger_reconcile()/col_rel_ledger_release(); always 0 when
+     * mem_ledger is NULL. */
+    uint64_t ledger_ts_bytes;
     /* Scratch buffer for col_rel_row() gather (Phase C, Issue #332).
      * Lazily allocated on first col_rel_row() call. Freed in free_contents. */
     int64_t *row_scratch;
@@ -916,6 +921,10 @@ typedef struct {
     col_rel_t *result;   /* owned cached join result             */
     size_t mem_bytes;    /* bytes used by result->data           */
     uint64_t lru_clock;  /* logical time of last access          */
+    /* Bytes charged to WL_MEM_SUBSYS_CACHE for this entry (Issue #1380).
+     * Capacity-based (col_rel_owned_ledger_bytes + timestamps), unlike
+     * mem_bytes which is nrows-based and drives the eviction limit. */
+    uint64_t ledger_bytes;
 } col_mat_entry_t;
 
 typedef struct {
@@ -925,6 +934,9 @@ typedef struct {
     uint64_t clock;
     uint64_t hits;   /* cache hit counter  */
     uint64_t misses; /* cache miss counter */
+    /* Ledger that cached results are re-parented to on insert (Issue #1380).
+     * NULL disables accounting (K-fusion branch sessions). */
+    wl_mem_ledger_t *ledger;
 } col_mat_cache_t;
 
 /* ======================================================================== */
@@ -974,6 +986,10 @@ typedef struct {
     uint32_t ncols;        /* columns per row                              */
     uint32_t key_col;      /* sort key column index                        */
     uint32_t indexed_rows; /* source nrows at last build                  */
+    /* Issue #1380: ARRANGEMENT accounting.  ledger_bytes is what is
+     * currently charged for sorted[]; 0 when ledger is NULL. */
+    wl_mem_ledger_t *ledger;
+    uint64_t ledger_bytes;
 } col_sorted_arr_t;
 
 /*
@@ -1402,6 +1418,21 @@ typedef struct wl_col_session_t {
      * Initialized in col_session_create via wl_mem_ledger_init().
      * Accessible to all columnar code via &COL_SESSION(sess)->mem_ledger. */
     wl_mem_ledger_t mem_ledger;
+    /* Issue #1380: memory instrumentation state that is not part of the
+     * ledger proper.
+     *   mem_channel_ring_bytes: bytes charged to CHANNEL for the MPSC ring
+     *       storage of the stratum currently being evaluated (0 otherwise).
+     *   mem_worker_reports / mem_worker_peak_max / mem_worker_peak_sum:
+     *       aggregates of TDD worker ledger peaks folded in at
+     *       col_worker_session_destroy() so one coordinator report can
+     *       stand in for the per-worker lines.
+     *   mem_report_level: cached WL_MEM_REPORT level (0 = off, 1 =
+     *       coordinator summary, 2 = also every worker teardown). */
+    uint64_t mem_channel_ring_bytes;
+    uint64_t mem_worker_reports;
+    uint64_t mem_worker_peak_max;
+    uint64_t mem_worker_peak_sum;
+    int mem_report_level;
     /* Differential arrangement registry (Issue #263): persistent hash indices
      * for arrangement reuse in differential join. Unlike darr_entries (per-iteration
      * delta arrangements), these persist across iterations within an epoch.
@@ -1543,6 +1574,19 @@ void
 col_rel_free_contents(col_rel_t *r);
 uint64_t
 col_rel_owned_ledger_bytes(const col_rel_t *r);
+/*
+ * col_rel_timestamp_ledger_bytes: bytes held by r->timestamps (capacity
+ * entries of col_delta_timestamp_t), or 0 when timestamps are disabled.
+ */
+uint64_t
+col_rel_timestamp_ledger_bytes(const col_rel_t *r);
+/*
+ * col_rel_transport_bytes: heap bytes a relation carries when it changes
+ * hands whole (TDD delta transport, cache insertion): owned column buffers
+ * plus the timestamps array.  Arena-owned columns contribute 0.
+ */
+uint64_t
+col_rel_transport_bytes(const col_rel_t *r);
 void
 col_rel_ledger_reconcile(col_rel_t *r, uint64_t before_bytes);
 void
@@ -1821,6 +1865,51 @@ col_mat_cache_lookup(col_mat_cache_t *cache, const col_rel_t *left,
 void
 col_mat_cache_insert(col_mat_cache_t *cache, const col_rel_t *left,
     const col_rel_t *right, col_rel_t *result);
+/*
+ * col_mat_cache_truncate: destroy entries [keep_count, count) and shrink the
+ * cache back to keep_count entries, keeping total_bytes and the ledger in
+ * step.  Used to roll back branch-added entries after serial K-fusion.
+ */
+void
+col_mat_cache_truncate(col_mat_cache_t *cache, uint32_t keep_count);
+
+/* ======================================================================== */
+/* Memory instrumentation (Issue #1380, columnar/session.c)                 */
+/* ======================================================================== */
+
+/*
+ * col_session_mem_sample:
+ * Re-measure the enumerable allocation classes of @sess and publish them
+ * as gauges: STORED (sess->rels[] column buffers and timestamps) and
+ * TEMPORARY (heap-backed delta_pool temporaries).  Called at iteration
+ * boundaries, before delta_pool_reset(), and at the end of a snapshot.
+ * O(nrels + pool slots); no allocation.
+ */
+void
+col_session_mem_sample(wl_col_session_t *sess);
+
+/*
+ * col_session_mem_note_worker:
+ * Fold a TDD worker's ledger peak into the coordinator aggregates before
+ * the worker is torn down.  Coordinator-thread only.
+ */
+void
+col_session_mem_note_worker(wl_col_session_t *coordinator,
+    const wl_col_session_t *worker);
+
+/*
+ * col_session_mem_report_level:
+ * Parsed WL_MEM_REPORT (0 = off, 1 = summary, 2 = verbose).
+ */
+int
+col_session_mem_report_level(void);
+
+/*
+ * col_session_peak_rss_bytes:
+ * Process-wide peak resident set size (ru_maxrss), 0 when unavailable.
+ */
+uint64_t
+col_session_peak_rss_bytes(void);
 
 /* ======================================================================== */
 /* Session Helpers (backend/columnar_nanoarrow.c)                           */
@@ -1854,6 +1943,14 @@ session_rel_free_hash(wl_col_session_t *sess);
 
 void
 arr_free_contents(col_arrangement_t *arr);
+/*
+ * col_arr_attach_ledger: start charging @arr's hash-table bytes to @ledger
+ * under WL_MEM_SUBSYS_ARRANGEMENT (Issue #1380).  Charges the current
+ * footprint immediately; no-op when already attached.  Used for cloned
+ * worker registries, whose entries are copied outside the build path.
+ */
+void
+col_arr_attach_ledger(col_arrangement_t *arr, wl_mem_ledger_t *ledger);
 col_arrangement_t *
 col_session_get_delta_arrangement(wl_col_session_t *cs, const char *rel_name,
     const col_rel_t *delta_rel,
@@ -2365,6 +2462,12 @@ wl_columnar_eval_tdd_queue_reconstruct_delta_matrix_with_destroyer(
 void
 wl_columnar_eval_tdd_queue_discard_delta_queue(wl_mpsc_queue_t *queue,
     uint32_t W, uint32_t nrels);
+
+/* Drain and destroy every queued delta, crediting each payload's bytes to
+ * @ledger under WL_MEM_SUBSYS_CHANNEL (Issue #1380).  @ledger may be NULL. */
+void
+wl_columnar_eval_tdd_queue_discard_delta_queue_ledger(wl_mpsc_queue_t *queue,
+    wl_mem_ledger_t *ledger);
 
 /* Allocation-free ownership-test seam; drains every live message. */
 void

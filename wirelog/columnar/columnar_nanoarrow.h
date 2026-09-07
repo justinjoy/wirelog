@@ -250,6 +250,10 @@ typedef struct {
     uint32_t indexed_rows; /* rows indexed so far                         */
     uint64_t content_hash; /* fingerprint at last full rebuild (reserved) */
     uint32_t generation;   /* current bucket epoch; zero means unbuilt    */
+    /* Issue #1380: when non-NULL, ht_head/ht_next growth and release are
+     * reported under WL_MEM_SUBSYS_ARRANGEMENT.  Set by the registry that
+     * owns the entry; NULL for arrangements built outside a session. */
+    struct wl_mem_ledger *ledger;
 } col_arrangement_t;
 
 /**
@@ -337,6 +341,59 @@ col_session_get_perf_stats(wl_session_t *sess, uint64_t *out_consolidation_ns,
     uint64_t *out_kfusion_dispatch_ns,
     uint64_t *out_kfusion_merge_ns,
     uint64_t *out_kfusion_cleanup_ns);
+
+/**
+ * wl_columnar_mem_stats_t:
+ *
+ * Memory instrumentation snapshot returned by col_session_get_mem_stats()
+ * (Issue #1380).  All byte values are exact allocation sizes.
+ *
+ *   budget_bytes            Ledger budget (0 = unlimited).
+ *   current_bytes           Bytes currently charged across all subsystems.
+ *   peak_bytes              Session-lifetime high-water mark of current_bytes.
+ *   subsys_current_bytes    Per-subsystem current, indexed by WL_MEM_SUBSYS_*.
+ *   subsys_peak_bytes       Per-subsystem high-water marks.
+ *   rss_peak_bytes          Process peak RSS (getrusage ru_maxrss), 0 if
+ *                           the platform does not expose it.
+ *   worker_reports          Number of TDD worker ledgers folded in so far.
+ *   worker_peak_max_bytes   Largest single worker ledger peak.
+ *   worker_peak_sum_bytes   Sum of worker ledger peaks (upper bound on
+ *                           concurrent worker footprint).
+ */
+typedef struct {
+    uint64_t budget_bytes;
+    uint64_t current_bytes;
+    uint64_t peak_bytes;
+    uint64_t subsys_current_bytes[8];
+    uint64_t subsys_peak_bytes[8];
+    uint64_t rss_peak_bytes;
+    uint64_t worker_reports;
+    uint64_t worker_peak_max_bytes;
+    uint64_t worker_peak_sum_bytes;
+} wl_columnar_mem_stats_t;
+
+/**
+ * col_session_get_mem_stats:
+ *
+ * Fill @out with the session's memory instrumentation counters.  The
+ * subsystem arrays are indexed by WL_MEM_SUBSYS_* (see mem_ledger.h);
+ * wl_columnar_mem_subsys_name() maps an index to its name.
+ *
+ * @param sess  A wl_session_t* backed by the columnar backend.
+ * @param out   Receives the stats; zeroed first.  NULL-safe.
+ */
+void
+col_session_get_mem_stats(wl_session_t *sess, wl_columnar_mem_stats_t *out);
+
+/**
+ * wl_columnar_mem_subsys_name:
+ *
+ * Return the human-readable name of subsystem @subsys, or NULL when the
+ * index is out of range.  @out_count, when non-NULL, receives the number
+ * of subsystems.
+ */
+const char *
+wl_columnar_mem_subsys_name(int subsys, int *out_count);
 
 /**
  * col_session_get_consolidation_stats:

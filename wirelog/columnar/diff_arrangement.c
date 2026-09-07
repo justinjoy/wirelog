@@ -11,10 +11,50 @@
 
 #include "diff_arrangement.h"
 
+#include "columnar/mem_ledger.h"
+
 #include <errno.h>
 #include <string.h>
 
 #define DIFF_ARRANGEMENT_INITIAL_BUCKETS 1024
+
+uint64_t
+col_diff_arrangement_bytes(const col_diff_arrangement_t *arr)
+{
+    if (!arr)
+        return 0;
+    uint64_t bytes = sizeof(*arr);
+    bytes += (uint64_t)arr->key_count * sizeof(uint32_t);
+    bytes += (uint64_t)arr->nbuckets * sizeof(uint32_t);
+    bytes += (uint64_t)arr->ht_cap * sizeof(uint32_t);
+    return bytes;
+}
+
+/* Charge or credit the difference between @before and the current
+ * footprint under ARRANGEMENT (Issue #1380). */
+static void
+diff_arr_ledger_sync(col_diff_arrangement_t *arr, uint64_t before)
+{
+    if (!arr || !arr->ledger)
+        return;
+    uint64_t after = col_diff_arrangement_bytes(arr);
+    if (after > before)
+        wl_mem_ledger_alloc(arr->ledger, WL_MEM_SUBSYS_ARRANGEMENT,
+            after - before);
+    else if (before > after)
+        wl_mem_ledger_free(arr->ledger, WL_MEM_SUBSYS_ARRANGEMENT,
+            before - after);
+}
+
+void
+col_diff_arrangement_attach_ledger(col_diff_arrangement_t *arr,
+    struct wl_mem_ledger *ledger)
+{
+    if (!arr || arr->ledger || !ledger)
+        return;
+    arr->ledger = ledger;
+    diff_arr_ledger_sync(arr, 0);
+}
 
 col_diff_arrangement_t *
 col_diff_arrangement_create(const uint32_t *key_cols, uint32_t key_count,
@@ -38,6 +78,7 @@ col_diff_arrangement_create(const uint32_t *key_cols, uint32_t key_count,
     arr->worker_id = worker_id;
     arr->nbuckets = DIFF_ARRANGEMENT_INITIAL_BUCKETS;
     arr->ht_cap = DIFF_ARRANGEMENT_INITIAL_BUCKETS;
+    arr->ledger = NULL;
 
     arr->ht_head = calloc(arr->ht_cap, sizeof(uint32_t));
     arr->ht_next = malloc(arr->ht_cap * sizeof(uint32_t));
@@ -59,6 +100,10 @@ col_diff_arrangement_destroy(col_diff_arrangement_t *arr)
     if (!arr)
         return;
 
+    if (arr->ledger) {
+        uint64_t bytes = col_diff_arrangement_bytes(arr);
+        wl_mem_ledger_free(arr->ledger, WL_MEM_SUBSYS_ARRANGEMENT, bytes);
+    }
     free(arr->key_cols);
     free(arr->ht_head);
     free(arr->ht_next);
@@ -117,6 +162,9 @@ col_diff_arrangement_deep_copy(const col_diff_arrangement_t *arr)
     copy->worker_id = arr->worker_id;
     copy->nbuckets = arr->nbuckets;
     copy->ht_cap = arr->ht_cap;
+    /* The copy belongs to whoever asked for it (a worker session); the
+    * caller attaches the right ledger.  Never inherit the source's. */
+    copy->ledger = NULL;
 
     return copy;
 }
@@ -134,6 +182,8 @@ col_diff_arrangement_ensure_ht_capacity(col_diff_arrangement_t *arr,
     if (nrows <= arr->ht_cap && nrows <= arr->nbuckets * 3 / 4)
         return 0;
 
+    uint64_t before = arr->ledger ? col_diff_arrangement_bytes(arr) : 0;
+
     /* Grow ht_next capacity if needed */
     if (nrows > arr->ht_cap) {
         uint32_t new_cap = arr->ht_cap;
@@ -141,8 +191,10 @@ col_diff_arrangement_ensure_ht_capacity(col_diff_arrangement_t *arr,
             new_cap *= 2;
         uint32_t *new_next = realloc(arr->ht_next,
                 new_cap * sizeof(uint32_t));
-        if (!new_next)
+        if (!new_next) {
+            diff_arr_ledger_sync(arr, before);
             return ENOMEM;
+        }
         arr->ht_next = new_next;
         arr->ht_cap = new_cap;
     }
@@ -153,13 +205,16 @@ col_diff_arrangement_ensure_ht_capacity(col_diff_arrangement_t *arr,
         while (nrows > new_nbuckets * 3 / 4)
             new_nbuckets *= 2;
         uint32_t *new_head = calloc(new_nbuckets, sizeof(uint32_t));
-        if (!new_head)
+        if (!new_head) {
+            diff_arr_ledger_sync(arr, before);
             return ENOMEM;
+        }
         free(arr->ht_head);
         arr->ht_head = new_head;
         arr->nbuckets = new_nbuckets;
         arr->indexed_rows = 0; /* Force full re-index by caller */
     }
 
+    diff_arr_ledger_sync(arr, before);
     return 0;
 }

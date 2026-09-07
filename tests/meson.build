@@ -3808,7 +3808,9 @@ test_diff_arrangement_deep_copy_buckets_exe = executable(
   'test_diff_arrangement_deep_copy_buckets',
   files('test_diff_arrangement_deep_copy_buckets.c'),
   '../wirelog/columnar/diff_arrangement.c',
+  '../wirelog/columnar/mem_ledger.c',
   include_directories: [wirelog_inc, wirelog_src_inc],
+  dependencies: [threads_dep],
 )
 
 test('diff_arrangement_deep_copy_buckets', test_diff_arrangement_deep_copy_buckets_exe)
@@ -4640,6 +4642,23 @@ test_deep_copy_ledger_canary_exe = executable(
 
 test('deep_copy_ledger_canary', test_deep_copy_ledger_canary_exe)
 
+# ----------------------------------------------------------------------------
+# wl_mem_ledger_t unit tests (Issue #224; gauge/snapshot coverage from #1380).
+# The source predates its registration -- it was never built by meson until
+# #1380 extended the ledger API and needed the coverage.
+# ----------------------------------------------------------------------------
+
+test_mem_ledger_exe = executable(
+  'test_mem_ledger',
+  files('test_mem_ledger.c'),
+  '../wirelog/columnar/mem_ledger.c',
+  thread_src,
+  include_directories: [wirelog_inc, wirelog_src_inc],
+  dependencies: [threads_dep],
+)
+
+test('mem_ledger', test_mem_ledger_exe)
+
 # ============================================================================
 # Compound arena lifecycle observability (Issue #583)
 # WL_LOG=COMPOUND:5 must emit alloc/freeze/unfreeze tags.
@@ -5039,6 +5058,23 @@ test('mem_report_contract', bench_flowlog_json_py3,
      depends: [test_tdd_decision_stats_exe, test_tdd_decision_stats_seq_exe],
      suite: 'bench',
      timeout: 660)
+
+# Issue #1380: memory ledger coverage, WL_MEM_REPORT result identity and
+# fixture baseline emission.  Built for both fusion configurations because
+# the join/arrangement paths differ between them.
+foreach configuration : ['default', 'nofusion']
+  mem_instr_args = configuration == 'nofusion' ? ['-DENABLE_K_FUSION=0'] : []
+  mem_instr_exe = executable(
+    'test_mem_instrumentation_' + configuration,
+    files('test_mem_instrumentation.c'),
+    backend_src, parser_src, ir_src, optimizer_src, arena_src,
+    io_src, thread_src, workqueue_src,
+    c_args: mem_instr_args,
+    include_directories: [wirelog_inc, wirelog_src_inc],
+    dependencies: [nanoarrow_dep, threads_dep, xxhash_dep, mbedtls_dep, math_dep],
+  )
+  test('mem_instrumentation_' + configuration, mem_instr_exe, timeout: 300)
+endforeach
 test('tdd_execution_audit', bench_flowlog_json_py3,
      args: [files('test_tdd_execution_audit.py')[0],
             '--runtime-bin', test_tdd_decision_stats_exe.full_path(),

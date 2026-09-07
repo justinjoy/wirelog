@@ -232,16 +232,18 @@ find_rel_mirror(wl_session_t *sess, const char *rel_name)
  *   uint32_t  indexed_rows 4  (offset 36)
  *   uint64_t  content_hash 8  (offset 40)
  *   uint32_t  generation   4  (offset 48)
- *                         = 56 bytes total
+ *   (4 bytes padding)
+ *   struct wl_mem_ledger *ledger 8 (offset 56, Issue #1380)
+ *                         = 64 bytes total
  * ================================================================ */
 static void
 test_arrangement_struct_size(void)
 {
     TEST("col_arrangement_t struct size (layout sentinel)");
 
-    /* 56 bytes: 3 pointers (24) + 5 uint32 (20) + 1 uint64 (8). */
-    ASSERT(sizeof(col_arrangement_t) == 56,
-        "col_arrangement_t must be 56 bytes; update if struct changes");
+    /* 64 bytes: 4 pointers (32) + 5 uint32 (20) + 1 uint64 (8) + 4 pad. */
+    ASSERT(sizeof(col_arrangement_t) == 64,
+        "col_arrangement_t must be 64 bytes; update if struct changes");
     ASSERT(offsetof(col_arrangement_t, ht_head) == 16,
         "ht_head layout changed unexpectedly");
     ASSERT(offsetof(col_arrangement_t, generation) == 48,

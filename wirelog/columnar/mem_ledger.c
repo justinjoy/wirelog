@@ -28,15 +28,21 @@ const char *wl_mem_subsys_names[WL_MEM_SUBSYS_COUNT] = {
     "CACHE",       /* 2 */
     "ARRANGEMENT", /* 3 */
     "TIMESTAMP",   /* 4 */
+    "CHANNEL",     /* 5 */
+    "STORED",      /* 6 */
+    "TEMPORARY",   /* 7 */
 };
 
 /* Budget fraction for each subsystem (must sum to 100) */
 const uint32_t wl_mem_subsys_pct[WL_MEM_SUBSYS_COUNT] = {
     50, /* RELATION    */
-    20, /* ARENA       */
+    10, /* ARENA       */
     10, /* CACHE       */
     10, /* ARRANGEMENT */
-    10, /* TIMESTAMP   */
+    5,  /* TIMESTAMP   */
+    5,  /* CHANNEL     */
+    5,  /* STORED      */
+    5,  /* TEMPORARY   */
 };
 
 /* ======================================================================== */
@@ -111,6 +117,36 @@ update_peak(wl_atomic_u64 *peak_atom, uint64_t new_val)
     }
 }
 
+/*
+ * total_add: add @bytes to current_bytes and bump peak_bytes.
+ */
+static void
+total_add(wl_mem_ledger_t *ledger, uint64_t bytes)
+{
+    uint64_t total_new = saturating_add(&ledger->current_bytes, bytes);
+    update_peak(&ledger->peak_bytes, total_new);
+}
+
+/*
+ * counter_sub_clamped: subtract @bytes from @counter, clamping at zero.
+ *
+ * CAS loop rather than fetch_sub: avoids the TOCTOU race between load and
+ * subtract under concurrent worker teardown.  Without CAS, two concurrent
+ * frees could both read the same old value, both decide to subtract the
+ * full amount, and underflow the counter.
+ */
+static void
+counter_sub_clamped(wl_atomic_u64 *counter, uint64_t bytes)
+{
+    uint64_t old = atomic_load_explicit(counter, memory_order_relaxed);
+    uint64_t updated;
+    do {
+        updated = (bytes > old) ? 0 : old - bytes;
+    } while (!atomic_compare_exchange_weak_explicit(
+            counter, &old, updated, memory_order_relaxed,
+            memory_order_relaxed));
+}
+
 /* ======================================================================== */
 /* Public API                                                               */
 /* ======================================================================== */
@@ -150,33 +186,28 @@ wl_mem_ledger_free(wl_mem_ledger_t *ledger, int subsys, uint64_t bytes)
     if (subsys < 0 || subsys >= WL_MEM_SUBSYS_COUNT)
         return;
 
-    /* Clamp-subtract subsystem with CAS loop: avoids TOCTOU race between
-    * load and subtract under concurrent K-fusion worker teardown.
-    * Without CAS, two concurrent frees could both read the same old_s,
-    * both decide sub_s = bytes, and both subtract, causing underflow. */
-    {
-        uint64_t old_s = atomic_load_explicit(&ledger->subsys_bytes[subsys],
-                memory_order_relaxed);
-        uint64_t new_s;
-        do {
-            new_s = (bytes > old_s) ? 0 : old_s - bytes;
-        } while (!atomic_compare_exchange_weak_explicit(
-                &ledger->subsys_bytes[subsys], &old_s, new_s,
-                memory_order_relaxed,
-                memory_order_relaxed));
-    }
+    counter_sub_clamped(&ledger->subsys_bytes[subsys], bytes);
+    counter_sub_clamped(&ledger->current_bytes, bytes);
+}
 
-    /* Clamp-subtract total with CAS loop (same race fix) */
-    {
-        uint64_t old_t = atomic_load_explicit(&ledger->current_bytes,
-                memory_order_relaxed);
-        uint64_t new_t;
-        do {
-            new_t = (bytes > old_t) ? 0 : old_t - bytes;
-        } while (!atomic_compare_exchange_weak_explicit(
-                &ledger->current_bytes, &old_t, new_t, memory_order_relaxed,
-                memory_order_relaxed));
-    }
+void
+wl_mem_ledger_set_gauge(wl_mem_ledger_t *ledger, int subsys, uint64_t bytes)
+{
+    if (!ledger)
+        return;
+    if (subsys < 0 || subsys >= WL_MEM_SUBSYS_COUNT)
+        return;
+
+    uint64_t old = atomic_exchange_explicit(&ledger->subsys_bytes[subsys],
+            bytes, memory_order_relaxed);
+    update_peak(&ledger->subsys_peak[subsys], bytes);
+
+    /* Move the total by the difference so current_bytes stays the sum of
+     * the subsystem counters (modulo the documented relaxed skew). */
+    if (bytes > old)
+        total_add(ledger, bytes - old);
+    else if (old > bytes)
+        counter_sub_clamped(&ledger->current_bytes, old - bytes);
 }
 
 bool
@@ -246,32 +277,52 @@ wl_mem_ledger_bytes_remaining(const wl_mem_ledger_t *ledger)
 }
 
 void
+wl_mem_ledger_snapshot(const wl_mem_ledger_t *ledger,
+    wl_mem_ledger_snapshot_t *out)
+{
+    if (!out)
+        return;
+    memset(out, 0, sizeof(*out));
+    if (!ledger)
+        return;
+
+    out->total_budget
+        = atomic_load_explicit(&ledger->total_budget, memory_order_relaxed);
+    out->current_bytes
+        = atomic_load_explicit(&ledger->current_bytes, memory_order_relaxed);
+    out->peak_bytes
+        = atomic_load_explicit(&ledger->peak_bytes, memory_order_relaxed);
+    for (int i = 0; i < WL_MEM_SUBSYS_COUNT; i++) {
+        out->subsys_bytes[i] = atomic_load_explicit(&ledger->subsys_bytes[i],
+                memory_order_relaxed);
+        out->subsys_peak[i] = atomic_load_explicit(&ledger->subsys_peak[i],
+                memory_order_relaxed);
+    }
+}
+
+void
 wl_mem_ledger_report(const wl_mem_ledger_t *ledger)
 {
     if (!ledger)
         return;
 
-    uint64_t budget
-        = atomic_load_explicit(&ledger->total_budget, memory_order_relaxed);
-    uint64_t current
-        = atomic_load_explicit(&ledger->current_bytes, memory_order_relaxed);
-    uint64_t peak
-        = atomic_load_explicit(&ledger->peak_bytes, memory_order_relaxed);
+    wl_mem_ledger_snapshot_t snap;
+    wl_mem_ledger_snapshot(ledger, &snap);
+    uint64_t budget = snap.total_budget;
 
     char b1[32], b2[32], b3[32], b4[32];
     fprintf(stderr,
         "[wirelog mem] budget=%s current=%s peak=%s budget_bytes=%llu "
         "current_bytes=%llu peak_bytes=%llu\n",
         budget == 0 ? "unlimited" : fmt_bytes(budget, b1, sizeof(b1)),
-        fmt_bytes(current, b2, sizeof(b2)),
-        fmt_bytes(peak, b3, sizeof(b3)), (unsigned long long)budget,
-        (unsigned long long)current, (unsigned long long)peak);
+        fmt_bytes(snap.current_bytes, b2, sizeof(b2)),
+        fmt_bytes(snap.peak_bytes, b3, sizeof(b3)), (unsigned long long)budget,
+        (unsigned long long)snap.current_bytes,
+        (unsigned long long)snap.peak_bytes);
 
     for (int i = 0; i < WL_MEM_SUBSYS_COUNT; i++) {
-        uint64_t sc = atomic_load_explicit(&ledger->subsys_bytes[i],
-                memory_order_relaxed);
-        uint64_t sp = atomic_load_explicit(&ledger->subsys_peak[i],
-                memory_order_relaxed);
+        uint64_t sc = snap.subsys_bytes[i];
+        uint64_t sp = snap.subsys_peak[i];
         uint64_t cap = (budget > 0) ? percent_of(budget,
                 wl_mem_subsys_pct[i]) : 0;
         fprintf(stderr,

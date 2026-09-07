@@ -9,6 +9,19 @@ All notable changes to wirelog are documented in this file.
 - **Per-stratum TDD execution diagnostics** distinguish admission, selected
   worker width, submitted work, completed barriers, and serial replay. Exact
   result controls cover fused and unfused execution (#1378).
+- **Memory ledger coverage for every allocation class** (#1380). The session
+  ledger now accounts eval arenas and delta pools (`ARENA`), materialization
+  cache entries (`CACHE`, re-parented from `RELATION` so cached joins are
+  counted once), hash/delta/filtered/sorted/differential arrangements
+  (`ARRANGEMENT`), timestamp arrays (`TIMESTAMP`), the TDD delta transport
+  ring and in-flight payloads (`CHANNEL`), and two sampled gauges for
+  session-owned relations (`STORED`) and heap-spilled pool temporaries
+  (`TEMPORARY`). `WL_MEM_REPORT=1` prints one coordinator summary with peak
+  RSS and aggregated TDD worker peaks; `WL_MEM_REPORT=2` adds every worker
+  ledger. `col_session_get_mem_stats()` exposes the same numbers,
+  `bench_flowlog --format json` emits them as `ledger_*` fields, and the
+  nightly perf portfolio records them per workload. `docs/MEMORY.md`
+  documents units, overhead, and the DOOP W=1/W=2 and fixture baselines.
 
 ### Changed
 

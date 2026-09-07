@@ -193,4 +193,13 @@ wl_mpsc_dequeue_all(wl_mpsc_queue_t *q, wl_delta_msg_t *buf, uint32_t buf_len);
 uint32_t
 wl_mpsc_size(wl_mpsc_queue_t *q);
 
+/*
+ * wl_mpsc_queue_footprint_bytes:
+ * Heap bytes owned by the queue itself (queue struct, per-worker ring
+ * headers and slot arrays).  Payloads are not included.  Fixed for the
+ * queue's lifetime; 0 for NULL.  Used for memory accounting (Issue #1380).
+ */
+uint64_t
+wl_mpsc_queue_footprint_bytes(const wl_mpsc_queue_t *q);
+
 #endif /* WL_LOCKFREE_QUEUE_H */

@@ -242,6 +242,18 @@ wl_mpsc_queue_create_with_destructor(uint32_t num_workers, uint32_t capacity,
     return q;
 }
 
+uint64_t
+wl_mpsc_queue_footprint_bytes(const wl_mpsc_queue_t *q)
+{
+    if (!q)
+        return 0;
+    uint64_t bytes = sizeof(*q);
+    bytes += (uint64_t)q->num_workers * sizeof(wl_spsc_queue_t);
+    for (uint32_t i = 0; i < q->num_workers; i++)
+        bytes += (uint64_t)q->workers[i].capacity * sizeof(wl_delta_msg_t);
+    return bytes;
+}
+
 void
 wl_mpsc_queue_destroy(wl_mpsc_queue_t *q)
 {

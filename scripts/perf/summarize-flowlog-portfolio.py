@@ -70,6 +70,7 @@ def load_tsv(path: Path) -> tuple[list[dict[str, Any]], list[str]]:
             "tuples": row.get("tuples") or None,
             "iterations": row.get("iterations") or None,
             "peak_rss_kb": row.get("peak_rss_kb") or None,
+            "ledger_peak_bytes": row.get("ledger_peak_bytes") or None,
         }
         records.append(
             {
