@@ -14,6 +14,7 @@
  * Usage:
  *   bench_flowlog --workload {tc|reach|cc|sssp|tdd-bdx|all} --data FILE
  *                 [--data-weighted FILE] [--workers N] [--repeat R]
+ *                 [--repeat-progress FILE]
  */
 
 #define _GNU_SOURCE
@@ -23,6 +24,8 @@
 #include "bench_util.h"
 
 #include <inttypes.h>
+#include <stdio.h>
+#include <string.h>
 
 #include "../wirelog/backend.h"
 #include "../wirelog/columnar/columnar_nanoarrow.h"
@@ -66,6 +69,7 @@ wl_columnar_session_get_tdd_decision_stats(wl_session_t *sess,
  *   bench_flowlog_seq → WITH_K_FUSION=0 (sequential baseline)
  * ---------------------------------------------------------------- */
 static bool g_format_json = false;
+static FILE *g_repeat_progress = NULL;
 static uint64_t g_last_consolidation_ns = 0;
 static uint64_t g_last_kfusion_ns = 0;
 static uint64_t g_last_kfusion_alloc_ns = 0;
@@ -106,6 +110,44 @@ static uint32_t g_last_tdd_fallback_no_exchange = 0;
 static uint32_t g_last_tdd_fallback_unsafe_plan = 0;
 static uint32_t g_last_tdd_fallback_adaptive_workers = 0;
 static const char *g_last_tdd_fallback_reason = "none";
+
+static void
+repeat_progress_record(const char *kind, int repetition, int repeat,
+    uint32_t workers, double duration_ms, int64_t rss_kb, int rc,
+    int64_t tuples, uint32_t iterations, const char *reason)
+{
+    if (!g_repeat_progress)
+        return;
+    fprintf(g_repeat_progress,
+        "%s\tworkload=doop\trepetition=%d\trepeat=%d\tworkers=%u",
+        kind, repetition, repeat, workers);
+    if (strcmp(kind, "repeat_start") == 0) {
+        fputc('\n', g_repeat_progress);
+    } else {
+        fprintf(g_repeat_progress,
+            "\tduration_ms=%.1f\trss_kb=%" PRId64 "\trc=%d\tstatus=%s",
+            duration_ms, rss_kb, rc, rc == 0 ? "OK" : "FAIL");
+        if (rc == 0)
+            fprintf(g_repeat_progress, "\ttuples=%" PRId64 "\titerations=%u",
+                tuples, iterations);
+        else
+            fprintf(g_repeat_progress, "\tfailure_reason=%s",
+                reason ? reason : "unknown");
+        fputc('\n', g_repeat_progress);
+    }
+    fflush(g_repeat_progress);
+}
+
+static void
+repeat_progress_done(int repeat, uint32_t workers)
+{
+    if (!g_repeat_progress)
+        return;
+    fprintf(g_repeat_progress,
+        "DONE\tworkload=doop\trepeat=%d\tworkers=%u\tstatus=OK\n",
+        repeat, workers);
+    fflush(g_repeat_progress);
+}
 
 #ifndef WITH_K_FUSION
 #define WITH_K_FUSION 1
@@ -2845,6 +2887,8 @@ run_doop_workload(const char *data_dir, uint32_t workers, int repeat)
     int status_ok = 1;
 
     for (int r = 0; r < repeat; r++) {
+        repeat_progress_record("repeat_start", r + 1, repeat, workers,
+            0.0, -1, 0, 0, 0, NULL);
         bench_time_t t0 = bench_time_now();
         int64_t cnt = 0;
         uint32_t iters = 0;
@@ -2855,16 +2899,22 @@ run_doop_workload(const char *data_dir, uint32_t workers, int repeat)
 
         if (rc != 0) {
             status_ok = 0;
+            repeat_progress_record("repeat_complete", r + 1, repeat, workers,
+                times[r], bench_peak_rss_kb(), rc, 0, 0,
+                "run_pipeline_count");
             break;
         }
         g_last_wall_ms = times[r];
         tuples = cnt;
         total_iters = iters;
+        repeat_progress_record("repeat_complete", r + 1, repeat, workers,
+            times[r], bench_peak_rss_kb(), 0, tuples, total_iters, NULL);
     }
 
     peak_rss = bench_peak_rss_kb();
 
     if (status_ok) {
+        repeat_progress_done(repeat, workers);
         qsort(times, (size_t)repeat, sizeof(double), bench_cmp_double);
         double min_ms = times[0];
         double median_ms = times[repeat / 2];
@@ -3077,6 +3127,7 @@ usage(const char *prog)
         "          [--data-csda DIR] [--data-galen DIR]\n"
         "          [--data-polonius DIR] [--data-ddisasm DIR]\n"
         "          [--workers N] [--repeat R] [--format {tsv|json}]\n"
+        "          [--repeat-progress FILE]\n"
         "\n"
         "  --data FILE           Unweighted edge CSV (src,dst)\n"
         "  --data-weighted FILE  Weighted edge CSV (src,dst,weight) for SSSP\n"
@@ -3091,7 +3142,8 @@ usage(const char *prog)
         "CSVs\n"
         "  --data-ddisasm DIR    Directory with DDISASM disassembly CSVs\n"
         "  --data-crdt DIR       Directory with CRDT Insert/Remove CSVs\n"
-        "  --data-doop DIR       Directory with DOOP zxing .facts\n",
+        "  --data-doop DIR       Directory with DOOP zxing .facts\n"
+        "  --repeat-progress FILE  Write DOOP repetition records to FILE\n",
         prog);
 }
 
@@ -3110,6 +3162,7 @@ main(int argc, char **argv)
     const char *data_ddisasm_path = NULL;
     const char *data_crdt_path = NULL;
     const char *data_doop_path = NULL;
+    const char *repeat_progress_path = NULL;
     uint32_t workers = 1;
     int repeat = 3;
 
@@ -3129,6 +3182,7 @@ main(int argc, char **argv)
         { "workers", required_argument, 'j' },
         { "repeat", required_argument, 'r' },
         { "format", required_argument, 'F' },
+        { "repeat-progress", required_argument, 'p' },
         { "help", no_argument, 'h' },
         { NULL, 0, 0 },
     };
@@ -3136,7 +3190,7 @@ main(int argc, char **argv)
     bench_argv_state_t args = BENCH_ARGV_INIT;
     int opt;
     while ((opt = bench_argv_next(argc, argv,
-        "w:d:W:A:D:C:S:G:P:I:R:O:j:r:F:h", long_opts, &args)) != -1) {
+        "w:d:W:A:D:C:S:G:P:I:R:O:j:r:F:p:h", long_opts, &args)) != -1) {
         switch (opt) {
         case 'w':
             workload = args.optarg;
@@ -3183,6 +3237,9 @@ main(int argc, char **argv)
         case 'F':
             g_format_json = (strcmp(args.optarg, "json") == 0);
             break;
+        case 'p':
+            repeat_progress_path = args.optarg;
+            break;
         case 'h':
         default:
             usage(argv[0]);
@@ -3201,6 +3258,15 @@ main(int argc, char **argv)
 
     if (repeat < 1)
         repeat = 1;
+
+    if (repeat_progress_path) {
+        g_repeat_progress = fopen(repeat_progress_path, "w");
+        if (!g_repeat_progress) {
+            fprintf(stderr, "error: cannot open repeat progress '%s'\n",
+                repeat_progress_path);
+            return 1;
+        }
+    }
 
     print_header();
 
@@ -3352,5 +3418,9 @@ main(int argc, char **argv)
         return 1;
     }
 
+    if (g_repeat_progress) {
+        fclose(g_repeat_progress);
+        g_repeat_progress = NULL;
+    }
     return rc;
 }

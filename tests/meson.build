@@ -1157,6 +1157,16 @@ if host_machine.system() == 'linux' and sh.found()
        suite: 'abi')
 endif
 
+# Issue #1410: calibration repetition progress, bounded process-group cleanup,
+# and preservation of partial evidence are tested without the DOOP dataset.
+if host_machine.system() == 'linux' and sh.found()
+  test('doop_validation', sh,
+       args: [meson.project_source_root() / 'scripts/ci/test-doop-validation.sh',
+              meson.project_source_root()],
+       suite: 'abi',
+       timeout: 90)
+endif
+
 # Issue #1294: two release gates hash a sorted file list and compare it against
 # a pinned or committed value.  Unpinned collation made a non-C runner produce a
 # different manifest, failing with a message that accuses the dataset.
