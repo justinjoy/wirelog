@@ -52,7 +52,7 @@ fmt_bytes(uint64_t bytes, char *buf, size_t len)
 {
     if (bytes >= (uint64_t)1024 * 1024 * 1024) {
         snprintf(buf, len, "%.1fGB",
-                 (double)bytes / ((double)1024 * 1024 * 1024));
+            (double)bytes / ((double)1024 * 1024 * 1024));
     } else if (bytes >= (uint64_t)1024 * 1024) {
         snprintf(buf, len, "%.1fMB", (double)bytes / ((double)1024 * 1024));
     } else if (bytes >= 1024) {
@@ -73,8 +73,8 @@ update_peak(wl_atomic_u64 *peak_atom, uint64_t new_val)
     uint64_t old = atomic_load_explicit(peak_atom, memory_order_relaxed);
     while (old < new_val) {
         if (atomic_compare_exchange_weak_explicit(peak_atom, &old, new_val,
-                                                  memory_order_relaxed,
-                                                  memory_order_relaxed)) {
+            memory_order_relaxed,
+            memory_order_relaxed)) {
             break;
         }
         /* old updated by CAS on failure; retry */
@@ -92,7 +92,7 @@ wl_mem_ledger_init(wl_mem_ledger_t *ledger, uint64_t budget_bytes)
         return;
     memset(ledger, 0, sizeof(*ledger));
     atomic_store_explicit(&ledger->total_budget, budget_bytes,
-                          memory_order_relaxed);
+        memory_order_relaxed);
 }
 
 void
@@ -106,14 +106,14 @@ wl_mem_ledger_alloc(wl_mem_ledger_t *ledger, int subsys, uint64_t bytes)
     /* Update subsystem counter */
     uint64_t subsys_new
         = atomic_fetch_add_explicit(&ledger->subsys_bytes[subsys], bytes,
-                                    memory_order_relaxed)
-          + bytes;
+            memory_order_relaxed)
+        + bytes;
     update_peak(&ledger->subsys_peak[subsys], subsys_new);
 
     /* Update total counter */
     uint64_t total_new = atomic_fetch_add_explicit(&ledger->current_bytes,
-                                                   bytes, memory_order_relaxed)
-                         + bytes;
+            bytes, memory_order_relaxed)
+        + bytes;
     update_peak(&ledger->peak_bytes, total_new);
 }
 
@@ -126,30 +126,31 @@ wl_mem_ledger_free(wl_mem_ledger_t *ledger, int subsys, uint64_t bytes)
         return;
 
     /* Clamp-subtract subsystem with CAS loop: avoids TOCTOU race between
-     * load and subtract under concurrent K-fusion worker teardown.
-     * Without CAS, two concurrent frees could both read the same old_s,
-     * both decide sub_s = bytes, and both subtract, causing underflow. */
+    * load and subtract under concurrent K-fusion worker teardown.
+    * Without CAS, two concurrent frees could both read the same old_s,
+    * both decide sub_s = bytes, and both subtract, causing underflow. */
     {
         uint64_t old_s = atomic_load_explicit(&ledger->subsys_bytes[subsys],
-                                              memory_order_relaxed);
+                memory_order_relaxed);
         uint64_t new_s;
         do {
             new_s = (bytes > old_s) ? 0 : old_s - bytes;
         } while (!atomic_compare_exchange_weak_explicit(
-            &ledger->subsys_bytes[subsys], &old_s, new_s, memory_order_relaxed,
-            memory_order_relaxed));
+                &ledger->subsys_bytes[subsys], &old_s, new_s,
+                memory_order_relaxed,
+                memory_order_relaxed));
     }
 
     /* Clamp-subtract total with CAS loop (same race fix) */
     {
         uint64_t old_t = atomic_load_explicit(&ledger->current_bytes,
-                                              memory_order_relaxed);
+                memory_order_relaxed);
         uint64_t new_t;
         do {
             new_t = (bytes > old_t) ? 0 : old_t - bytes;
         } while (!atomic_compare_exchange_weak_explicit(
-            &ledger->current_bytes, &old_t, new_t, memory_order_relaxed,
-            memory_order_relaxed));
+                &ledger->current_bytes, &old_t, new_t, memory_order_relaxed,
+                memory_order_relaxed));
     }
 }
 
@@ -178,13 +179,13 @@ wl_mem_ledger_subsys_over_budget(const wl_mem_ledger_t *ledger, int subsys)
         return false;
     uint64_t cap = (budget * wl_mem_subsys_pct[subsys]) / 100;
     uint64_t current = atomic_load_explicit(&ledger->subsys_bytes[subsys],
-                                            memory_order_relaxed);
+            memory_order_relaxed);
     return current > cap;
 }
 
 bool
 wl_mem_ledger_should_backpressure(const wl_mem_ledger_t *ledger, int subsys,
-                                  uint32_t threshold_pct)
+    uint32_t threshold_pct)
 {
     if (!ledger || subsys < 0 || subsys >= WL_MEM_SUBSYS_COUNT)
         return false;
@@ -196,7 +197,7 @@ wl_mem_ledger_should_backpressure(const wl_mem_ledger_t *ledger, int subsys,
     if (cap == 0)
         return false;
     uint64_t current = atomic_load_explicit(&ledger->subsys_bytes[subsys],
-                                            memory_order_relaxed);
+            memory_order_relaxed);
     /* current >= cap * threshold_pct / 100 */
     return current >= (cap * threshold_pct) / 100;
 }
@@ -231,21 +232,28 @@ wl_mem_ledger_report(const wl_mem_ledger_t *ledger)
         = atomic_load_explicit(&ledger->peak_bytes, memory_order_relaxed);
 
     char b1[32], b2[32], b3[32], b4[32];
-    fprintf(stderr, "[wirelog mem] budget=%s current=%s peak=%s\n",
-            budget == 0 ? "unlimited" : fmt_bytes(budget, b1, sizeof(b1)),
-            fmt_bytes(current, b2, sizeof(b2)),
-            fmt_bytes(peak, b3, sizeof(b3)));
+    fprintf(stderr,
+        "[wirelog mem] budget=%s current=%s peak=%s budget_bytes=%llu "
+        "current_bytes=%llu peak_bytes=%llu\n",
+        budget == 0 ? "unlimited" : fmt_bytes(budget, b1, sizeof(b1)),
+        fmt_bytes(current, b2, sizeof(b2)),
+        fmt_bytes(peak, b3, sizeof(b3)), (unsigned long long)budget,
+        (unsigned long long)current, (unsigned long long)peak);
 
     for (int i = 0; i < WL_MEM_SUBSYS_COUNT; i++) {
         uint64_t sc = atomic_load_explicit(&ledger->subsys_bytes[i],
-                                           memory_order_relaxed);
+                memory_order_relaxed);
         uint64_t sp = atomic_load_explicit(&ledger->subsys_peak[i],
-                                           memory_order_relaxed);
+                memory_order_relaxed);
         uint64_t cap = (budget > 0) ? (budget * wl_mem_subsys_pct[i]) / 100 : 0;
-        fprintf(stderr, "  %-12s current=%-10s peak=%-10s cap=%s\n",
-                wl_mem_subsys_names[i], fmt_bytes(sc, b1, sizeof(b1)),
-                fmt_bytes(sp, b2, sizeof(b2)),
-                cap > 0 ? fmt_bytes(cap, b3, sizeof(b3))
-                        : fmt_bytes(0, b4, sizeof(b4)));
+        fprintf(stderr,
+            "  %-12s current=%-10s peak=%-10s cap=%s current_bytes=%llu "
+            "peak_bytes=%llu cap_bytes=%llu\n",
+            wl_mem_subsys_names[i], fmt_bytes(sc, b1, sizeof(b1)),
+            fmt_bytes(sp, b2, sizeof(b2)),
+            cap > 0 ? fmt_bytes(cap, b3, sizeof(b3))
+                        : fmt_bytes(0, b4, sizeof(b4)),
+            (unsigned long long)sc, (unsigned long long)sp,
+            (unsigned long long)cap);
     }
 }

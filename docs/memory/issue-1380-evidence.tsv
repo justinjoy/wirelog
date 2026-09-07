@@ -1,0 +1,15 @@
+field	value	status	source
+issue	1380	observed	https://github.com/semantic-reasoning/wirelog/issues/1380
+historical_comment	5558626636	observed	https://github.com/semantic-reasoning/wirelog/issues/1380#issuecomment-5558626636
+workload	doop	observed	historical issue evidence
+tuples	13828835	observed	historical issue evidence
+iterations	153	observed	historical issue evidence
+workers	W1;W2	observed	historical issue evidence
+process_rss	approximately 52.1 GiB; approximately 54.1 GiB	observed, approximate	historical issue evidence
+coordinator_ledger	approximately 32.0 GiB; approximately 15.2 GiB	observed, approximate	historical issue evidence
+tree_identity	unavailable	unavailable	historical artifact did not preserve it
+binary_identity	unavailable	unavailable	historical artifact did not preserve it
+compiler_options	unavailable	unavailable	historical artifact did not preserve it
+raw_log_path	unavailable	unavailable	historical artifact did not preserve it
+host_container_limits	unavailable	unavailable	historical artifact did not preserve it
+qualification	unfused W8 and bounded completion not established	partial	issue #1380 acceptance boundary
