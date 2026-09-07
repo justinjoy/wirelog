@@ -307,7 +307,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y meson ninja-build linux-tools-common linux-tools-generic
+          sudo apt-get install -y curl meson ninja-build unzip linux-tools-common linux-tools-generic
 
       - name: Verify stable timing host
         shell: bash
@@ -323,6 +323,11 @@ jobs:
             echo 'stable perf runner requires CPU 0 to be online' >&2
             exit 1
           fi
+          cpu_count=$(nproc --all)
+          (( cpu_count >= 8 )) || {
+            echo "DOOP W=8 gate requires at least 8 CPUs; found $cpu_count" >&2
+            exit 1
+          }
           sudo -n cpupower frequency-set -g performance
           actual=$(<"$governor")
           [[ "$actual" == performance ]] || {
@@ -361,6 +366,9 @@ jobs:
         env:
           CC: gcc
 
+      - name: Download pinned DOOP dataset
+        run: bench/data/doop/download.sh
+
       - name: Build stripped build
         run: meson compile -C build-perf-error
 
@@ -368,10 +376,29 @@ jobs:
         env:
           WIRELOG_PERF_GATE: '1'
           WIRELOG_PERF_REQUIRE: '1'
+          WL_DOOP_PERF_GATE_TARGET_MS: ${{ vars.WL_DOOP_PERF_GATE_TARGET_MS }}
         run: >
           taskset -c 0 meson test -C build-perf-error
           crdt_perf_gate cspa_w1_gate sub_ms_graph_perf_gate
           --print-errorlogs --num-processes 1
+
+      # DOOP is W=8 and must not inherit the single-CPU affinity used by the
+      # W=1 evaluator gates above.  Keep a separate Meson log, then append it
+      # to the authoritative error log so the common execution checker still
+      # verifies one complete evidence stream.
+      - name: Run DOOP W=8 timing gate
+        env:
+          WIRELOG_PERF_GATE: '1'
+          WIRELOG_PERF_REQUIRE: '1'
+          WL_DOOP_PERF_GATE_TARGET_MS: ${{ vars.WL_DOOP_PERF_GATE_TARGET_MS }}
+        run: |
+          set +e
+          taskset -c 0-7 meson test -C build-perf-error doop_w8_gate \
+            --logbase doop-testlog --print-errorlogs --num-processes 1
+          rc=$?
+          cat build-perf-error/meson-logs/doop-testlog.txt >> \
+            build-perf-error/meson-logs/testlog.txt
+          exit "$rc"
 
       - name: Verify timing gates executed
         run: >

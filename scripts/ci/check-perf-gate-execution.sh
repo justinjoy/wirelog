@@ -51,5 +51,6 @@ check_gate "$trace_log" log_perf_gate 'test_log_perf_gate OK'
 check_gate "$error_log" crdt_perf_gate 'test_crdt_perf_gate OK'
 check_gate "$error_log" cspa_w1_gate 'test_cspa_perf_gate OK'
 check_gate "$error_log" sub_ms_graph_perf_gate 'test_sub_ms_graph_perf_gate OK'
+check_gate "$error_log" doop_w8_gate 'doop_w8_gate OK'
 
-echo "perf gate execution check: all four timing gates executed successfully"
+echo "perf gate execution check: all five timing gates executed successfully"
