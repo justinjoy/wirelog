@@ -238,13 +238,15 @@ wl_mem_ledger_bytes_remaining(const wl_mem_ledger_t *ledger);
  * Prints a human-readable per-subsystem memory breakdown to stderr.
  * Format (one line per subsystem plus totals):
  *
- *   [wirelog mem] budget=48.0GB current=12.3GB peak=15.6GB
- *     RELATION     current=8.2GB  peak=10.1GB  cap=24.0GB
+ *   [wirelog mem] budget=48.0GB current=12.3GB peak=15.6GB budget_bytes=...
+ *     RELATION     current=8.2GB  peak=10.1GB  cap=24.0GB current_bytes=...
  *     ARENA        current=1.1GB  peak=2.0GB   cap=9.6GB
  *     CACHE        current=0.3GB  peak=0.5GB   cap=4.8GB
  *     ARRANGEMENT  current=0.4GB  peak=0.6GB   cap=4.8GB
  *     TIMESTAMP    current=0.1GB  peak=0.2GB   cap=4.8GB
  *
+ * The exact *_bytes fields use IEC byte counts and are stable for parsers;
+ * the human-readable fields are retained for operator diagnostics.
  * Thread-safe (reads atomics with relaxed ordering; for reporting only).
  */
 void

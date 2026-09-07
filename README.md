@@ -390,6 +390,7 @@ external-consumer audit.
 
 - [ARCHITECTURE.md](docs/ARCHITECTURE.md) -- system design, optimizer pipeline, execution model
 - [docs/THREADING.md](docs/THREADING.md) -- threading backends, atomics audit, K-fusion / TDD concurrency contracts
+- [docs/TDD_MEMORY_BASELINE.md](docs/TDD_MEMORY_BASELINE.md) -- TDD memory-report semantics, coverage, and baseline evidence limits
 - [docs/CRASH_RESTART.md](docs/CRASH_RESTART.md) -- crash/restart durability responsibilities for embedded hosts
 - [docs/EMBEDDED.md](docs/EMBEDDED.md) -- embedded integration posture, build options, and host responsibilities
 - [docs/INTERNALS.md](docs/INTERNALS.md) -- maintainer map of internal subsystems and public/private boundaries

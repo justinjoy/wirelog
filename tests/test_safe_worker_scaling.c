@@ -201,6 +201,7 @@ test_integer_overflow_guard(void)
 
     wl_plan_t *plan = build_plan(SIMPLE_PROG);
     if (!plan) {
+        unsetenv("WL_MEM_REPORT");
         FAIL("could not build plan");
         return 1;
     }
@@ -300,6 +301,8 @@ test_env_override_with_warning(void)
     char tmppath[] = "/tmp/wl_test_stderr_XXXXXX";
     int tmpfd = mkstemp(tmppath);
     int saved_stderr = -1;
+    char report[4096] = {0};
+    ssize_t report_len = 0;
     if (tmpfd >= 0) {
         saved_stderr = dup(STDERR_FILENO);
         dup2(tmpfd, STDERR_FILENO);
@@ -331,9 +334,9 @@ test_env_override_with_warning(void)
 #endif
 
     unsetenv("WIRELOG_MAX_WORKERS");
-    unsetenv("WL_MEM_REPORT");
 
     if (!plan) {
+        unsetenv("WL_MEM_REPORT");
         FAIL("could not build plan");
         return 1;
     }
@@ -342,12 +345,50 @@ test_env_override_with_warning(void)
         char msg[64];
         snprintf(msg, sizeof(msg),
             "session_create failed with rc=%d (WIRELOG_MAX_WORKERS=4096)", rc);
+        if (sess)
+            wl_session_destroy(sess);
+        unsetenv("WL_MEM_REPORT");
         FAIL(msg);
         return 1;
     }
 
+    /* Capture teardown separately: WL_MEM_REPORT is emitted when the session
+     * is destroyed, after the constructor warning has already been checked. */
+#if !defined(_MSC_VER)
+    char report_path[] = "/tmp/wl_test_mem_report_XXXXXX";
+    int report_fd = mkstemp(report_path);
+    int report_saved_stderr = -1;
+    if (report_fd >= 0) {
+        report_saved_stderr = dup(STDERR_FILENO);
+        if (report_saved_stderr >= 0)
+            dup2(report_fd, STDERR_FILENO);
+        else {
+            close(report_fd);
+            unlink(report_path);
+            report_fd = -1;
+        }
+    }
+#endif
+
     uint32_t actual = ((wl_col_session_t *)sess)->num_workers;
     wl_session_destroy(sess);
+#if !defined(_MSC_VER)
+    if (report_fd >= 0) {
+        fflush(stderr);
+        dup2(report_saved_stderr, STDERR_FILENO);
+        close(report_saved_stderr);
+        off_t report_size = lseek(report_fd, 0, SEEK_END);
+        if (report_size > 0 && report_size < (off_t)sizeof(report)) {
+            lseek(report_fd, 0, SEEK_SET);
+            report_len = read(report_fd, report, (size_t)report_size);
+            if (report_len > 0)
+                report[report_len] = '\0';
+        }
+        close(report_fd);
+        unlink(report_path);
+    }
+#endif
+    unsetenv("WL_MEM_REPORT");
 
     if (actual != 4096) {
         char msg[128];
@@ -362,6 +403,14 @@ test_env_override_with_warning(void)
             "WIRELOG_MAX_WORKERS=4096 accepted but no stderr warning was emitted");
         return 1;
     }
+
+#if !defined(_MSC_VER)
+    if (!strstr(report, "budget_bytes=") || !strstr(report, "current_bytes=")
+        || !strstr(report, "peak_bytes=")) {
+        FAIL("WL_MEM_REPORT lacks stable byte-valued total fields");
+        return 1;
+    }
+#endif
 
     PASS();
     return 0;
