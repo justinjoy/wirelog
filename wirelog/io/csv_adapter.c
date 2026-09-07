@@ -28,6 +28,7 @@
 #include "wirelog/io/io_adapter.h"
 #include "wirelog/io/io_ctx_internal.h"
 #include "wirelog/io/csv_reader.h"
+#include "wirelog/io/csv_adapter_internal.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -54,6 +55,78 @@ csv_intern_trampoline(void *opaque, const char *str)
     if (!ctx || !ctx->intern)
         return -1;
     return wl_intern_put(ctx->intern, str);
+}
+
+static const char *
+csv_resolve_path(wirelog_io_ctx_t *ctx, char *resolved_buf,
+    size_t resolved_size)
+{
+    const char *filename = wirelog_io_ctx_param(ctx, "filename");
+    if (!filename)
+        return NULL;
+
+    FILE *test_f = fopen(filename, "r");
+    if (!test_f && filename[0] != '/') {
+        char cwd[4096];
+        if (getcwd(cwd, sizeof(cwd)) != NULL) {
+            snprintf(resolved_buf, resolved_size, "%s/%s", cwd, filename);
+            test_f = fopen(resolved_buf, "r");
+            if (test_f) {
+                fclose(test_f);
+                return resolved_buf;
+            }
+        }
+    } else if (test_f) {
+        fclose(test_f);
+    }
+    return filename;
+}
+
+static char
+csv_delimiter(wirelog_io_ctx_t *ctx)
+{
+    const char *delim_str = wirelog_io_ctx_param(ctx, "delimiter");
+    if (!delim_str)
+        return '	';
+    return strcmp(delim_str, "\\t") == 0 ? '	': delim_str[0];
+}
+
+static int
+csv_types(wirelog_io_ctx_t *ctx, wirelog_column_type_t **out_types)
+{
+    uint32_t num_cols = wirelog_io_ctx_num_cols(ctx);
+    wirelog_column_type_t *types = (wirelog_column_type_t *)malloc(
+        (size_t)num_cols * sizeof(*types));
+    if (!types)
+        return WL_CSV_ERR_MEMORY;
+    for (uint32_t i = 0; i < num_cols; i++)
+        types[i] = wirelog_io_ctx_col_type(ctx, i);
+    *out_types = types;
+    return WL_CSV_OK;
+}
+
+int
+wl_csv_adapter_stream_read(wirelog_io_ctx_t *ctx, uint32_t max_batch_rows,
+    wl_csv_batch_cb batch_cb, void *opaque)
+{
+    if (!ctx || !batch_cb || max_batch_rows == 0)
+        return WL_CSV_ERR_ARGS;
+
+    char resolved_buf[4096];
+    const char *path = csv_resolve_path(ctx, resolved_buf,
+            sizeof(resolved_buf));
+    if (!path)
+        return WL_CSV_ERR_ARGS;
+
+    wirelog_column_type_t *types = NULL;
+    int rc = csv_types(ctx, &types);
+    if (rc == WL_CSV_OK) {
+        rc = wl_csv_read_file_via_ctx_stream(path, csv_delimiter(ctx), types,
+                wirelog_io_ctx_num_cols(ctx), max_batch_rows, batch_cb, opaque,
+                csv_intern_trampoline, ctx);
+    }
+    free(types);
+    return rc;
 }
 
 /* ======================================================================== */

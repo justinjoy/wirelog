@@ -16,6 +16,7 @@
 #include "session_facts.h"
 
 #include "io/io_adapter.h"
+#include "io/csv_adapter_internal.h"
 #include "io/io_ctx_internal.h"
 #include "ir/program.h"
 
@@ -23,10 +24,38 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define WL_SESSION_INPUT_BATCH_ROWS 1024u
+
+typedef struct {
+    wl_session_t *session;
+    const char *relation;
+} wl_input_batch_sink_t;
+
+static int
+wl_session_input_batch_cb(void *opaque, const int64_t *rows,
+    uint32_t nrows, uint32_t ncols)
+{
+    wl_input_batch_sink_t *sink = (wl_input_batch_sink_t *)opaque;
+    if (!sink || !sink->session || !sink->relation)
+        return -1;
+    return wl_session_insert(sink->session, sink->relation, rows, nrows,
+               ncols);
+}
+
+static int
+wl_session_input_load_fail(wl_session_t *sess)
+{
+    if (sess)
+        sess->input_load_failed = true;
+    return -1;
+}
+
 int
 wl_session_load_facts(wl_session_t *sess, const struct wirelog_program *prog)
 {
     if (!sess || !prog)
+        return -1;
+    if (sess->input_load_failed)
         return -1;
 
     for (uint32_t i = 0; i < prog->relation_count; i++) {
@@ -44,7 +73,7 @@ wl_session_load_facts(wl_session_t *sess, const struct wirelog_program *prog)
         if (rc != 0) {
             fprintf(stderr, "error: failed to load facts for '%s'\n",
                 rel->name);
-            return -1;
+            return wl_session_input_load_fail(sess);
         }
     }
 
@@ -56,6 +85,8 @@ wl_session_load_input_files(wl_session_t *sess,
     const struct wirelog_program *prog)
 {
     if (!sess || !prog)
+        return -1;
+    if (sess->input_load_failed)
         return -1;
 
     for (uint32_t i = 0; i < prog->relation_count; i++) {
@@ -73,7 +104,7 @@ wl_session_load_input_files(wl_session_t *sess,
                 "error: no I/O adapter registered for scheme '%s' "
                 "(relation '%s')\n",
                 scheme, rel->name);
-            return -1;
+            return wl_session_input_load_fail(sess);
         }
 
         wirelog_io_ctx_t *ctx =
@@ -82,7 +113,7 @@ wl_session_load_input_files(wl_session_t *sess,
             fprintf(stderr,
                 "error: failed to create I/O context for '%s'\n",
                 rel->name);
-            return -1;
+            return wl_session_input_load_fail(sess);
         }
 
         /* Optional validation pass */
@@ -96,8 +127,22 @@ wl_session_load_input_files(wl_session_t *sess,
                     "error: validation failed for '%s': %s\n",
                     rel->name, errbuf);
                 wirelog_io_ctx_destroy(ctx);
-                return -1;
+                return wl_session_input_load_fail(sess);
             }
+        }
+
+        if (adapter == &wl_csv_adapter) {
+            wl_input_batch_sink_t sink = {
+                .session = sess,
+                .relation = rel->name,
+            };
+            int src = wl_csv_adapter_stream_read(ctx,
+                    WL_SESSION_INPUT_BATCH_ROWS,
+                    wl_session_input_batch_cb, &sink);
+            wirelog_io_ctx_destroy(ctx);
+            if (src != 0)
+                return wl_session_input_load_fail(sess);
+            continue;
         }
 
         /* Delegate to adapter's read callback */
@@ -112,7 +157,7 @@ wl_session_load_input_files(wl_session_t *sess,
                 "error: adapter '%s' failed to read data for '%s'\n",
                 scheme, rel->name);
             free(data);
-            return -1;
+            return wl_session_input_load_fail(sess);
         }
 
         if (nrows > 0 && data) {
@@ -127,7 +172,7 @@ wl_session_load_input_files(wl_session_t *sess,
                 fprintf(stderr,
                     "error: failed to insert data for '%s'\n",
                     rel->name);
-                return -1;
+                return wl_session_input_load_fail(sess);
             }
         } else {
             free(data);

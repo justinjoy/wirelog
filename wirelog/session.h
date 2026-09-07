@@ -41,6 +41,12 @@ struct wl_session {
     /* Owned reference; workers borrow this pointer and never release it. */
     wirelog_extension_snapshot_t *extension_snapshot;
     bool owns_extension_snapshot;
+    /*
+     * A failed streamed input load leaves the session unsuitable for
+     * evaluation.  Keep this internal poison bit until the session is
+     * destroyed; otherwise a later snapshot could evaluate truncated facts.
+     */
+    bool input_load_failed;
 };
 
 /* Wrapper functions that delegate to the backend vtable */

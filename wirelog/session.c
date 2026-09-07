@@ -73,6 +73,8 @@ wl_session_insert(wl_session_t *session, const char *relation,
 {
     if (!session || !session->backend || !session->backend->session_insert)
         return -1;
+    if (session->input_load_failed)
+        return -1;
     return session->backend->session_insert(session, relation, data, num_rows,
                num_cols);
 }
@@ -104,6 +106,8 @@ wl_session_step(wl_session_t *session)
 {
     if (!session || !session->backend || !session->backend->session_step)
         return -1;
+    if (session->input_load_failed)
+        return -1;
     return session->backend->session_step(session);
 }
 
@@ -122,6 +126,8 @@ wl_session_snapshot(wl_session_t *session, wirelog_on_tuple_fn callback,
     void *user_data)
 {
     if (!session || !session->backend || !session->backend->session_snapshot)
+        return -1;
+    if (session->input_load_failed)
         return -1;
     return session->backend->session_snapshot(session, callback, user_data);
 }
