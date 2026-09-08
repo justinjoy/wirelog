@@ -22,6 +22,7 @@
 #include "columnar/delta_pool.h"
 #include "columnar/mem_ledger.h"
 #include "columnar/memory_governor.h"
+#include "columnar/continuation.h"
 #include "columnar/kfusion_adaptive.h"
 #include "columnar/progress.h"
 #include "session.h"
@@ -1725,6 +1726,11 @@ typedef struct wl_col_session_t {
  * @rel:   heap-allocated result relation (owned; freed on pop)
  * @owned: true if this entry owns @rel (must free on pop)
  */
+typedef enum {
+    WL_COLUMNAR_EVAL_ENTRY_RELATION = 0,
+    WL_COLUMNAR_EVAL_ENTRY_CONTINUATION = 1,
+} wl_columnar_eval_entry_kind_t;
+
 typedef struct {
     col_rel_t *rel;
     bool owned;
@@ -1732,6 +1738,8 @@ typedef struct {
     uint32_t
     *seg_boundaries;     /* Array of K+1 boundary row indices (K-way merge) */
     uint32_t seg_count;  /* Number of segments (0 = no segmentation) */
+    wl_columnar_eval_entry_kind_t kind;
+    wl_columnar_continuation_t *continuation;
 } eval_entry_t;
 
 typedef struct {
@@ -2303,6 +2311,9 @@ int
 eval_stack_push(eval_stack_t *s, col_rel_t *r, bool owned);
 int
 eval_stack_push_delta(eval_stack_t *s, col_rel_t *r, bool owned, bool is_delta);
+int
+eval_stack_push_continuation(eval_stack_t *s,
+    wl_columnar_continuation_t *continuation);
 eval_entry_t
 eval_stack_pop(eval_stack_t *s);
 void
