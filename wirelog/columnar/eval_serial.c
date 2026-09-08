@@ -232,13 +232,16 @@ col_eval_stratum(const wl_plan_stratum_t *sp, wl_col_session_t *sess,
             if (stack.top == 0)
                 continue;
 
-            eval_entry_t result;
-            rc = eval_stack_pop_relation(&stack, &result);
-            if (rc != 0) {
+            eval_entry_t result = eval_stack_pop(&stack);
+            if (result.kind != WL_COLUMNAR_EVAL_ENTRY_RELATION) {
+                eval_entry_dispose(&result);
                 eval_stack_drain(&stack);
-                return rc;
+                return ENOTSUP;
             }
             eval_stack_drain(&stack); /* drain any leftover entries */
+
+            if (!result.rel)
+                continue;
 
             col_rel_t *target = session_find_rel(sess, rp->name);
             if (!target) {
@@ -583,11 +586,11 @@ col_eval_stratum(const wl_plan_stratum_t *sp, wl_col_session_t *sess,
                 if (stack.top == 0)
                     continue;
 
-                eval_entry_t result;
-                rc = eval_stack_pop_relation(&stack, &result);
-                if (rc != 0) {
+                eval_entry_t result = eval_stack_pop(&stack);
+                if (result.kind != WL_COLUMNAR_EVAL_ENTRY_RELATION) {
+                    eval_entry_dispose(&result);
                     eval_stack_drain(&stack);
-                    outer_rc = rc;
+                    outer_rc = ENOTSUP;
                     goto stride_error;
                 }
                 eval_stack_drain(&stack);
