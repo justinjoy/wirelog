@@ -205,19 +205,19 @@ test_retry_and_commit_boundary(void)
 
     sink.commit_mode = 2;
     CHECK(wl_columnar_continuation_publish(continuation, &sink_spec)
-        == WL_COLUMNAR_CONTINUATION_COMMIT_FAILURE,
-        "post-commit failure is reported");
-    CHECK(wl_columnar_continuation_cursor(continuation)->position == 1,
-        "post-commit failure leaves the cursor unchanged");
-    CHECK(!wl_columnar_continuation_is_done(continuation),
-        "ambiguous commit does not mark continuation done");
+        == WL_COLUMNAR_CONTINUATION_COMMIT_AMBIGUOUS,
+        "post-commit failure is reported as ambiguous");
+    CHECK(wl_columnar_continuation_cursor(continuation)->position == 2,
+        "post-commit failure advances the durable cursor");
+    CHECK(wl_columnar_continuation_is_done(continuation),
+        "ambiguous commit marks a durable final batch done");
     CHECK(sink.reserved == UINT64_C(24),
         "ambiguous commit does not falsely release reservation");
     CHECK(wl_columnar_continuation_publish(continuation, &sink_spec)
-        == WL_COLUMNAR_CONTINUATION_OK,
-        "retry commits the still-current batch");
-    CHECK(wl_columnar_continuation_is_done(continuation),
-        "successful final retry marks continuation done");
+        == WL_COLUMNAR_CONTINUATION_DONE,
+        "durable ambiguous batch is not replayed");
+    CHECK(sink.appends == 3,
+        "post-commit retry does not append the batch again");
     wl_columnar_continuation_destroy(continuation);
     CHECK(producer.destroy_calls == 1, "continuation owns producer lifetime");
 }
@@ -326,11 +326,25 @@ test_reservation_and_stack_ownership(void)
         "complete relation push remains available");
     memset(&producer, 0, sizeof(producer));
     continuation = make_continuation(&producer);
-    CHECK(eval_stack_push_continuation(&stack, continuation) == ENOTSUP,
-        "unsupported continuation stack insertion is rejected");
+    CHECK(eval_stack_push_continuation(&stack, continuation) == 0,
+        "continuation is retained as an owned stack entry");
+    {
+        eval_entry_t entry = eval_stack_pop(&stack);
+        CHECK(entry.kind == WL_COLUMNAR_EVAL_ENTRY_CONTINUATION,
+            "stack distinguishes continuation entries");
+        CHECK(entry.rel == NULL && entry.continuation == NULL,
+            "popping a continuation safely consumes its ownership");
+    }
     CHECK(producer.destroy_calls == 1,
-        "rejected continuation is destroyed by the stack helper");
+        "popped continuation is destroyed exactly once");
+
+    memset(&producer, 0, sizeof(producer));
+    continuation = make_continuation(&producer);
+    CHECK(eval_stack_push_continuation(&stack, continuation) == 0,
+        "second continuation is retained for drain");
     eval_stack_drain(&stack);
+    CHECK(producer.destroy_calls == 1,
+        "drain destroys an unpopped continuation exactly once");
     CHECK(stack.top == 0, "complete relation stack still drains its owner");
 }
 
