@@ -1330,6 +1330,17 @@ test_memory_admission_arena_exe = executable(
 )
 test('memory_admission_arena', test_memory_admission_arena_exe, suite: 'unit')
 
+test_memory_admission_delta_exe = executable(
+  'test_memory_admission_delta',
+  files('test_memory_admission_delta.c',
+        '../wirelog/columnar/delta_pool.c',
+        '../wirelog/columnar/delta_pool_admission.c',
+        '../wirelog/columnar/memory_governor.c') + thread_src,
+  include_directories: [wirelog_inc, wirelog_src_inc],
+  dependencies: [threads_dep],
+)
+test('memory_admission_delta', test_memory_admission_delta_exe, suite: 'unit')
+
 # ============================================================================
 # Plan Generator + Session Facts Tests (Phase 2C columnar backend)
 # ============================================================================
@@ -1362,6 +1373,7 @@ backend_src = files(
   '../wirelog/columnar/session.c',
   '../wirelog/columnar/session_hash.c',
   '../wirelog/columnar/delta_pool.c',
+  '../wirelog/columnar/delta_pool_admission.c',
   '../wirelog/columnar/lftj.c',
   '../wirelog/columnar/mem_ledger.c',
   '../wirelog/columnar/memory_governor.c',

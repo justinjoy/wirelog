@@ -27,6 +27,8 @@
 #ifndef WL_BACKEND_DELTA_POOL_H
 #define WL_BACKEND_DELTA_POOL_H
 
+#include "columnar/memory_governor.h"
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -44,7 +46,9 @@
  * @arena_cap:    Total arena capacity in bytes.
  * @arena_used:   Bytes consumed so far.
  */
-typedef struct {
+typedef struct delta_pool delta_pool_t;
+
+struct delta_pool {
     char *slab;
     size_t slot_size;
     uint32_t slot_cap;
@@ -52,7 +56,11 @@ typedef struct {
     char *arena;
     size_t arena_cap;
     size_t arena_used;
-} delta_pool_t;
+    /* Optional ownership hook. Legacy delta_pool.c linkage remains free of
+     * governor symbols; managed admission is supplied by a separate glue TU. */
+    void *admission_context;
+    void (*admission_release)(void *context);
+};
 
 /**
  * delta_pool_create:
@@ -64,6 +72,17 @@ typedef struct {
  */
 delta_pool_t *
 delta_pool_create(uint32_t max_slots, size_t slot_size, size_t arena_bytes);
+
+/** Create a pool whose complete fixed footprint is admitted by the governor. */
+delta_pool_t *
+delta_pool_create_managed(uint32_t max_slots, size_t slot_size,
+    size_t arena_bytes, wl_columnar_memory_governor_t *governor);
+
+/* Internal constructor used by the managed-admission glue. */
+delta_pool_t *
+delta_pool_create_with_admission(uint32_t max_slots, size_t slot_size,
+    size_t arena_bytes, void *context,
+    void (*admission_release)(void *context));
 
 /**
  * delta_pool_alloc_slot:
