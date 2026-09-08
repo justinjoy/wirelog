@@ -180,6 +180,79 @@ test_admission_release(void)
 }
 
 static int
+csv_stream_admitted_bytes(uint32_t max_batch_rows, uint32_t num_cols,
+    uint64_t *out)
+{
+    uint64_t batch_cells;
+    uint64_t batch_bytes;
+    uint64_t row_bytes;
+    uint64_t bytes;
+    if (!out
+        || !wl_columnar_memory_size_mul(max_batch_rows, num_cols,
+        &batch_cells)
+        || !wl_columnar_memory_size_mul(batch_cells, sizeof(int64_t),
+        &batch_bytes)
+        || !wl_columnar_memory_size_mul(num_cols, sizeof(int64_t),
+        &row_bytes)
+        || !wl_columnar_memory_size_add(batch_bytes, row_bytes, &bytes)
+        || !wl_columnar_memory_size_add(bytes,
+        WL_CSV_READ_CHUNK + WL_CSV_MAX_LINE + 1, &bytes)
+        || !wl_columnar_memory_size_add(bytes, WL_CSV_MAX_LINE + 1, &bytes))
+        return 1;
+    *out = bytes;
+    return 0;
+}
+
+static int
+test_admission_exact_fit(void)
+{
+    char path[512];
+    uint64_t admitted_bytes;
+    if (write_fixture(path, sizeof(path), "wirelog_csv_streaming_exact.csv",
+        "1,2\n") != 0
+        || csv_stream_admitted_bytes(2, 2, &admitted_bytes) != 0)
+        return 1;
+
+    wirelog_column_type_t types[] = {
+        WIRELOG_TYPE_INT64, WIRELOG_TYPE_INT64,
+    };
+    int clean = 1;
+    for (int denied_case = 0; denied_case < 2; denied_case++) {
+        wl_intern_t *intern = wl_intern_create();
+        wl_columnar_memory_resolution_t resolution = {
+            .budget_bytes = admitted_bytes - (uint64_t)denied_case,
+            .headroom_bytes = 0,
+            .usable_bytes = admitted_bytes - (uint64_t)denied_case,
+            .mode = WL_COLUMNAR_MEMORY_MODE_ENFORCING,
+            .source = WL_COLUMNAR_MEMORY_SOURCE_ENV,
+            .status = WL_COLUMNAR_MEMORY_OK,
+        };
+        wl_columnar_memory_governor_ref_t *ref =
+            wl_columnar_memory_governor_ref_create(&resolution);
+        stream_observer_t obs = {0};
+        int rc = ref && intern
+            ? wl_csv_read_file_via_ctx_stream_admitted(path, ',', types, 2,
+                2, observe_rows, &obs, intern_cb, intern,
+                wl_columnar_memory_governor_ref_get(ref))
+            : WL_CSV_ERR_MEMORY;
+        if (denied_case == 0) {
+            clean = clean && rc == 0 && obs.rows == 1;
+        } else {
+            clean = clean && rc == WL_CSV_ERR_MEMORY && obs.rows == 0;
+        }
+        clean = clean && ref != NULL
+            && wl_columnar_memory_reserved(
+            wl_columnar_memory_governor_ref_get(ref)) == 0;
+        if (ref)
+            wl_columnar_memory_governor_ref_release(ref);
+        if (intern)
+            wl_intern_free(intern);
+    }
+    remove(path);
+    return clean ? 0 : 1;
+}
+
+static int
 test_retained_intern_admission(void)
 {
     char path[512];
@@ -224,7 +297,9 @@ test_retained_intern_admission(void)
     uint64_t after_unique = ref
         ? wl_columnar_memory_reserved(
         wl_columnar_memory_governor_ref_get(ref)) : 0;
-    int clean = rc == 0 && obs.rows == 3 && duplicate >= 0 && unique >= 0
+    int64_t alpha = intern ? wl_intern_get(intern, "alpha") : -1;
+    int clean = rc == 0 && obs.rows == 3 && duplicate == alpha
+        && unique >= 0
         && after_csv > before && after_duplicate == after_csv
         && after_unique > after_duplicate;
     remove(path);
@@ -243,5 +318,5 @@ main(void)
 {
     return test_batches_and_strings() || test_callback_failure()
            || test_admission_denial() || test_admission_release()
-           || test_retained_intern_admission();
+           || test_admission_exact_fit() || test_retained_intern_admission();
 }
