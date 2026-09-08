@@ -38,12 +38,15 @@
 # source partition.
 wirelog/api_facade.c
 wirelog/arena/arena.c
+wirelog/arena/arena_admission.c
 wirelog/arena/compound_arena.c
+wirelog/arena/compound_arena_admission.c
 wirelog/columnar/arithmetic.c
 wirelog/columnar/arrangement.c
 wirelog/columnar/cache.c
 wirelog/columnar/compound_side.c
 wirelog/columnar/delta_pool.c
+wirelog/columnar/delta_pool_admission.c
 wirelog/columnar/diff.c
 wirelog/columnar/diff_arrangement.c
 wirelog/columnar/diff_bridge.c

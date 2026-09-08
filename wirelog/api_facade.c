@@ -293,6 +293,12 @@ ensure_result_relation(wirelog_result_t *result, const char *relation,
             (void)wl_columnar_memory_release(&pending);
             return NULL;
         }
+        if (result->count >= next) {
+            free(name);
+            free(rels);
+            (void)wl_columnar_memory_release(&pending);
+            return NULL;
+        }
         if (result->relations)
             memcpy(rels, result->relations, (size_t)old_bytes);
         memset(rels + result->capacity, 0,
