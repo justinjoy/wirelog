@@ -104,11 +104,23 @@ typedef enum {
     WL_COLUMNAR_MEMORY_RESERVATION_TRANSFERRING = 6,
 } wl_columnar_memory_reservation_state_t;
 
+typedef enum {
+    WL_COLUMNAR_MEMORY_ADMISSION_OK = 0,
+    WL_COLUMNAR_MEMORY_ADMISSION_ADVISORY = 1,
+    WL_COLUMNAR_MEMORY_ADMISSION_INVALID = 2,
+    WL_COLUMNAR_MEMORY_ADMISSION_OVERFLOW = 3,
+    WL_COLUMNAR_MEMORY_ADMISSION_DENIED = 4,
+} wl_columnar_memory_admission_status_t;
+
 typedef struct {
     wl_columnar_memory_governor_t *governor;
     uint64_t bytes;
     wl_atomic_u64 owner_bits;
     wl_atomic_u64 state;
+    /* Tokens are caller-owned and intentionally non-copyable.  A copied
+     * token retains the original address and is rejected by every operation,
+     * preventing a copied state from releasing the same reservation twice. */
+    const void *identity;
 } wl_columnar_memory_reservation_t;
 
 /* Initialize a caller-owned token before its first reserve or reuse. */
@@ -160,6 +172,25 @@ wl_columnar_memory_governor_init(wl_columnar_memory_governor_t *governor,
 bool
 wl_columnar_memory_reserve(wl_columnar_memory_governor_t *governor,
     uint64_t bytes, wl_columnar_memory_reservation_t *reservation);
+
+/* Checked admission result used by allocation sites. */
+wl_columnar_memory_admission_status_t
+wl_columnar_memory_reserve_checked(wl_columnar_memory_governor_t *governor,
+    uint64_t bytes, wl_columnar_memory_reservation_t *reservation);
+
+/* Reserve the new footprint while the old footprint is still live.
+ * The output token must be distinct from the token that accounts old_bytes;
+ * callers release the old token only after publishing the replacement. */
+wl_columnar_memory_admission_status_t
+wl_columnar_memory_reserve_growth(wl_columnar_memory_governor_t *governor,
+    uint64_t old_bytes, uint64_t new_bytes,
+    wl_columnar_memory_reservation_t *reservation);
+
+bool
+wl_columnar_memory_size_add(uint64_t left, uint64_t right, uint64_t *out);
+
+bool
+wl_columnar_memory_size_mul(uint64_t left, uint64_t right, uint64_t *out);
 
 bool
 wl_columnar_memory_commit(wl_columnar_memory_reservation_t *reservation,
