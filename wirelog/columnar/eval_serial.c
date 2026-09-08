@@ -273,7 +273,9 @@ col_eval_stratum(const wl_plan_stratum_t *sp, wl_col_session_t *sess,
                     return rc;
             }
         }
+        assert(sess->mat_cache.active_pins == 0);
         col_mat_cache_clear(&sess->mat_cache);
+        assert(sess->mat_cache.active_pins == 0);
         col_session_mem_sample(sess); /* Issue #1380 */
         delta_pool_reset(sess->delta_pool);
         sess->rotation_ops->rotate_eval_arena(sess);
@@ -769,7 +771,9 @@ col_eval_stratum(const wl_plan_stratum_t *sp, wl_col_session_t *sess,
              * - If 0: clear entire cache each sub-pass (backward compatible)
              * - If > 0: evict LRU entries when cache exceeds threshold */
             if (sess->cache_evict_threshold == 0) {
+                assert(sess->mat_cache.active_pins == 0);
                 col_mat_cache_clear(&sess->mat_cache);
+                assert(sess->mat_cache.active_pins == 0);
             } else {
                 col_mat_cache_evict_until(&sess->mat_cache,
                     sess->cache_evict_threshold);
@@ -889,7 +893,9 @@ stride_error:
     col_session_mem_sample(sess); /* Issue #1380 */
     delta_pool_reset(sess->delta_pool);
     sess->rotation_ops->rotate_eval_arena(sess);
+    assert(sess->mat_cache.active_pins == 0);
     col_mat_cache_clear(&sess->mat_cache);
+    assert(sess->mat_cache.active_pins == 0);
 
     return 0;
 }
