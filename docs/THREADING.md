@@ -238,17 +238,11 @@ Format: `file:function[#N]` | field | operation | order | justification.
 |---|---|---|---|---|
 | `mem_ledger.c:update_peak` | `*peak_atom` (subsys or global) | `atomic_load_explicit` | `relaxed` | Read-current for monotone peak-update CAS loop; no happens-before edge required |
 | `mem_ledger.c:update_peak#2` | `*peak_atom` | `atomic_compare_exchange_weak_explicit` | `relaxed`/`relaxed` | Monotone high-water bump; if another thread won, retry; observed values are non-decreasing |
-| `mem_ledger.c:total_add` | `ledger->current_bytes` | `atomic_fetch_add_explicit` | `relaxed` | Aggregate accounting counter shared by alloc and set_gauge; per-allocator skew is tolerated |
 | `mem_ledger.c:counter_sub_clamped` | `*counter` (subsys or global) | `atomic_load_explicit` | `relaxed` | Read-current for the clamp-to-zero subtract path |
 | `mem_ledger.c:counter_sub_clamped#2` | `*counter` | `atomic_compare_exchange_weak_explicit` | `relaxed`/`relaxed` | Clamp-to-zero CAS loop shared by free and set_gauge; loss-of-race retries |
 | `mem_ledger.c:wl_mem_ledger_init` | `ledger->total_budget` | `atomic_store_explicit` | `relaxed` | Set-once at init; readers see the value eventually via per-counter relaxed loads |
 | `mem_ledger.c:saturating_add` | `*counter` (subsys or global) | `atomic_load_explicit` | `relaxed` | Read-current before overflow-safe saturating increment |
 | `mem_ledger.c:saturating_add#2` | `*counter` (subsys or global) | `atomic_compare_exchange_weak_explicit` | `relaxed`/`relaxed` | Atomic saturating increment; retry with the observed value and never wrap |
-| `mem_ledger.c:wl_mem_ledger_free` | `ledger->subsys_bytes[subsys]` | `atomic_load_explicit` | `relaxed` | Read-current for clamp-to-zero free path |
-| `mem_ledger.c:wl_mem_ledger_free#2` | `ledger->subsys_bytes[subsys]` | `atomic_compare_exchange_weak_explicit` | `relaxed`/`relaxed` | Clamp-to-zero CAS loop; loss-of-race retries |
-| `mem_ledger.c:wl_mem_ledger_free#3` | `ledger->current_bytes` | `atomic_load_explicit` | `relaxed` | Read-current for clamp-to-zero free path |
-| `mem_ledger.c:wl_mem_ledger_free#4` | `ledger->current_bytes` | `atomic_compare_exchange_weak_explicit` | `relaxed`/`relaxed` | Clamp-to-zero CAS loop |
-| `mem_ledger.c:wl_mem_ledger_alloc` | `ledger->subsys_bytes[subsys]` | `atomic_fetch_add_explicit` | `relaxed` | Per-subsystem counter; ordering of distinct subsystems is independent |
 | `mem_ledger.c:wl_mem_ledger_set_gauge` | `ledger->subsys_bytes[subsys]` | `atomic_exchange_explicit` | `relaxed` | Gauge replace (Issue #1380); returns the previous value so the total can move by the difference |
 | `mem_ledger.c:wl_mem_ledger_over_budget` | `ledger->total_budget` | `atomic_load_explicit` | `relaxed` | Query path; no edge required |
 | `mem_ledger.c:wl_mem_ledger_over_budget#2` | `ledger->current_bytes` | `atomic_load_explicit` | `relaxed` | Query path |
