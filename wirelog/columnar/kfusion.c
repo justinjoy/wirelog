@@ -275,6 +275,10 @@ col_arr_entry_clone(const col_arr_entry_t *src, col_arr_entry_t *dst,
     dst->arr.nbuckets = src->arr.nbuckets;
     dst->arr.ht_cap = src->arr.ht_cap;
     dst->arr.generation = src->arr.generation;
+    /* The worker relation may be a partition with a different identity.
+     * Never inherit the coordinator's freshness token. */
+    dst->source_snapshot = (col_relation_snapshot_t){ 0, 0, 0 };
+    dst->arr.indexed_rows = 0;
     col_arr_attach_memory_governor(&dst->arr, memory_governor);
     if (dst->arr.memory_governor && src->mem_bytes > 0) {
         wl_columnar_memory_governor_t *governor

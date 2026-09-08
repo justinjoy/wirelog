@@ -2147,8 +2147,8 @@ wl_columnar_join_diff_op(const wl_plan_op_t *op, eval_stack_t *stack,
     col_diff_arrangement_t *darr = NULL;
     if (kc > 0 && op->right_relation && !used_right_delta
         && op->right_filter_expr.size == 0)
-        darr = col_session_get_diff_arrangement(sess, op->right_relation, rk,
-                kc);
+        darr = col_session_get_diff_arrangement(sess, op->right_relation,
+                right, rk, kc);
 
     if (darr
         && col_diff_arrangement_ensure_ht_capacity(darr, right->nrows) != 0)
@@ -2165,6 +2165,7 @@ wl_columnar_join_diff_op(const wl_plan_op_t *op, eval_stack_t *stack,
         }
         darr->indexed_rows = right->nrows;
         darr->current_nrows = right->nrows;
+        darr->source_snapshot = wl_columnar_relation_snapshot(right);
 
         uint32_t min_left = col_join_parallel_min_left_rows();
         if (min_left == 0)

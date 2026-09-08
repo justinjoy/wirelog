@@ -489,11 +489,42 @@ _Static_assert(offsetof(col_rel_t, relation_identity) >
     offsetof(col_rel_t, declared_ncols),
     "relation generation fields must remain outside the legacy prefix");
 
+#define WL_COLUMNAR_REL_GENERATION_INVALID UINT64_MAX
+
+static inline col_relation_snapshot_t
+wl_columnar_relation_snapshot(const col_rel_t *rel)
+{
+    col_relation_snapshot_t snapshot = { 0, 0, 0 };
+    if (rel) {
+        snapshot.relation_identity = rel->relation_identity;
+        snapshot.view_generation = rel->view_generation;
+        snapshot.storage_generation = rel->storage_generation;
+    }
+    return snapshot;
+}
+
+static inline bool
+wl_columnar_relation_snapshot_valid(col_relation_snapshot_t snapshot)
+{
+    return snapshot.relation_identity != 0
+           && snapshot.view_generation != WL_COLUMNAR_REL_GENERATION_INVALID
+           && snapshot.storage_generation != WL_COLUMNAR_REL_GENERATION_INVALID;
+}
+
+static inline bool
+wl_columnar_relation_snapshot_equal(col_relation_snapshot_t left,
+    col_relation_snapshot_t right)
+{
+    return wl_columnar_relation_snapshot_valid(left)
+           && wl_columnar_relation_snapshot_valid(right)
+           && left.relation_identity == right.relation_identity
+           && left.view_generation == right.view_generation
+           && left.storage_generation == right.storage_generation;
+}
+
 /* Generation counters are intentionally checked rather than wrapping.  A
  * saturated counter is invalid for cache equality; the next cache unit will
  * use wl_columnar_relation_generation_valid() before accepting a hit. */
-#define WL_COLUMNAR_REL_GENERATION_INVALID UINT64_MAX
-
 static inline bool
 wl_columnar_relation_generation_valid(uint64_t generation)
 {
@@ -1045,6 +1076,8 @@ typedef struct {
     uint64_t identity;
     uint32_t pin_count;
     bool eviction_deferred;
+    col_relation_snapshot_t left_snapshot;
+    col_relation_snapshot_t right_snapshot;
 } col_mat_entry_t;
 
 typedef struct {
@@ -1106,6 +1139,7 @@ typedef struct {
     uint32_t pin_count;    /* active internal reader leases */
     bool rebuild_deferred; /* invalidation waits for readers */
     bool evict_deferred;   /* reclaim was requested while pinned */
+    col_relation_snapshot_t source_snapshot;
 } col_arr_entry_t;
 
 /* Non-public lease for a primary arrangement borrowed by an operator. */
@@ -1133,6 +1167,7 @@ typedef struct {
      * currently charged for sorted[]; 0 when ledger is NULL. */
     wl_mem_ledger_t *ledger;
     uint64_t ledger_bytes;
+    col_relation_snapshot_t source_snapshot;
 } col_sorted_arr_t;
 
 /*
@@ -1256,6 +1291,7 @@ typedef struct col_filt_cache_entry {
     uint8_t *filter_data;    /* owned copy of filter expression bytes */
     uint32_t filter_size;    /* byte length of filter_data */
     uint32_t source_nrows;   /* nrows of source rel when entry was built */
+    col_relation_snapshot_t source_snapshot;
     col_rel_t *filtered;     /* owned: the filtered relation */
 } col_filt_cache_entry_t;
 
@@ -1272,6 +1308,7 @@ typedef struct col_filt_arr_entry {
     uint32_t *key_cols;    /* owned: right-side key column indices */
     uint32_t key_count;
     col_arrangement_t arr; /* owned: hash index over filtered relation */
+    col_relation_snapshot_t source_snapshot;
 } col_filt_arr_entry_t;
 
 /*
@@ -2142,6 +2179,7 @@ col_session_free_filt_arrangements(wl_col_session_t *cs);
 /* Differential arrangement registry (Issue #263) */
 col_diff_arrangement_t *
 col_session_get_diff_arrangement(wl_col_session_t *cs, const char *rel_name,
+    const col_rel_t *source_rel,
     const uint32_t *key_cols, uint32_t key_count);
 void
 col_session_free_diff_arrangements(wl_col_session_t *cs);

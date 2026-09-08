@@ -268,6 +268,12 @@ col_mat_cache_lookup(col_mat_cache_t *cache, const col_rel_t *left,
     for (uint32_t i = 0; i < cache->count; i++) {
         if (cache->entries[i].left_hash == lh
             && cache->entries[i].right_hash == rh
+            && wl_columnar_relation_snapshot_equal(
+                cache->entries[i].left_snapshot,
+                wl_columnar_relation_snapshot(left))
+            && wl_columnar_relation_snapshot_equal(
+                cache->entries[i].right_snapshot,
+                wl_columnar_relation_snapshot(right))
             && cache->entries[i].result != NULL
             && !cache->entries[i].eviction_deferred) {
             cache->entries[i].lru_clock = ++cache->clock;
@@ -291,6 +297,10 @@ col_mat_cache_lookup_pin(col_mat_cache_t *cache, const col_rel_t *left,
     for (uint32_t i = 0; i < cache->count; i++) {
         col_mat_entry_t *entry = &cache->entries[i];
         if (entry->left_hash == lh && entry->right_hash == rh
+            && wl_columnar_relation_snapshot_equal(entry->left_snapshot,
+            wl_columnar_relation_snapshot(left))
+            && wl_columnar_relation_snapshot_equal(entry->right_snapshot,
+            wl_columnar_relation_snapshot(right))
             && entry->result != NULL && !entry->eviction_deferred) {
             entry->lru_clock = ++cache->clock;
             cache->hits++;
@@ -368,6 +378,8 @@ col_mat_cache_insert_pin(col_mat_cache_t *cache, const col_rel_t *left,
     col_mat_entry_t *e = &cache->entries[cache->count++];
     e->left_hash = col_mat_cache_key_content(left);
     e->right_hash = col_mat_cache_key_content(right);
+    e->left_snapshot = wl_columnar_relation_snapshot(left);
+    e->right_snapshot = wl_columnar_relation_snapshot(right);
     e->result = result;
     e->mem_bytes = result_bytes;
     e->lru_clock = ++cache->clock;
