@@ -603,6 +603,10 @@ col_arr_cache_evict_lru(wl_col_session_t *cs, size_t target_bytes)
             col_arr_entry_t *e = &cs->arr_entries[i];
             if (e->mem_bytes == 0)
                 continue; /* already tombstoned, nothing to free */
+            if (e->pin_count > 0) {
+                e->evict_deferred = true;
+                continue;
+            }
 
             /* Prefer indexed_rows == 0 (invalidated) entries first. */
             if (e->arr.indexed_rows == 0) {
@@ -623,7 +627,20 @@ col_arr_cache_evict_lru(wl_col_session_t *cs, size_t target_bytes)
         cs->arr_total_bytes -= e->mem_bytes;
         arr_free_contents(&e->arr);
         e->mem_bytes = 0;
+        e->evict_deferred = false;
     }
+}
+
+static col_arr_entry_t *
+col_arr_entry_for_arr(wl_col_session_t *cs, const col_arrangement_t *arr)
+{
+    if (!cs || !arr)
+        return NULL;
+    for (uint32_t i = 0; i < cs->arr_count; i++) {
+        if (&cs->arr_entries[i].arr == arr)
+            return &cs->arr_entries[i];
+    }
+    return NULL;
 }
 
 /* ======================================================================== */
@@ -727,6 +744,13 @@ col_session_get_arrangement(wl_session_t *sess, const char *rel_name,
     if (slot == cs->arr_count) {
         /* No tombstone available: grow the registry. */
         if (cs->arr_count >= cs->arr_cap) {
+            /* A lease contains pointers into this flat registry.  Do not
+            * move it underneath an active borrower; callers can fall back
+            * to an ephemeral arrangement until the lease is released. */
+            for (uint32_t i = 0; i < cs->arr_count; i++) {
+                if (cs->arr_entries[i].pin_count > 0)
+                    return NULL;
+            }
             uint32_t new_cap = cs->arr_cap ? cs->arr_cap * 2u : 8u;
             col_arr_entry_t *ne = (col_arr_entry_t *)realloc(
                 cs->arr_entries, new_cap * sizeof(col_arr_entry_t));
@@ -793,6 +817,57 @@ col_session_get_arrangement(wl_session_t *sess, const char *rel_name,
     cs->arr_total_bytes += e->mem_bytes;
     e->lru_clock = ++cs->arr_clock;
     return &e->arr;
+}
+
+int
+col_session_pin_arrangement(wl_session_t *sess, const char *rel_name,
+    const uint32_t *key_cols, uint32_t key_count, col_arrangement_pin_t *pin)
+{
+    col_arrangement_t *arr;
+    col_arr_entry_t *entry;
+
+    if (!pin)
+        return EINVAL;
+    memset(pin, 0, sizeof(*pin));
+    arr = col_session_get_arrangement(sess, rel_name, key_cols, key_count);
+    if (!arr)
+        return ENOMEM;
+    entry = col_arr_entry_for_arr(COL_SESSION(sess), arr);
+    if (!entry)
+        return EINVAL;
+    entry->pin_count++;
+    pin->entry = entry;
+    pin->arr = arr;
+    pin->session = COL_SESSION(sess);
+    pin->active = true;
+    return 0;
+}
+
+void
+col_arrangement_pin_release(col_arrangement_pin_t *pin)
+{
+    col_arr_entry_t *entry;
+    wl_col_session_t *cs;
+    bool evict_deferred;
+
+    if (!pin || !pin->active || !pin->entry)
+        return;
+    entry = pin->entry;
+    cs = pin->session;
+    if (entry->pin_count > 0)
+        entry->pin_count--;
+    if (entry->pin_count == 0 && entry->rebuild_deferred) {
+        entry->arr.indexed_rows = 0;
+        entry->rebuild_deferred = false;
+    }
+    evict_deferred = entry->pin_count == 0 && entry->evict_deferred;
+    if (evict_deferred)
+        entry->evict_deferred = false;
+    memset(pin, 0, sizeof(*pin));
+    if (evict_deferred && cs) {
+        size_t target = (cs->arr_cache_limit_bytes / 4u) * 3u;
+        col_arr_cache_evict_lru(cs, target);
+    }
 }
 
 uint32_t
@@ -872,8 +947,12 @@ col_session_invalidate_arrangements(wl_session_t *sess, const char *rel_name)
         return;
     wl_col_session_t *cs = COL_SESSION(sess);
     for (uint32_t i = 0; i < cs->arr_count; i++) {
-        if (strcmp(cs->arr_entries[i].rel_name, rel_name) == 0)
-            cs->arr_entries[i].arr.indexed_rows = 0; /* force full rebuild */
+        if (strcmp(cs->arr_entries[i].rel_name, rel_name) == 0) {
+            if (cs->arr_entries[i].pin_count > 0)
+                cs->arr_entries[i].rebuild_deferred = true;
+            else
+                cs->arr_entries[i].arr.indexed_rows = 0;
+        }
     }
 
     /* Issue #433: Also invalidate filtered arrangement cache entries.

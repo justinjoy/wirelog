@@ -972,7 +972,18 @@ typedef struct {
     col_arrangement_t arr; /* embedded arrangement           */
     uint64_t lru_clock;    /* logical time of last access (Issue #216) */
     size_t mem_bytes;      /* bytes used by ht_head + ht_next arrays   */
+    uint32_t pin_count;    /* active internal reader leases */
+    bool rebuild_deferred; /* invalidation waits for readers */
+    bool evict_deferred;   /* reclaim was requested while pinned */
 } col_arr_entry_t;
+
+/* Non-public lease for a primary arrangement borrowed by an operator. */
+typedef struct {
+    col_arr_entry_t *entry;
+    col_arrangement_t *arr;
+    struct wl_col_session_t *session;
+    bool active;
+} col_arrangement_pin_t;
 
 /*
  * col_sorted_arr_t: cached sorted copy of a relation by a single key column.
@@ -1598,6 +1609,12 @@ col_rel_set_column_types(col_rel_t *r,
 uint32_t
 col_arrangement_find_first_typed(const col_arrangement_t *arr,
     const col_rel_t *rel, const int64_t *key_row);
+int
+col_session_pin_arrangement(wl_session_t *sess, const char *rel_name,
+    const uint32_t *key_cols, uint32_t key_count,
+    col_arrangement_pin_t *pin);
+void
+col_arrangement_pin_release(col_arrangement_pin_t *pin);
 int
 col_rel_alloc(col_rel_t **out, const char *name);
 

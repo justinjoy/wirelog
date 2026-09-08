@@ -891,3 +891,20 @@ and standalone fuzz target do not link the memory governor.
 - Commit `61e081b` — `fix(#579)`: skip compound-arena GC dispatch
   in worker context (the live gate invariant).
 - Test pin: `tests/test_worker_arena_borrow.c`.
+
+## 13. Primary arrangement lease contract (#1384)
+
+The primary arrangement cache is not independently thread-safe. Within an
+operator's session, a keyed join acquires a `col_arrangement_pin_t` before
+using the arrangement and releases it after the probe completes. Eviction and
+relation invalidation inspect the lease count: eviction skips pinned entries,
+and invalidation is deferred until the final release. This keeps the
+arrangement buffers and their embedded cache-entry identity stable for the
+borrower's lifetime. The flat registry refuses `realloc()` while any lease is
+active; callers that cannot obtain a new cache slot must use their ephemeral
+fallback until the lease is released.
+
+The lease is internal and must not be copied or released twice. It does not
+cover filtered/differential/sorted/materialization caches or relation
+generation checks; those extensions are tracked by issue #1435. No claim of
+general multi-threaded access is made by this contract.
