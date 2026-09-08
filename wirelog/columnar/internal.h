@@ -1645,6 +1645,10 @@ col_rel_attach_memory_governor(col_rel_t *rel,
     wl_columnar_memory_governor_ref_t *memory_governor);
 int
 col_rel_enable_timestamps(col_rel_t *rel);
+/* Promote arena-backed relation columns to private heap storage.  Admission
+ * and copying are transactional; ENOMEM leaves the relation unchanged. */
+int
+col_rel_promote_arena_admitted(col_rel_t *rel);
 
 /* ------------------------------------------------------------------------ */
 /* Compound-column layout (Issue #532 Task 2).                              */

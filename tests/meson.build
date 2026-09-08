@@ -5065,6 +5065,24 @@ test_relation_append_exe = executable(
 
 test('relation_append', test_relation_append_exe)
 
+test_memory_admission_relation_exe = executable(
+  'test_memory_admission_relation',
+  files('test_memory_admission_relation.c'),
+  parser_src,
+  ir_src,
+  optimizer_src,
+  backend_src,
+  io_src,
+  arena_src,
+  thread_src,
+  workqueue_src,
+  include_directories: [wirelog_inc, wirelog_src_inc],
+  dependencies: [nanoarrow_dep, threads_dep, xxhash_dep, mbedtls_dep, math_dep],
+)
+
+test('memory_admission_relation', test_memory_admission_relation_exe,
+     suite: 'unit')
+
 test_tdd_decision_stats_exe = executable(
   'test_tdd_decision_stats',
   files('test_tdd_decision_stats.c'),

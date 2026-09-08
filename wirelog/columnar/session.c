@@ -174,17 +174,11 @@ session_add_rel(wl_col_session_t *sess, col_rel_t *r)
     /* Arena-owned data must be promoted to heap before storing in the
      * session, because arena_reset invalidates all arena pointers. */
     if (r->arena_owned && r->columns && r->ncols > 0) {
-        /* Promote arena columns to heap: per-column malloc + memcpy */
-        int64_t **heap_cols = col_columns_alloc(r->ncols, r->capacity);
-        if (!heap_cols)
+        /* Admission and the complete heap copy are transactional.  A
+         * failure leaves the pool/arena relation unchanged so the caller can
+         * still destroy or retry it safely. */
+        if (col_rel_promote_arena_admitted(r) != 0)
             goto oom;
-        for (uint32_t c = 0; c < r->ncols; c++)
-            memcpy(heap_cols[c], r->columns[c],
-                sizeof(int64_t) * r->capacity);
-        /* free old columns array (arena owns buffers) */
-        free((void *)r->columns);
-        r->columns = heap_cols;
-        r->arena_owned = false;
     }
 
     for (uint32_t i = 0; i < sess->nrels; i++) {
