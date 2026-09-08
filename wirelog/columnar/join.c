@@ -208,6 +208,7 @@ col_join_reserve_exact(col_rel_t *rel, uint32_t nrows)
     }
     rel->capacity = nrows;
     col_rel_ledger_reconcile(rel, ledger_before);
+    wl_columnar_relation_touch_storage(rel);
     return 0;
 }
 
@@ -713,6 +714,8 @@ col_join_parallel_cross(wl_col_session_t *sess, const col_rel_t *left,
         return ENOMEM;
     }
     out->nrows = nrows;
+    if (nrows > 0)
+        wl_columnar_relation_touch_view(out);
 
     col_join_cross_ctx_t *ctxs = (col_join_cross_ctx_t *)calloc(
         W, sizeof(col_join_cross_ctx_t));
@@ -1809,6 +1812,8 @@ wl_columnar_semijoin_op(const wl_plan_op_t *op, eval_stack_t *stack,
                     prc = ENOMEM;
                 if (prc == 0) {
                     out->nrows = (uint32_t)total;
+                    if (total > 0)
+                        wl_columnar_relation_touch_view(out);
                     if (out->timestamps && total > 0)
                         memset(out->timestamps, 0,
                             (size_t)total * sizeof(col_delta_timestamp_t));
@@ -1825,7 +1830,10 @@ wl_columnar_semijoin_op(const wl_plan_op_t *op, eval_stack_t *stack,
                                 memory_order_relaxed);
                 }
                 if (prc != 0)
-                    out->nrows = 0;
+                    if (out->nrows != 0) {
+                        out->nrows = 0;
+                        wl_columnar_relation_touch_view(out);
+                    }
                 free(left_hashes);
                 free(offsets);
                 free(ctxs);
@@ -2279,6 +2287,8 @@ wl_columnar_join_diff_op(const wl_plan_op_t *op, eval_stack_t *stack,
                     prc = ENOMEM;
                 } else {
                     out->nrows = (uint32_t)total;
+                    if (total > 0)
+                        wl_columnar_relation_touch_view(out);
                     for (uint32_t w = 0; w < W; w++) {
                         ctxs[w].out = out;
                         ctxs[w].out_begin = offsets[w];

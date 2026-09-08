@@ -71,7 +71,9 @@ col_canonicalize_recursive_aggregate_relation(col_rel_t *rel,
     if (rel->ncols <= gc)
         return EINVAL;
 
+    uint32_t old_nrows = rel->nrows;
     uint32_t out = 0;
+    bool logical_changed = false;
     uint32_t map_cap = 1;
     uint64_t desired = (uint64_t)rel->nrows * 2U;
     while ((uint64_t)map_cap < desired && map_cap <= UINT32_MAX / 2U)
@@ -107,31 +109,34 @@ col_canonicalize_recursive_aggregate_relation(col_rel_t *rel,
             bool better = col_agg_better(spec->fn, spec->operand_type,
                     intern, val, cur);
             if (better) {
-                col_rel_set(rel, found, agg_index, val);
+                rel->columns[agg_index][found] = val;
                 if (rel->timestamps)
                     rel->timestamps[found] = rel->timestamps[row];
+                logical_changed = true;
             }
             continue;
         }
 
         if (out != row) {
             for (uint32_t c = 0; c < rel->ncols; c++)
-                col_rel_set(rel, out, c, col_rel_get(rel, row, c));
+                rel->columns[c][out] = rel->columns[c][row];
             if (rel->timestamps)
                 rel->timestamps[out] = rel->timestamps[row];
+            logical_changed = true;
         }
         groups[slot].hash = hash;
         groups[slot].row = out;
         out++;
     }
 
-    if (out != rel->nrows) {
+    if (logical_changed || out != old_nrows) {
         rel->nrows = out;
         rel->sorted_nrows = out;
         rel->base_nrows = out;
         rel->run_count = 0;
         rel->dedup_count = 0;
         memset(rel->run_ends, 0, sizeof(rel->run_ends));
+        wl_columnar_relation_touch_view(rel);
     }
 
     free(groups);
@@ -724,6 +729,7 @@ col_eval_stratum(const wl_plan_stratum_t *sp, wl_col_session_t *sess,
                         outer_rc = ENOMEM;
                         goto stride_error;
                     }
+                    wl_columnar_relation_touch_storage(delta);
                     for (uint32_t ti = 0; ti < delta->nrows; ti++) {
                         delta->timestamps[ti].iteration = eff_iter;
                         delta->timestamps[ti].stratum = stratum_idx;
@@ -743,6 +749,7 @@ col_eval_stratum(const wl_plan_stratum_t *sp, wl_col_session_t *sess,
                             outer_rc = ENOMEM;
                             goto stride_error;
                         }
+                        wl_columnar_relation_touch_storage(r);
                     }
 
                     delta_rels[ri] = delta;

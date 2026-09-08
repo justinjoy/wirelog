@@ -53,7 +53,10 @@ col_op_join_weighted(const col_rel_t *lhs, const col_rel_t *rhs,
         return EINVAL;
 
     uint32_t ocols = lhs->ncols + rhs->ncols;
-    dst->ncols = ocols;
+    col_rel_t work = { 0 };
+    work.ncols = ocols;
+    work.view_generation = dst->view_generation;
+    work.storage_generation = dst->storage_generation;
 
     int64_t *tmp = (int64_t *)malloc(sizeof(int64_t) * (ocols > 0 ? ocols : 1));
     if (!tmp)
@@ -75,6 +78,7 @@ col_op_join_weighted(const col_rel_t *lhs, const col_rel_t *rhs,
     }
 
     int rc = 0;
+    bool storage_changed = false;
     for (uint32_t li = 0; li < lhs->nrows && rc == 0; li++) {
         col_rel_row_copy_out(lhs, li, lptr);
         const int64_t *lrow = lptr;
@@ -94,42 +98,61 @@ col_op_join_weighted(const col_rel_t *lhs, const col_rel_t *rhs,
             memcpy(tmp + lhs->ncols, rrow, sizeof(int64_t) * rhs->ncols);
 
             /* Grow dst manually to keep data and timestamps in sync. */
-            if (dst->nrows >= dst->capacity) {
-                uint32_t new_cap = dst->capacity ? dst->capacity * 2 : 16;
-                if (dst->columns) {
-                    if (col_columns_realloc(dst->columns, ocols,
-                        new_cap) != 0) {
+            if (work.nrows >= work.capacity) {
+                uint32_t new_cap = work.capacity ? work.capacity * 2 : 16;
+                if (work.columns) {
+                    if (col_columns_realloc_atomic(work.columns, ocols,
+                        work.capacity, new_cap) != 0) {
                         rc = ENOMEM;
                         break;
                     }
                 } else {
-                    dst->columns = col_columns_alloc(ocols, new_cap);
-                    if (!dst->columns) {
+                    work.columns = col_columns_alloc(ocols, new_cap);
+                    if (!work.columns) {
                         rc = ENOMEM;
                         break;
                     }
+                    storage_changed = true;
                 }
                 col_delta_timestamp_t *nt = (col_delta_timestamp_t *)realloc(
-                    dst->timestamps,
+                    work.timestamps,
                     (size_t)new_cap * sizeof(col_delta_timestamp_t));
                 if (!nt) {
                     rc = ENOMEM;
                     break;
                 }
-                dst->timestamps = nt;
-                dst->capacity = new_cap;
+                work.timestamps = nt;
+                work.capacity = new_cap;
+                storage_changed = true;
             }
-            col_rel_row_copy_in(dst, dst->nrows, tmp);
-            memset(&dst->timestamps[dst->nrows], 0,
+            col_rel_row_copy_in_raw(&work, work.nrows, tmp);
+            memset(&work.timestamps[work.nrows], 0,
                 sizeof(col_delta_timestamp_t));
-            dst->timestamps[dst->nrows].multiplicity = lmult * rmult;
-            dst->nrows++;
+            work.timestamps[work.nrows].multiplicity = lmult * rmult;
+            work.nrows++;
         }
     }
 
     col_row_buf_release(&lrb);
     col_row_buf_release(&rrb);
     free(tmp);
+    if (rc != 0) {
+        col_columns_free(work.columns, work.ncols);
+        free(work.timestamps);
+        return rc;
+    }
+    if (work.nrows > 0) {
+        dst->ncols = work.ncols;
+        dst->columns = work.columns;
+        dst->timestamps = work.timestamps;
+        dst->capacity = work.capacity;
+        dst->nrows = work.nrows;
+        dst->arena_owned = false;
+        dst->col_shared = NULL;
+        if (storage_changed)
+            wl_columnar_relation_touch_storage(dst);
+        wl_columnar_relation_touch_view(dst);
+    }
     return rc;
 }
 
@@ -184,7 +207,10 @@ col_compute_delta_mobius(const col_rel_t *prev_collection,
         return EINVAL;
 
     uint32_t ncols = prev_collection->ncols;
-    out_delta->ncols = ncols;
+    col_rel_t work = { 0 };
+    work.ncols = ncols;
+    work.view_generation = out_delta->view_generation;
+    work.storage_generation = out_delta->storage_generation;
 
     /* Row scratch for each collection (#1000).  col_rel_row_copy_out()
      * writes ->ncols values, so a bare int64_t[COL_STACK_MAX] overflows past
@@ -200,43 +226,48 @@ col_compute_delta_mobius(const col_rel_t *prev_collection,
         col_row_buf_release(&prb);
         return ENOMEM;
     }
+    bool storage_changed = false;
 
     /* Helper lambda (via inline block) to append a row+mult to out_delta. */
 #define DELTA_FAIL()                                                          \
         do {                                                                      \
             col_row_buf_release(&crb);                                            \
             col_row_buf_release(&prb);                                            \
+            col_columns_free(work.columns, work.ncols);                          \
+            free(work.timestamps);                                                \
             return ENOMEM;                                                        \
         } while (0)
 
 #define DELTA_APPEND(row_ptr, mult_val)                                       \
         do {                                                                      \
-            if (out_delta->nrows >= out_delta->capacity) {                        \
+            if (work.nrows >= work.capacity) {                                    \
                 uint32_t new_cap                                                  \
-                    = out_delta->capacity ? out_delta->capacity * 2 : 16;         \
-                if (out_delta->columns) {                                         \
-                    if (col_columns_realloc(out_delta->columns, ncols,             \
-                        new_cap) != 0)                                            \
+                    = work.capacity ? work.capacity * 2 : 16;                     \
+                if (work.columns) {                                               \
+                    if (col_columns_realloc_atomic(work.columns, ncols,            \
+                        work.capacity, new_cap) != 0)                              \
                     DELTA_FAIL();                                             \
                 } else {                                                          \
-                    out_delta->columns = col_columns_alloc(ncols, new_cap);        \
-                    if (!out_delta->columns)                                       \
+                    work.columns = col_columns_alloc(ncols, new_cap);              \
+                    if (!work.columns)                                             \
                     DELTA_FAIL();                                             \
+                    storage_changed = true;                                  \
                 }                                                                 \
                 col_delta_timestamp_t *nt = (col_delta_timestamp_t *)realloc(     \
-                    out_delta->timestamps,                                        \
+                    work.timestamps,                                              \
                     (size_t)new_cap * sizeof(col_delta_timestamp_t));             \
                 if (!nt)                                                          \
                 DELTA_FAIL();                                                 \
-                out_delta->timestamps = nt;                                       \
-                out_delta->capacity = new_cap;                                    \
+                work.timestamps = nt;                                             \
+                work.capacity = new_cap;                                          \
+                storage_changed = true;                                          \
             }                                                                     \
-            col_rel_row_copy_in(out_delta, out_delta->nrows, (row_ptr));          \
+            col_rel_row_copy_in_raw(&work, work.nrows, (row_ptr));                 \
             col_delta_timestamp_t ts_;                                            \
             memset(&ts_, 0, sizeof(ts_));                                         \
             ts_.multiplicity = (mult_val);                                        \
-            out_delta->timestamps[out_delta->nrows] = ts_;                        \
-            out_delta->nrows++;                                                   \
+            work.timestamps[work.nrows] = ts_;                                    \
+            work.nrows++;                                                         \
         } while (0)
 
     /* Pass 1: iterate over curr; for each key look up in prev. */
@@ -299,5 +330,20 @@ col_compute_delta_mobius(const col_rel_t *prev_collection,
 
     col_row_buf_release(&crb);
     col_row_buf_release(&prb);
+    if (work.nrows > 0) {
+        out_delta->ncols = work.ncols;
+        out_delta->columns = work.columns;
+        out_delta->timestamps = work.timestamps;
+        out_delta->capacity = work.capacity;
+        out_delta->nrows = work.nrows;
+        out_delta->arena_owned = false;
+        out_delta->col_shared = NULL;
+        if (storage_changed)
+            wl_columnar_relation_touch_storage(out_delta);
+        wl_columnar_relation_touch_view(out_delta);
+    } else {
+        col_columns_free(work.columns, work.ncols);
+        free(work.timestamps);
+    }
     return 0;
 }

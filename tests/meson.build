@@ -4168,6 +4168,26 @@ test_col_rel_deep_copy_exe = executable(
 
 test('col_rel_deep_copy', test_col_rel_deep_copy_exe)
 
+# Relation identity/generation contract and mutation instrumentation (Issue #1441)
+test_relation_generations_exe = executable(
+  'test_relation_generations',
+  files('test_relation_generations.c'),
+  backend_src,
+  intern_src,
+  arena_src,
+  thread_src,
+  workqueue_src,
+  include_directories: [wirelog_inc, wirelog_src_inc],
+  dependencies: [nanoarrow_dep, threads_dep, xxhash_dep, mbedtls_dep, math_dep],
+  c_args: host_machine.system() == 'linux' ? ['-DWL_TEST_ALLOC_WRAP=1'] : [],
+  link_args: host_machine.system() == 'linux' ? [
+    '-Wl,--wrap=malloc', '-Wl,--wrap=calloc', '-Wl,--wrap=realloc',
+  ] : [],
+  override_options: host_machine.system() == 'linux' ? ['b_lto=false'] : [],
+)
+
+test('relation_generations', test_relation_generations_exe)
+
 # ============================================================================
 # Inline compound store/retrieve/retract ops (Issue #532 Task 3)
 # ============================================================================
