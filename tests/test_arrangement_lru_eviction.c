@@ -344,6 +344,66 @@ test_total_bytes_accounting(void)
 }
 
 /* ================================================================
+ * Test 5: pinned arrangements defer invalidation until the lease ends
+ * ================================================================ */
+static void
+test_pinned_invalidation(void)
+{
+    TEST("pinned arrangement defers invalidation until release");
+
+    const char *src = ".decl edge(x: int32, y: int32)\n"
+        "edge(10, 1). edge(20, 2). edge(30, 3).\n"
+        ".decl path(x: int32, y: int32)\n"
+        "path(x, y) :- edge(x, y).\n";
+
+    wl_session_t *sess = NULL;
+    wl_plan_t *plan = NULL;
+    wirelog_program_t *prog = NULL;
+    ASSERT(make_session(src, &sess, &plan, &prog) == 0,
+        "session creation failed");
+
+    wl_col_session_t *cs = COL_SESSION(sess);
+    uint32_t key_cols[1] = { 0 };
+    col_arrangement_pin_t pin;
+    col_arrangement_t *arr = col_session_get_arrangement(sess, "edge",
+            key_cols, 1);
+    ASSERT(arr != NULL && arr->indexed_rows == 3,
+        "arrangement must be built before pinning");
+    ASSERT(col_session_pin_arrangement(sess, "edge", key_cols, 1, &pin) == 0,
+        "arrangement pin must succeed");
+
+    /* Force the registry to need a realloc while the only resident entry is
+     * pinned.  It must refuse the growth rather than move the lease target. */
+    cs->arr_cap = cs->arr_count;
+    uint32_t alternate_key[1] = { 1 };
+    ASSERT(col_session_get_arrangement(sess, "edge", alternate_key, 1)
+        == NULL,
+        "registry growth must be deferred while an entry is pinned");
+    ASSERT(pin.entry->mem_bytes > 0 && pin.entry->pin_count == 1
+        && pin.entry->arr.indexed_rows == 3,
+        "a pinned arrangement must remain valid while growth is deferred");
+
+    col_session_invalidate_arrangements(sess, "edge");
+    ASSERT(pin.entry != NULL && pin.entry->pin_count == 1
+        && pin.entry->rebuild_deferred,
+        "invalidation must be deferred while pinned");
+    ASSERT(arr->indexed_rows == 3,
+        "pinned arrangement must remain readable until release");
+
+    col_arrangement_pin_release(&pin);
+    ASSERT(pin.active == false, "release must deactivate the lease");
+    ASSERT(arr->indexed_rows == 0,
+        "deferred invalidation must take effect on final release");
+
+    arr = col_session_get_arrangement(sess, "edge", key_cols, 1);
+    ASSERT(arr != NULL && arr->indexed_rows == 3,
+        "next access must rebuild the invalidated arrangement");
+
+    free_session(sess, plan, prog);
+    PASS();
+}
+
+/* ================================================================
  * main
  * ================================================================ */
 int
@@ -355,6 +415,7 @@ main(void)
     test_env_var_limit();
     test_tombstone_rebuild();
     test_total_bytes_accounting();
+    test_pinned_invalidation();
 
     printf("\n%d/%d tests passed", pass_count, test_count);
     if (fail_count > 0)

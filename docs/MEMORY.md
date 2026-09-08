@@ -546,3 +546,24 @@ the governor and the standalone fuzz target.
 - `docs/THREADING.md` §5.1 audits every atomic in `mem_ledger.c`.
 - `docs/STRESS_BASELINE.md` §Issue #598 for the rotation canary that
   asserts `current_bytes` is unchanged across `wl_arena_reset()`.
+
+## 10. Primary arrangement leases (#1384)
+
+Primary hash arrangements are session-owned cache entries. A join that probes
+one through `col_session_pin_arrangement()` holds a non-public lease until the
+probe has finished; the lease protects both the hash-table buffers and the
+embedded entry identity from cache eviction. The flat entry registry is never
+grown while a lease is active, so a caller that needs a new slot falls back to
+an ephemeral arrangement. `col_arrangement_pin_release()` must be called
+exactly once, including on allocation and join-error paths.
+
+| Event | Pinned entry | Unpinned entry |
+|---|---|---|
+| LRU eviction | skip and defer reclamation | reclaim normally |
+| relation invalidation | mark rebuild deferred; keep the old index readable | invalidate immediately |
+| final lease release | apply deferred invalidation | no action |
+
+This is an internal coordinator/worker-session contract, not a public API or a
+general concurrent-reader mechanism. Filtered, differential, sorted and
+materialization-cache lifetimes, plus relation-generation validation, remain
+tracked separately in issue #1435.

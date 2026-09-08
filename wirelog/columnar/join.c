@@ -1209,6 +1209,7 @@ wl_columnar_join_op(const wl_plan_op_t *op, eval_stack_t *stack,
          * fall back to an ephemeral hash table for delta substitution or when
          * the arrangement cannot be allocated. */
         col_arrangement_t *arr = NULL;
+        col_arrangement_pin_t arr_pin = { 0 };
         uint32_t nbuckets_ep = 0;
         uint32_t *ht_head_ep = NULL;
         uint32_t *ht_next_ep = NULL;
@@ -1219,8 +1220,9 @@ wl_columnar_join_op(const wl_plan_op_t *op, eval_stack_t *stack,
 
         if (!used_right_delta && op->right_relation && kc > 0) {
             if (op->right_filter_expr.size == 0) {
-                arr = col_session_get_arrangement(&sess->base,
-                        op->right_relation, rk, kc);
+                if (col_session_pin_arrangement(&sess->base,
+                    op->right_relation, rk, kc, &arr_pin) == 0)
+                    arr = arr_pin.arr;
             } else {
                 /* Issue #433: filtered right arrangement cache.
                  * `right` is the cached filtered relation from filt_cache;
@@ -1297,6 +1299,7 @@ wl_columnar_join_op(const wl_plan_op_t *op, eval_stack_t *stack,
             key_row = (int64_t *)malloc(
                 sizeof(int64_t) * (right->ncols > 0 ? right->ncols : 1));
             if (!key_row) {
+                col_arrangement_pin_release(&arr_pin);
                 free(ht_head_ep);
                 free(ht_next_ep);
                 free(tmp);
@@ -1405,9 +1408,11 @@ wl_columnar_join_op(const wl_plan_op_t *op, eval_stack_t *stack,
                 col_rel_destroy(right_filtered);
             if (left_e.owned)
                 col_rel_destroy(left);
+            col_arrangement_pin_release(&arr_pin);
             return join_rc;
         }
         WL_LOG(WL_LOG_SEC_JOIN, WL_LOG_DEBUG, "Merge-join succeeded");
+        col_arrangement_pin_release(&arr_pin);
     }
 
     free(tmp);
