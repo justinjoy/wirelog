@@ -379,19 +379,33 @@ test_reservation_and_stack_ownership(void)
         "drain destroys an unpopped continuation exactly once");
     CHECK(stack.top == 0, "complete relation stack still drains its owner");
 
-    /* Relation-only consumers must retain the historical NULL/no-result
-     * value, while a continuation at the same boundary is rejected and
-     * destroyed. */
+    /* Raw top-level collection preserves the historical NULL/no-result
+     * value, while relation-only boundaries reject that value with EINVAL. */
     eval_stack_init(&stack);
     CHECK(eval_stack_push(&stack, NULL, false) == 0,
         "legacy NULL no-result can be pushed");
     {
         eval_entry_t no_result;
-        CHECK(eval_stack_pop_relation(&stack, &no_result) == 0,
-            "legacy NULL no-result remains successful");
+        no_result = eval_stack_pop(&stack);
         CHECK(no_result.rel == NULL
             && no_result.kind == WL_COLUMNAR_EVAL_ENTRY_RELATION,
-            "legacy NULL no-result is preserved");
+            "raw top-level pop preserves legacy NULL no-result");
+    }
+    CHECK(eval_stack_push(&stack, NULL, false) == 0,
+        "relation-only NULL operand can be pushed");
+    {
+        eval_entry_t rejected;
+        CHECK(eval_stack_pop_relation(&stack, &rejected) == EINVAL,
+            "relation-only boundary rejects NULL with historical EINVAL");
+        CHECK(rejected.rel == NULL && stack.top == 0,
+            "relation-only NULL rejection consumes the entry safely");
+    }
+    CHECK(eval_stack_push(&stack, NULL, false) == 0,
+        "MAP NULL operand can be pushed");
+    {
+        wl_plan_op_t op = { 0 };
+        CHECK(col_op_map(&op, &stack, NULL) == EINVAL,
+            "MAP retains its historical NULL operand rejection");
     }
 
     /* CONCAT pops the right relation before the left operand.  Make the

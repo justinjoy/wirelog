@@ -232,8 +232,10 @@ nonrec_rule_worker_fn(void *arg)
         return;
     }
     if (stack.top > 0) {
-        ctx->rc = eval_stack_pop_relation(&stack, &ctx->result);
-        if (ctx->rc != 0) {
+        ctx->result = eval_stack_pop(&stack);
+        if (ctx->result.kind != WL_COLUMNAR_EVAL_ENTRY_RELATION) {
+            eval_entry_dispose(&ctx->result);
+            ctx->rc = ENOTSUP;
             eval_stack_drain(&stack);
             return;
         }
@@ -1227,11 +1229,11 @@ tdd_worker_subpass_fn(void *arg)
         if (stack.top == 0)
             continue;
 
-        eval_entry_t result;
-        int pop_rc = eval_stack_pop_relation(&stack, &result);
-        if (pop_rc != 0) {
+        eval_entry_t result = eval_stack_pop(&stack);
+        if (result.kind != WL_COLUMNAR_EVAL_ENTRY_RELATION) {
+            eval_entry_dispose(&result);
             eval_stack_drain(&stack);
-            ctx->rc = pop_rc;
+            ctx->rc = ENOTSUP;
             free(snap);
             sess->tdd_subpass_active = saved_tdd_subpass;
             sess->tdd_outbound_only_active = saved_outbound_only;

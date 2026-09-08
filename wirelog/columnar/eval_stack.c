@@ -108,8 +108,13 @@ eval_stack_pop_relation(eval_stack_t *s, eval_entry_t *out)
         eval_entry_dispose(&e);
         return EINVAL;
     }
-    /* A NULL relation is the legacy no-result stack value.  Preserve it and
-     * let the caller apply its existing no-result behavior. */
+    /* Relation-only operators historically reject a NULL relation.  Keep
+     * that boundary distinct from raw eval_stack_pop(), which is used by
+     * top-level result collection to preserve the no-result value. */
+    if (!e.rel) {
+        eval_entry_dispose(&e);
+        return EINVAL;
+    }
     *out = e;
     return 0;
 }
