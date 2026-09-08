@@ -171,6 +171,25 @@ fixtures agree on:
 Resolver-provider, reservation-lifecycle, public-error, and allocation-site
 tests belong to #1368/#1369 and must be added there with their unimplemented
 symbols; this document does not claim those behaviors already exist.
+
+## Foundation implementation status
+
+The internal wirelog/columnar/memory_governor.{h,c} foundation implements
+the resolver and tokenized reservation primitive for #1368. Explicit
+WIRELOG_MEMORY_BUDGET values are strict decimal bytes: empty, signed,
+negative, non-decimal, overflowing, zero, and values below 256 MiB are
+invalid. When the variable is unset, injected or runtime providers reduce
+finite cgroup v1/v2 and RLIMIT_AS limits to the effective minimum; Windows
+job limits have the same provider boundary. If no finite supported source is
+available, resolution is advisory and unbounded.
+
+An enforcing resolution reserves 5% cleanup headroom, capped at 256 MiB and
+never above half the budget. Ordinary reservations can consume only the
+remaining usable limit. Reservation tokens move through reserved, committed,
+and released states; rollback is valid only from reserved, and release
+returns capacity exactly once. This foundation is not yet wired into session
+creation or allocation sites: session lifetime/public error integration is
+#1413 and allocation-site enforcement is #1369.
 # wirelog Memory Instrumentation
 
 This document describes what the columnar engine measures about its own
@@ -347,11 +366,13 @@ The instrumentation adds one pointer to `col_arrangement_t`,
 
 ## 6. Budget: `WIRELOG_MEMORY_BUDGET`
 
-`WIRELOG_MEMORY_BUDGET=<bytes>` sets the ledger budget; when unset or `0`,
-the budget is 75% of physical RAM (`col_detect_physical_memory()`), or
-unlimited (`0`) when RAM cannot be detected.  With `W > 1` the coordinator
-keeps the full budget and each active worker gets
-`budget / (W + 1)` scaled to the active width (`tdd_budget_per_party`).
+`WIRELOG_MEMORY_BUDGET=<bytes>` is the explicit managed-memory budget. An
+unset value resolves the effective minimum of supported cgroup, address-space,
+and host Job Object limits; when no finite source exists, the resolver is
+advisory/unbounded. Explicit `0`, malformed values, overflow, and values below
+256 MiB are invalid. This resolver does not use physical RAM as an enforcing
+fallback. The current ledger's legacy worker-share hint remains separate until
+the governor is wired into session lifetime and allocation sites.
 
 The only consumer is the join operator: when RELATION reaches 80% of its
 share (`wl_mem_ledger_should_backpressure(RELATION, 80)`), a worker session

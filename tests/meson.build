@@ -1308,6 +1308,15 @@ test_mem_ledger_exe = executable(
 )
 test('mem_ledger_contract', test_mem_ledger_exe, suite: 'unit')
 
+test_memory_governor_exe = executable(
+  'test_memory_governor',
+  files('test_memory_governor.c', '../wirelog/columnar/memory_governor.c')
+    + thread_src,
+  include_directories: [wirelog_inc, wirelog_src_inc],
+  dependencies: [threads_dep],
+)
+test('memory_governor', test_memory_governor_exe, suite: 'unit')
+
 # ============================================================================
 # Plan Generator + Session Facts Tests (Phase 2C columnar backend)
 # ============================================================================

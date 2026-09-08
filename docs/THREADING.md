@@ -228,7 +228,7 @@ These exist so struct fields can be declared portably; the audit in
 
 Every `atomic_*` call site in `wirelog/` production sources. Counted
 mechanically by `scripts/ci/check-threading-doc.sh`; row count must
-match the script's count (currently **52**).
+match the script's count (currently **73**).
 
 Format: `file:function[#N]` | field | operation | order | justification.
 
@@ -337,7 +337,38 @@ and the wasted work is bounded.
 |---|---|---|---|---|
 | `session.c:col_worker_session_create` | per-worker view of `ledger->total_budget` | `atomic_load_explicit` | `relaxed` | Worker session reads coordinator's budget snapshot; advisory, no edge required |
 
-### 5.8 `wirelog/intern.c` — shared symbol table (3 rows)
+### 5.8 `wirelog/columnar/memory_governor.c` — reservation state (21 rows)
+
+The governor uses one atomic counter for the shared reservation limit and
+token state transitions. The CAS admission loop is overflow-safe and a token
+reaches released exactly once; owner identity is stored as an atomic pointer
+representation so transfer cannot race a release with a data race.
+
+| Anchor (file:function[#N]) | Field | Op | Order | Justification |
+|---|---|---|---|---|
+| `memory_governor.c:wl_columnar_memory_governor_init` | `usable_bytes` | `atomic_store_explicit` | `relaxed` | Set-once before the governor is published |
+| `memory_governor.c:wl_columnar_memory_governor_init#2` | `reserved_bytes` | `atomic_store_explicit` | `relaxed` | Set-once before reservations are possible |
+| `memory_governor.c:wl_columnar_memory_reservation_init` | `reservation->state` | `atomic_store_explicit` | `relaxed` | Publish the empty state before a caller can reserve or reuse the token |
+| `memory_governor.c:wl_columnar_memory_reserve` | `reservation->state` | `atomic_store_explicit` | `release` | Claim failure cleanup for an unadmitted token |
+| `memory_governor.c:wl_columnar_memory_reserve#2` | `reserved_bytes` | `atomic_load_explicit` | `relaxed` | Read current shared admission total for the CAS loop |
+| `memory_governor.c:wl_columnar_memory_reserve#3` | `usable_bytes` | `atomic_load_explicit` | `relaxed` | Read the immutable ordinary-admission limit |
+| `memory_governor.c:wl_columnar_memory_reserve#4` | `reservation->state` | `atomic_store_explicit` | `release` | Abandon a token that exceeded the usable limit |
+| `memory_governor.c:wl_columnar_memory_reserve#5` | `reservation->state` | `atomic_store_explicit` | `release` | Abandon a token that exceeded the usable limit |
+| `memory_governor.c:wl_columnar_memory_reserve#6` | `reserved_bytes` | `atomic_compare_exchange_weak_explicit` | `relaxed`/`relaxed` | Atomically admit without exceeding the shared limit |
+| `memory_governor.c:wl_columnar_memory_reserve#7` | `reservation->state` | `atomic_store_explicit` | `release` | Publish the fully initialized reserved token |
+| `memory_governor.c:transition_reservation` | `reservation->state` | `atomic_compare_exchange_weak_explicit` | `release`/`acquire` | Retry spurious weak-CAS failures while enforcing a legal state transition |
+| `memory_governor.c:claim_reservation_state` | `reservation->state` | `atomic_compare_exchange_weak_explicit` | `release`/`acquire` | Claim a token or transfer state without relying on an MSVC-only strong-CAS shim |
+| `memory_governor.c:wl_columnar_memory_commit` | `reservation->owner_bits` | `atomic_store_explicit` | `release` | Publish committed ownership before the commit state |
+| `memory_governor.c:wl_columnar_memory_commit#2` | `reservation->state` | `atomic_store_explicit` | `release` | Publish the committed state after owner initialization |
+| `memory_governor.c:wl_columnar_memory_transfer` | `reservation->state` | `atomic_load_explicit` | `acquire` | Read the active state before claiming transfer |
+| `memory_governor.c:wl_columnar_memory_transfer#2` | `reservation->owner_bits` | `atomic_store_explicit` | `release` | Publish the new logical owner |
+| `memory_governor.c:wl_columnar_memory_transfer#3` | `reservation->state` | `atomic_store_explicit` | `release` | Restore the active state after owner transfer |
+| `memory_governor.c:finish_reservation` | `reservation->state` | `atomic_load_explicit` | `acquire` | Wait for an in-flight commit or transfer to publish a stable state |
+| `memory_governor.c:finish_reservation#2` | `reserved_bytes` | `atomic_load_explicit` | `relaxed` | Read current total before returning token capacity |
+| `memory_governor.c:finish_reservation#3` | `reserved_bytes` | `atomic_compare_exchange_weak_explicit` | `release`/`relaxed` | Return exactly this token's bytes without underflow |
+| `memory_governor.c:wl_columnar_memory_reserved` | `reserved_bytes` | `atomic_load_explicit` | `acquire` | Read a coherent observable reservation total |
+
+### 5.9 `wirelog/intern.c` — shared symbol table (3 rows)
 
 The intern table is shared, unsynchronized, by every parallel worker
 (Issue #958). Writers (`wl_intern_put`, `wl_intern_get`) serialize on
@@ -355,7 +386,7 @@ named in the justification.
 
 ### 5.9 Total
 
-21 + 4 + 2 + 19 + 1 + 1 + 1 + 3 = **52 atomic call sites**.
+21 + 4 + 2 + 19 + 1 + 1 + 1 + 3 + 21 = **73 atomic call sites**.
 
 The `#N` suffix counts all atomic sites in a symbol, regardless of operation;
 the first site remains unsuffixed. `scripts/ci/check-threading-doc.sh` uses
