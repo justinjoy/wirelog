@@ -168,9 +168,9 @@ fixtures agree on:
 - deterministic subsystem percentages summing to 100;
 - the boundary between accounting evidence and future admission evidence.
 
-Resolver-provider, reservation-lifecycle, public-error, and allocation-site
-tests belong to #1368/#1369 and must be added there with their unimplemented
-symbols; this document does not claim those behaviors already exist.
+Resolver-provider, reservation-lifecycle, and session-lifecycle tests now cover
+the #1368/#1413 foundation. Allocation-site admission tests belong to #1369;
+the current ledger still does not claim to enforce individual allocations.
 
 ## Foundation implementation status
 
@@ -190,6 +190,18 @@ and released states; rollback is valid only from reserved, and release
 returns capacity exactly once. This foundation is not yet wired into session
 creation or allocation sites: session lifetime/public error integration is
 #1413 and allocation-site enforcement is #1369.
+
+The #1413 integration adds a reference-counted coordinator-owned governor to
+columnar sessions before relation, pool, arena, cache, or worker setup. Worker
+sessions retain the same governor reference and release it during every
+normal or partial teardown path. Their ledgers remain attribution-only; while
+the legacy join backpressure path still reads ledger thresholds, each worker
+gets an equal reporting share so the aggregate threshold does not multiply by
+the worker count. The removed `tdd_budget_per_party` value is no longer a
+second governor admission domain.
+Explicit invalid budgets fail session creation with the existing public
+execution error mapping and leave output handles null. Allocation-site
+admission remains the separate responsibility of #1369.
 # wirelog Memory Instrumentation
 
 This document describes what the columnar engine measures about its own

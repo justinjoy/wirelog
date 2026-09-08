@@ -231,6 +231,14 @@ test_create_destroy(void)
     }
     free(parts);
 
+    if (!coord->memory_governor
+        || worker.memory_governor != coord->memory_governor) {
+        col_worker_session_destroy(&worker);
+        cleanup_coordinator(coord, plan, prog);
+        FAIL("worker did not retain the coordinator governor");
+        return 1;
+    }
+
     col_worker_session_destroy(&worker);
     cleanup_coordinator(coord, plan, prog);
     PASS();
@@ -825,7 +833,6 @@ test_join_output_limit_scaling(void)
     coord_active->num_workers = 4;
     coord_active->tdd_active_workers = 2;
     coord_active->join_output_limit = 8000;
-    coord_active->tdd_budget_per_party = 1800;
     atomic_store_explicit(&coord_active->mem_ledger.total_budget, 9000,
         memory_order_relaxed);
 
@@ -845,7 +852,7 @@ test_join_output_limit_scaling(void)
             ok = 0;
         uint64_t worker_budget = atomic_load_explicit(
             &active_workers[w].mem_ledger.total_budget, memory_order_relaxed);
-        if (worker_budget != 3000)
+        if (worker_budget != 4500)
             ok = 0;
     }
     free(parts_active);

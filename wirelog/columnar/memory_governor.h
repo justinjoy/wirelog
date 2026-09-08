@@ -74,6 +74,26 @@ typedef struct {
     wl_columnar_memory_source_t source;
 } wl_columnar_memory_governor_t;
 
+typedef struct wl_columnar_memory_governor_ref
+    wl_columnar_memory_governor_ref_t;
+
+/* A coordinator-owned lifetime wrapper shared by coordinator and workers. */
+wl_columnar_memory_governor_ref_t *
+wl_columnar_memory_governor_ref_create(
+    const wl_columnar_memory_resolution_t *resolution);
+
+void
+wl_columnar_memory_governor_ref_retain(
+    wl_columnar_memory_governor_ref_t *ref);
+
+void
+wl_columnar_memory_governor_ref_release(
+    wl_columnar_memory_governor_ref_t *ref);
+
+wl_columnar_memory_governor_t *
+wl_columnar_memory_governor_ref_get(
+    wl_columnar_memory_governor_ref_t *ref);
+
 typedef enum {
     WL_COLUMNAR_MEMORY_RESERVATION_EMPTY = 0,
     WL_COLUMNAR_MEMORY_RESERVATION_RESERVED = 1,

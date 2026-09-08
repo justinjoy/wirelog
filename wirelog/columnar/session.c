@@ -1021,13 +1021,27 @@ static int
 col_session_create(const wl_plan_t *plan, uint32_t num_workers,
     wl_session_t **out)
 {
+    wl_columnar_memory_resolution_t memory_resolution;
+    wl_columnar_memory_governor_ref_t *memory_governor;
+    const char *memory_budget = getenv("WIRELOG_MEMORY_BUDGET");
+
     if (!plan || !out)
         return EINVAL;
+    if (wl_columnar_memory_resolve(memory_budget, NULL, &memory_resolution)
+        != WL_COLUMNAR_MEMORY_OK)
+        return EINVAL;
+    memory_governor = wl_columnar_memory_governor_ref_create(
+        &memory_resolution);
+    if (!memory_governor)
+        return ENOMEM;
 
     wl_col_session_t *sess
         = (wl_col_session_t *)calloc(1, sizeof(wl_col_session_t));
-    if (!sess)
+    if (!sess) {
+        wl_columnar_memory_governor_ref_release(memory_governor);
         return ENOMEM;
+    }
+    sess->memory_governor = memory_governor;
 
     sess->frontier_ops = &col_frontier_epoch_ops;
 
@@ -1068,6 +1082,8 @@ col_session_create(const wl_plan_t *plan, uint32_t num_workers,
         if (chosen->init) {
             int rc = chosen->init(sess);
             if (rc != 0) {
+                wl_columnar_memory_governor_ref_release(
+                    sess->memory_governor);
                 free(sess);
                 return ENOMEM;
             }
@@ -1140,6 +1156,8 @@ col_session_create(const wl_plan_t *plan, uint32_t num_workers,
                     "(set WIRELOG_MAX_WORKERS to override, max %u)\n",
                     sess->num_workers, effective_cap,
                     WL_MAX_WORKERS_HARD_LIMIT);
+                wl_columnar_memory_governor_ref_release(
+                    sess->memory_governor);
                 free(sess);
                 return EINVAL;
             }
@@ -1205,6 +1223,7 @@ col_session_create(const wl_plan_t *plan, uint32_t num_workers,
     sess->pending_input_change = true;
     sess->rels = (col_rel_t **)calloc(sess->rel_cap, sizeof(col_rel_t *));
     if (!sess->rels) {
+        wl_columnar_memory_governor_ref_release(sess->memory_governor);
         free(sess);
         return ENOMEM;
     }
@@ -1230,40 +1249,11 @@ col_session_create(const wl_plan_t *plan, uint32_t num_workers,
     sess->eval_arena = wl_arena_create(64UL * 1024 * 1024);
     /* Non-fatal if NULL: col_rel_pool_new_auto falls back to malloc */
 
-    /* Issue #224: Initialize memory accounting ledger.
-     * Budget: 75% of physical RAM, or from WIRELOG_MEMORY_BUDGET env var.
-     * 0 = unlimited (when physical memory detection fails). */
-    {
-        uint64_t budget = 0;
-        const char *budget_env = getenv("WIRELOG_MEMORY_BUDGET");
-        if (budget_env && budget_env[0] != '\0') {
-            char *endp = NULL;
-            errno = 0;
-            uint64_t val = strtoull(budget_env, &endp, 10);
-            if (endp != budget_env && *endp == '\0' && errno != ERANGE)
-                budget = val;
-        }
-        if (budget == 0) {
-            uint64_t phys = col_detect_physical_memory();
-            if (phys > 0) {
-                uint64_t total = (phys / 4ULL) * 3ULL; /* 75% of RAM */
-                uint32_t nw = sess->num_workers;
-                if (nw > 1) {
-                    /* Issue #416 (lazy budget partitioning): coordinator
-                     * keeps the full budget so single-threaded strata
-                     * (use_tdd=false) are not penalised by an artificially
-                     * low backpressure threshold. Worker sessions receive a
-                     * per-party budget when they are actually used. */
-                    sess->tdd_budget_per_party
-                        = total / (uint64_t)(nw + 1);
-                    budget = total;
-                } else {
-                    budget = total;
-                }
-            }
-        }
-        wl_mem_ledger_init(&sess->mem_ledger, budget);
-    }
+    /* The ledger remains attribution-only. The shared governor owns admission
+     * policy; workers must not receive divided ledger budgets. */
+    wl_mem_ledger_init(&sess->mem_ledger,
+        memory_resolution.mode == WL_COLUMNAR_MEMORY_MODE_ENFORCING
+            ? memory_resolution.budget_bytes : 0);
 
     /* Issue #1380: memory instrumentation wiring.  The delta pool and eval
      * arena above were created before the ledger existed, so charge their
@@ -1483,6 +1473,7 @@ oom:
     wl_workqueue_destroy(sess->wq);       /* NULL-safe */
     delta_pool_destroy(sess->delta_pool); /* NULL-safe */
     wl_compound_arena_free(sess->compound_arena); /* NULL-safe (Issue #559) */
+    wl_columnar_memory_governor_ref_release(sess->memory_governor);
     free(sess);
     return ENOMEM;
 }
@@ -1640,6 +1631,7 @@ col_session_destroy(wl_session_t *session)
             ? (unsigned long long)sess->compound_arena->live_handles
             : 0ULL);
     wl_compound_arena_free(sess->compound_arena);
+    wl_columnar_memory_governor_ref_release(sess->memory_governor);
     free(sess);
 }
 
@@ -1667,6 +1659,8 @@ col_worker_session_create(wl_col_session_t *coordinator,
     /* Step 2: Set identity fields */
     out_worker->worker_id = worker_id;
     out_worker->coordinator = coordinator;
+    out_worker->memory_governor = coordinator->memory_governor;
+    wl_columnar_memory_governor_ref_retain(out_worker->memory_governor);
     out_worker->extension_expr_status = 0;
     out_worker->callback_session_key = coordinator->callback_session_key;
     out_worker->delta_events = NULL;
@@ -1736,29 +1730,17 @@ col_worker_session_create(wl_col_session_t *coordinator,
     out_worker->last_inserted_relation = NULL;
     out_worker->last_removed_relation = NULL;
 
-    /* Step 5: Initialize independent mem_ledger (avoid copying atomics).
-     * Workers receive a per-party budget, but the coordinator keeps its
-     * original budget. W is an upper bound on active workers, and shrinking the
-     * coordinator permanently causes later sequential strata to trip
-     * backpressure under a stale worker-sized budget. */
+    /* Step 5: Initialize an attribution-only worker ledger. The governor is
+     * shared; only the legacy ledger threshold uses an equal reporting share
+     * so its aggregate backpressure does not multiply by worker count. */
     uint32_t active_workers = coordinator->tdd_active_workers > 0
         ? coordinator->tdd_active_workers : coordinator->num_workers;
     if (active_workers == 0)
         active_workers = 1;
-    uint64_t worker_budget;
-    if (coordinator->tdd_budget_per_party > 0) {
-        uint64_t max_workers = coordinator->num_workers > 0
-            ? coordinator->num_workers : active_workers;
-        uint64_t active_party_budget = (coordinator->tdd_budget_per_party
-            * (max_workers + 1)) / (uint64_t)(active_workers + 1);
-        if (active_party_budget == 0)
-            active_party_budget = coordinator->tdd_budget_per_party;
-        worker_budget = active_party_budget;
-    } else {
-        worker_budget = atomic_load_explicit(
-            &coordinator->mem_ledger.total_budget, memory_order_relaxed)
-            / active_workers;
-    }
+    uint64_t worker_budget = atomic_load_explicit(
+        &coordinator->mem_ledger.total_budget, memory_order_relaxed);
+    if (worker_budget > 0 && active_workers > 1)
+        worker_budget /= active_workers;
     wl_mem_ledger_init(&out_worker->mem_ledger, worker_budget);
     /* Issue #1380: the bitwise copy carried the coordinator's cache ledger
      * link and aggregate counters; workers account against their own
@@ -1937,6 +1919,8 @@ col_worker_session_destroy(wl_col_session_t *worker)
             col_rel_destroy(worker->filt_cache[i].filtered);
     }
     free(worker->filt_cache);
+
+    wl_columnar_memory_governor_ref_release(worker->memory_governor);
 
     /* Zero the struct to prevent dangling pointer use */
     memset(worker, 0, sizeof(*worker));
