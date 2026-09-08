@@ -31,7 +31,8 @@ wirelog_optimizer_src = files('passes/fusion.c', 'passes/jpp.c', 'passes/sip.c',
 #Arena Allocator Module
 #== == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == ==
 
-wirelog_arena_src = files('arena/arena.c', 'arena/compound_arena.c', )
+wirelog_arena_src = files('arena/arena.c', 'arena/arena_admission.c',
+                          'arena/compound_arena.c', )
 
 #== == == == == == == == == == == == == == == == == == == == == == == == == == == == == == == ==
 #Thread Backend Module(Issue #88 - Cross-Platform Threading)

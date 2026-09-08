@@ -187,21 +187,29 @@ An enforcing resolution reserves 5% cleanup headroom, capped at 256 MiB and
 never above half the budget. Ordinary reservations can consume only the
 remaining usable limit. Reservation tokens move through reserved, committed,
 and released states; rollback is valid only from reserved, and release
-returns capacity exactly once. This foundation is not yet wired into session
-creation or allocation sites: session lifetime/public error integration is
-#1413 and allocation-site enforcement is #1369.
+returns capacity exactly once. This foundation is wired into session creation
+and fixed eval-arena backing storage; session lifetime/public error integration
+is #1413. Other allocation-site enforcement remains split between #1369,
+#1417, and #1418.
 
 The #1413 integration adds a reference-counted coordinator-owned governor to
 columnar sessions before relation, pool, arena, cache, or worker setup. Worker
 sessions retain the same governor reference and release it during every
-normal or partial teardown path. Their ledgers remain attribution-only; while
-the legacy join backpressure path still reads ledger thresholds, each worker
-gets an equal reporting share so the aggregate threshold does not multiply by
-the worker count. The removed `tdd_budget_per_party` value is no longer a
-second governor admission domain.
+normal or partial teardown path. The fixed eval arenas now use
+`wl_arena_create_managed()`: their complete backing capacity is admitted before
+`malloc`, retained across reset, and released exactly once at destruction.
+Coordinator, ordinary worker, and K-fusion branch eval arenas all use the same
+shared governor; legacy standalone `wl_arena_create()` callers remain
+unmanaged. Their ledgers remain attribution-only; while the legacy join
+backpressure path still reads ledger thresholds, each worker gets an equal
+reporting share so the aggregate threshold does not multiply by the worker
+count. The removed `tdd_budget_per_party` value is no longer a second governor
+admission domain.
 Explicit invalid budgets fail session creation with the existing public
-execution error mapping and leave output handles null. Allocation-site
-admission remains the separate responsibility of #1369.
+execution error mapping and leave output handles null. Delta-pool and
+compound-arena admission remain the separate follow-up units in #1417;
+parser/plan/result allocations remain tracked by #1418. The parent #1369
+contract is therefore only partially implemented until those units land.
 # wirelog Memory Instrumentation
 
 This document describes what the columnar engine measures about its own
@@ -255,7 +263,7 @@ every stratum that ran under TDD.
 | Subsystem | Style | What is counted | Where |
 |---|---|---|---|
 | `RELATION` | event | Column buffers of operator output relations whose `col_rel_t.mem_ledger` is attached; today that is every join output (`col_join_attach_ledger`). Capacity-based (`capacity × owned columns × 8`). | `relation.c` growth, compaction and free paths |
-| `ARENA` | event | Fixed capacity of the session's delta pool (slot slab + data arena) and eval arena. Charged at creation, credited at destruction. `delta_pool_reset()`/`wl_arena_reset()` do not change it: the buffers are retained. K-fusion branch sessions charge their per-branch pool/arena to the parent. | `session.c`, `kfusion.c` |
+| `ARENA` | event | Fixed capacity of the session's delta pool (slot slab + data arena) and eval arena. The eval arena's fixed backing capacity is admitted by the shared governor before allocation and released at destruction; the ledger remains attribution-only. `delta_pool_reset()`/`wl_arena_reset()` do not change it: the buffers are retained. K-fusion branch sessions charge their per-branch pool/arena to the parent. | `session.c`, `kfusion.c`, `arena.c` |
 | `CACHE` | event | Materialization-cache entries. On insert the cached result is re-parented: its RELATION (and TIMESTAMP) charge is credited and the same bytes are charged to CACHE, so a cached join is counted once. Credited on eviction, truncation and clear. | `cache.c` |
 | `ARRANGEMENT` | event | Hash arrangements (`ht_head` + `ht_next`), delta and filtered arrangements, sorted copies for LFTJ (`nrows × ncols × 8`, a full duplicate of the relation) and differential arrangements (struct + keys + buckets + chain). Worker clones are charged to the worker ledger. | `arrangement.c`, `diff_arrangement.c` |
 | `TIMESTAMP` | event | `timestamps[]` arrays (24 bytes per row of capacity) of ledger-attached relations. Reconciled together with RELATION. | `relation.c` |
@@ -383,8 +391,10 @@ unset value resolves the effective minimum of supported cgroup, address-space,
 and host Job Object limits; when no finite source exists, the resolver is
 advisory/unbounded. Explicit `0`, malformed values, overflow, and values below
 256 MiB are invalid. This resolver does not use physical RAM as an enforcing
-fallback. The current ledger's legacy worker-share hint remains separate until
-the governor is wired into session lifetime and allocation sites.
+fallback. The legacy ledger worker-share hint remains separate from governor
+admission; fixed eval-arena backing storage is now admitted, while the
+delta-pool, compound, join, and other allocation classes remain follow-up
+work.
 
 The only consumer is the join operator: when RELATION reaches 80% of its
 share (`wl_mem_ledger_should_backpressure(RELATION, 80)`), a worker session

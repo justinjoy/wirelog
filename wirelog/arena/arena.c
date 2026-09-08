@@ -20,8 +20,9 @@
 #define WL_ARENA_ALIGN_UP(n) \
         (((n) + (WL_ARENA_ALIGN - 1)) & ~(size_t)(WL_ARENA_ALIGN - 1))
 
-wl_arena_t *
-wl_arena_create(size_t capacity)
+static wl_arena_t *
+wl_arena_create_impl(size_t capacity, void *admission_context,
+    void (*admission_release)(void *context))
 {
     if (capacity == 0)
         return NULL;
@@ -30,6 +31,7 @@ wl_arena_create(size_t capacity)
     if (!arena)
         return NULL;
 
+    memset(arena, 0, sizeof(*arena));
     arena->base = malloc(capacity);
     if (!arena->base) {
         free(arena);
@@ -38,7 +40,22 @@ wl_arena_create(size_t capacity)
 
     arena->capacity = capacity;
     arena->used = 0;
+    arena->admission_context = admission_context;
+    arena->admission_release = admission_release;
     return arena;
+}
+
+wl_arena_t *
+wl_arena_create(size_t capacity)
+{
+    return wl_arena_create_impl(capacity, NULL, NULL);
+}
+
+wl_arena_t *
+wl_arena_create_with_admission(size_t capacity, void *context,
+    void (*admission_release)(void *context))
+{
+    return wl_arena_create_impl(capacity, context, admission_release);
 }
 
 void *
@@ -80,6 +97,8 @@ wl_arena_free(wl_arena_t *arena)
             "free() with %zu bytes still allocated",
             arena->used);
     }
+    if (arena->admission_release)
+        arena->admission_release(arena->admission_context);
     free(arena->base);
     free(arena);
 }

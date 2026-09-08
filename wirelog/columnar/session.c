@@ -1246,7 +1246,8 @@ col_session_create(const wl_plan_t *plan, uint32_t num_workers,
      * (COL_REL_INIT_CAP * ncols * sizeof(int64_t) per operator).
      * Reset at each iteration boundary alongside delta_pool_reset.
      * NULL arena is handled gracefully: operators fall back to malloc. */
-    sess->eval_arena = wl_arena_create(64UL * 1024 * 1024);
+    sess->eval_arena = wl_arena_create_managed(64UL * 1024 * 1024,
+            wl_columnar_memory_governor_ref_get(sess->memory_governor));
     /* Non-fatal if NULL: col_rel_pool_new_auto falls back to malloc */
 
     /* The ledger remains attribution-only. The shared governor owns admission
@@ -1472,6 +1473,7 @@ oom:
     free((void *)sess->rels);
     wl_workqueue_destroy(sess->wq);       /* NULL-safe */
     delta_pool_destroy(sess->delta_pool); /* NULL-safe */
+    wl_arena_free(sess->eval_arena);      /* NULL-safe; releases admission */
     wl_compound_arena_free(sess->compound_arena); /* NULL-safe (Issue #559) */
     wl_columnar_memory_governor_ref_release(sess->memory_governor);
     free(sess);
@@ -1784,7 +1786,9 @@ col_worker_session_create(wl_col_session_t *coordinator,
             : 8UL * 1024 * 1024;
         if (arena_cap < 8UL * 1024 * 1024)
             arena_cap = 8UL * 1024 * 1024;
-        out_worker->eval_arena = wl_arena_create(arena_cap);
+        out_worker->eval_arena = wl_arena_create_managed(arena_cap,
+                wl_columnar_memory_governor_ref_get(
+                    out_worker->memory_governor));
         /* Non-fatal if NULL: operators fall back to malloc */
     }
 

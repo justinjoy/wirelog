@@ -762,7 +762,8 @@ col_op_k_fusion_dispatch(const wl_plan_op_t *op, eval_stack_t *stack,
             size_t worker_cap = parent_cap / live_count;
             if (worker_cap < 8 * 1024 * 1024)
                 worker_cap = 8 * 1024 * 1024; /* 8MB minimum */
-            worker_sess[d].eval_arena = wl_arena_create(worker_cap);
+            worker_sess[d].eval_arena = wl_arena_create_managed(worker_cap,
+                    wl_columnar_memory_governor_ref_get(sess->memory_governor));
             /* NULL arena is handled gracefully: operators check before use */
             /* Issue #1380: branch sessions are struct copies whose embedded
              * ledger is discarded at teardown, so charge the parent. */
