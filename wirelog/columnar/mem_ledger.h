@@ -110,6 +110,27 @@ wl_atomic_compare_exchange_weak_internal(volatile __int64 *ptr,
 typedef _Atomic uint64_t wl_atomic_u64;
 #endif
 
+/* Reclaimers are invoked only at an owner-defined quiescent point.  The
+ * registry deliberately has fixed storage: registering or unregistering a
+ * callback must not allocate while the process is under memory pressure. */
+#define WL_MEM_LEDGER_MAX_RECLAIMERS 8u
+
+typedef uint64_t wl_mem_reclaimer_handle_t;
+
+typedef struct {
+    uint64_t bytes_released; /* measured bytes actually returned to allocator */
+    uint32_t candidates;     /* candidates examined by the callback(s) */
+} wl_mem_reclaim_result_t;
+
+typedef wl_mem_reclaim_result_t (*wl_mem_reclaimer_fn)(void *owner);
+
+typedef struct {
+    wl_mem_reclaimer_fn fn;
+    void *owner;
+    wl_mem_reclaimer_handle_t handle;
+    bool active;
+} wl_mem_reclaimer_slot_t;
+
 /* ======================================================================== */
 /* Subsystem IDs                                                            */
 /* ======================================================================== */
@@ -180,6 +201,8 @@ typedef struct wl_mem_ledger {
     wl_atomic_u64 peak_bytes;
     wl_atomic_u64 subsys_bytes[WL_MEM_SUBSYS_COUNT];
     wl_atomic_u64 subsys_peak[WL_MEM_SUBSYS_COUNT];
+    wl_mem_reclaimer_slot_t reclaimers[WL_MEM_LEDGER_MAX_RECLAIMERS];
+    wl_mem_reclaimer_handle_t next_reclaimer_handle;
 } wl_mem_ledger_t;
 
 /*
@@ -238,6 +261,21 @@ wl_mem_ledger_alloc(wl_mem_ledger_t *ledger, int subsys, uint64_t bytes);
  */
 void
 wl_mem_ledger_free(wl_mem_ledger_t *ledger, int subsys, uint64_t bytes);
+
+/* Register/unregister a callback used by a quiescent owner to release
+ * reclaimable capacity.  Unregister before destroying @owner.  A stale
+ * handle cannot unregister a later callback that reused the slot. */
+int
+wl_mem_ledger_register_reclaimer(wl_mem_ledger_t *ledger,
+    wl_mem_reclaimer_fn fn, void *owner, wl_mem_reclaimer_handle_t *out);
+void
+wl_mem_ledger_unregister_reclaimer(wl_mem_ledger_t *ledger,
+    wl_mem_reclaimer_handle_t handle);
+
+/* Invoke currently registered reclaimers.  Callers must provide a quiescent
+ * point for every owner and keep owners alive until this function returns. */
+wl_mem_reclaim_result_t
+wl_mem_ledger_reclaim(wl_mem_ledger_t *ledger);
 
 /*
  * wl_mem_ledger_over_budget:

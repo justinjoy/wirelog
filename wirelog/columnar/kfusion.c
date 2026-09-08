@@ -403,6 +403,7 @@ cleanup:
     /* Trim mat_cache back to pre-dispatch baseline. Entries added by branches
      * are owned by the cache and must be freed the same way the parallel path
      * frees its worker caches. */
+    col_mat_cache_release_pins(&sess->mat_cache);
     col_mat_cache_truncate(&sess->mat_cache, mat_base);
     /* Sweep any pool slots allocated during branch eval (#549 ASAN fix).
      * Slots whose relations were already col_rel_destroy'd upstream are
@@ -589,6 +590,11 @@ col_op_k_fusion_dispatch(const wl_plan_op_t *op, eval_stack_t *stack,
         worker_sess[d].tdd_workers = NULL;
         worker_sess[d].tdd_workers_cap = 0;
         worker_sess[d].tdd_workers_count = 0;
+        /* The shallow session copy must not retain coordinator reclaimer
+         * callbacks after the worker cache is replaced below. */
+        memset(worker_sess[d].mem_ledger.reclaimers, 0,
+            sizeof(worker_sess[d].mem_ledger.reclaimers));
+        worker_sess[d].mem_ledger.next_reclaimer_handle = 0;
         if (worker_sess[d].join_output_limit > 0 && live_count > 1) {
             /* Issue #959: share one budget instead of splitting it. */
             worker_sess[d].join_output_shared_count = &shared_join_count;
@@ -836,6 +842,7 @@ cleanup_wq:
          * worker cache has no ledger (Issue #1380), so this is a plain
          * destroy of every entry. */
         assert(worker_sess[d].mat_cache.active_pins == 0);
+        col_mat_cache_release_pins(&worker_sess[d].mat_cache);
         col_mat_cache_clear(&worker_sess[d].mat_cache);
         assert(worker_sess[d].mat_cache.active_pins == 0);
         /* Issue #216: merge worker lru_clocks back into coordinator so

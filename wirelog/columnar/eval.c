@@ -1588,6 +1588,7 @@ tdd_worker_subpass_fn(void *arg)
     col_session_mem_sample(sess);
 
     /* Reset per-sub-pass allocators and cache (eval_serial.c:701-712) */
+    col_mat_cache_release_pins(&sess->mat_cache);
     delta_pool_reset(sess->delta_pool);
     sess->rotation_ops->rotate_eval_arena(sess);
     if (sess->cache_evict_threshold == 0) {

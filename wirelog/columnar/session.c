@@ -113,6 +113,7 @@ static void
 session_invalidate_relation_caches(wl_col_session_t *sess, const char *name)
 {
     col_session_invalidate_arrangements(&sess->base, name);
+    col_mat_cache_release_pins(&sess->mat_cache);
     assert(sess->mat_cache.active_pins == 0);
     col_mat_cache_clear(&sess->mat_cache);
     assert(sess->mat_cache.active_pins == 0);
@@ -1268,6 +1269,7 @@ col_session_create_internal(const wl_plan_t *plan, uint32_t num_workers,
      * results onto this ledger from here on. */
     sess->mem_report_level = col_session_mem_report_level();
     sess->mat_cache.ledger = &sess->mem_ledger;
+    (void)col_mat_cache_attach_reclaimer(&sess->mat_cache);
     ledger_charge_allocators(sess);
 
     /* Issue #264: Initialize differential path master switch.
@@ -1576,6 +1578,8 @@ col_session_destroy(wl_session_t *session)
     free((void *)sess->rels);
     /* Free relation name hash table (Issue #281) */
     session_rel_free_hash(sess);
+    col_mat_cache_detach_reclaimer(&sess->mat_cache);
+    col_mat_cache_release_pins(&sess->mat_cache);
     assert(sess->mat_cache.active_pins == 0);
     col_mat_cache_clear(&sess->mat_cache);
     assert(sess->mat_cache.active_pins == 0);
@@ -1919,6 +1923,7 @@ col_worker_session_destroy(wl_col_session_t *worker)
     }
 
     /* Free mat_cache entries (all worker-owned since zeroed at create) */
+    col_mat_cache_release_pins(&worker->mat_cache);
     assert(worker->mat_cache.active_pins == 0);
     col_mat_cache_clear(&worker->mat_cache);
     assert(worker->mat_cache.active_pins == 0);
@@ -2412,6 +2417,8 @@ next_del_incr:;
  * @param session: wl_session_t* (cast to wl_col_session_t* internally)
  * @return 0 on success, non-zero on evaluation error
  */
+static void col_session_reclaim_quiescent(wl_col_session_t *sess);
+
 static int
 col_session_step(wl_session_t *session)
 {
@@ -2422,7 +2429,10 @@ col_session_step(wl_session_t *session)
     if (sess->delta_cb && !sess->pending_input_change
         && sess->last_inserted_relation == NULL
         && sess->last_removed_relation == NULL)
+    {
+        col_session_reclaim_quiescent(sess);
         return 0;
+    }
 
     /* Compute affected strata bitmask (Phase 4 incremental skip).
      * A step may carry both an insertion and a removal, and the two
@@ -2517,6 +2527,7 @@ col_session_step(wl_session_t *session)
                 sess->delta_event_transaction = false;
                 wl_columnar_delta_events_clear(sess);
             }
+            col_session_reclaim_quiescent(sess);
             return rc;
         }
     }
@@ -2560,6 +2571,7 @@ col_session_step(wl_session_t *session)
             r->base_nrows = r->nrows;
     }
     sess->snapshot_stable_valid = true;
+    col_session_reclaim_quiescent(sess);
     return 0;
 }
 
@@ -2664,9 +2676,28 @@ col_session_clear_idb_rows(const wl_plan_t *plan, wl_col_session_t *sess)
             col_session_invalidate_arrangements(&sess->base, r->name);
         }
     }
+    col_mat_cache_release_pins(&sess->mat_cache);
     assert(sess->mat_cache.active_pins == 0);
     col_mat_cache_clear(&sess->mat_cache);
     assert(sess->mat_cache.active_pins == 0);
+}
+
+/* Snapshot/step completion is the coordinator's quiescent boundary.  Explicit
+ * pins must already have been released by join.c; only then may the ledger
+ * callback reclaim owned cache entries under memory pressure. */
+static void
+col_session_reclaim_quiescent(wl_col_session_t *sess)
+{
+    if (!sess)
+        return;
+    col_mat_cache_release_pins(&sess->mat_cache);
+    if (!sess->mat_cache.reclaimer_owner_alive)
+        return;
+    if (!wl_mem_ledger_over_budget(&sess->mem_ledger)
+        && !wl_mem_ledger_subsys_over_budget(&sess->mem_ledger,
+            WL_MEM_SUBSYS_CACHE))
+        return;
+    (void)wl_mem_ledger_reclaim(&sess->mem_ledger);
 }
 
 static void
@@ -2745,6 +2776,7 @@ col_session_snapshot(wl_session_t *session, wirelog_on_tuple_fn callback,
         if (tdd_profile_active)
             wl_columnar_session_profile_begin(plan, 0, sess->num_workers, true);
         int rc = col_session_emit_snapshot(plan, sess, callback, user_data);
+        col_session_reclaim_quiescent(sess);
         if (tdd_profile_active && rc == 0)
             fprintf(stderr, "TDD snapshot complete evaluated_count=0 rc=0\n");
         return rc;
@@ -3116,6 +3148,7 @@ col_session_snapshot(wl_session_t *session, wirelog_on_tuple_fn callback,
             }
             sess->nrels = out;
             sess->tdd_decision_tracking_active = false;
+            col_session_reclaim_quiescent(sess);
             return rc;
         }
         if (sess->eval_arena)
@@ -3154,6 +3187,7 @@ col_session_snapshot(wl_session_t *session, wirelog_on_tuple_fn callback,
 
     int snapshot_rc = col_session_emit_snapshot(plan, sess, callback,
             user_data);
+    col_session_reclaim_quiescent(sess);
     if (tdd_profile_active && snapshot_rc == 0)
         fprintf(stderr, "TDD snapshot complete evaluated_count=%u rc=0\n",
             tdd_profile_evaluated);

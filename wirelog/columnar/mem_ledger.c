@@ -12,6 +12,7 @@
 
 #include "columnar/mem_ledger.h"
 
+#include <errno.h>
 #ifndef _MSC_VER
 #include <stdatomic.h>
 #endif
@@ -188,6 +189,81 @@ wl_mem_ledger_free(wl_mem_ledger_t *ledger, int subsys, uint64_t bytes)
 
     counter_sub_clamped(&ledger->subsys_bytes[subsys], bytes);
     counter_sub_clamped(&ledger->current_bytes, bytes);
+}
+
+int
+wl_mem_ledger_register_reclaimer(wl_mem_ledger_t *ledger,
+    wl_mem_reclaimer_fn fn, void *owner, wl_mem_reclaimer_handle_t *out)
+{
+    if (!ledger || !fn || !out)
+        return EINVAL;
+
+    for (uint32_t i = 0; i < WL_MEM_LEDGER_MAX_RECLAIMERS; i++) {
+        wl_mem_reclaimer_slot_t *slot = &ledger->reclaimers[i];
+        if (slot->active)
+            continue;
+        wl_mem_reclaimer_handle_t handle = ++ledger->next_reclaimer_handle;
+        if (handle == 0)
+            handle = ++ledger->next_reclaimer_handle;
+        slot->fn = fn;
+        slot->owner = owner;
+        slot->handle = handle;
+        slot->active = true;
+        *out = handle;
+        return 0;
+    }
+    *out = 0;
+    return ENOSPC;
+}
+
+void
+wl_mem_ledger_unregister_reclaimer(wl_mem_ledger_t *ledger,
+    wl_mem_reclaimer_handle_t handle)
+{
+    if (!ledger || handle == 0)
+        return;
+    for (uint32_t i = 0; i < WL_MEM_LEDGER_MAX_RECLAIMERS; i++) {
+        wl_mem_reclaimer_slot_t *slot = &ledger->reclaimers[i];
+        if (!slot->active || slot->handle != handle)
+            continue;
+        /* Clear the owner before making the slot reusable.  A quiescent
+         * caller therefore cannot observe a live callback with a dead owner. */
+        slot->fn = NULL;
+        slot->owner = NULL;
+        slot->handle = 0;
+        slot->active = false;
+        return;
+    }
+}
+
+wl_mem_reclaim_result_t
+wl_mem_ledger_reclaim(wl_mem_ledger_t *ledger)
+{
+    wl_mem_reclaim_result_t total = { 0, 0 };
+    if (!ledger)
+        return total;
+
+    /* The owner supplies the quiescent point.  Copying the callback and
+     * context before invocation lets a callback unregister itself safely;
+     * its owner remains responsible for surviving until this call returns. */
+    for (uint32_t i = 0; i < WL_MEM_LEDGER_MAX_RECLAIMERS; i++) {
+        wl_mem_reclaimer_fn fn = ledger->reclaimers[i].active
+            ? ledger->reclaimers[i].fn : NULL;
+        void *owner = ledger->reclaimers[i].active
+            ? ledger->reclaimers[i].owner : NULL;
+        if (!fn)
+            continue;
+        wl_mem_reclaim_result_t result = fn(owner);
+        if (UINT64_MAX - total.bytes_released < result.bytes_released)
+            total.bytes_released = UINT64_MAX;
+        else
+            total.bytes_released += result.bytes_released;
+        if (UINT32_MAX - total.candidates < result.candidates)
+            total.candidates = UINT32_MAX;
+        else
+            total.candidates += result.candidates;
+    }
+    return total;
 }
 
 void

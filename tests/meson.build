@@ -2558,6 +2558,25 @@ test_arrangement_lru_eviction_exe = executable(
 test('arrangement_lru_eviction', test_arrangement_lru_eviction_exe)
 
 # ============================================================================
+# Pin-safe Materialization Cache Reclaimer Tests (Issue #1371)
+# ============================================================================
+
+test_cache_reclaimer_exe = executable(
+  'test_cache_reclaimer',
+  files('test_cache_reclaimer.c'),
+  backend_src,
+  intern_src,
+  io_src,
+  arena_src,
+  thread_src,
+  workqueue_src,
+  include_directories: [wirelog_inc, wirelog_src_inc],
+  dependencies: [nanoarrow_dep, threads_dep, xxhash_dep, mbedtls_dep, math_dep],
+)
+
+test('cache_reclaimer', test_cache_reclaimer_exe, suite: 'unit')
+
+# ============================================================================
 # Filtered Relation Cache Tests (Issue #386)
 # ============================================================================
 

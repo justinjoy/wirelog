@@ -1080,6 +1080,13 @@ typedef struct {
     uint64_t identity;
     uint32_t pin_count;
     bool eviction_deferred;
+    /* Reclaimer metadata is independent from relation/arrangement
+     * generations.  It is valid only for an owned, unshared result. */
+    uint64_t pin_epoch;
+    uint32_t epoch_pin_count;
+    uint64_t generation;
+    bool owner_alive;
+    bool owns_result;
 } col_mat_entry_t;
 
 typedef struct {
@@ -1101,9 +1108,13 @@ typedef struct col_mat_cache {
      * NULL disables accounting (K-fusion branch sessions). */
     wl_mem_ledger_t *ledger;
     uint64_t next_identity;
+    uint64_t next_generation;
+    uint64_t pin_epoch;
     /* Every lookup_pin/insert_pin handle must be released before its owning
      * session, worker, or cache is destroyed. */
     uint32_t active_pins;
+    wl_mem_reclaimer_handle_t reclaimer_handle;
+    bool reclaimer_owner_alive;
 } col_mat_cache_t;
 
 /* ======================================================================== */
@@ -2079,6 +2090,10 @@ col_mat_cache_lookup_pin(col_mat_cache_t *cache, const col_rel_t *left,
     const col_rel_t *right, col_mat_cache_pin_t *pin);
 void
 col_mat_cache_pin_release(col_mat_cache_pin_t *pin);
+/* Release only implicit epoch pins from the legacy lookup path.  Explicit
+ * col_mat_cache_pin_t handles remain owned by their callers. */
+void
+col_mat_cache_release_pins(col_mat_cache_t *cache);
 /*
  * col_mat_cache_truncate: keep_count is the visible-prefix target.  Destroy
  * entries [keep_count, count) when they are unpinned and keep total_bytes and
@@ -2089,6 +2104,15 @@ col_mat_cache_pin_release(col_mat_cache_pin_t *pin);
  */
 void
 col_mat_cache_truncate(col_mat_cache_t *cache, uint32_t keep_count);
+
+/* Internal pin/generation-safe cache reclaim contract. */
+int
+col_mat_cache_attach_reclaimer(col_mat_cache_t *cache);
+void
+col_mat_cache_detach_reclaimer(col_mat_cache_t *cache);
+wl_mem_reclaim_result_t
+col_mat_cache_reclaim_entry(col_mat_cache_t *cache, uint32_t index,
+    uint64_t expected_generation);
 
 /* ======================================================================== */
 /* Memory instrumentation (Issue #1380, columnar/session.c)                 */
