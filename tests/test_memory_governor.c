@@ -261,14 +261,17 @@ test_checked_admission(void)
     wl_columnar_memory_governor_t governor;
     wl_columnar_memory_governor_t other_governor;
     wl_columnar_memory_reservation_t reservation;
+    wl_columnar_memory_reservation_t second;
     wl_columnar_memory_reservation_t copied;
     wl_columnar_memory_reservation_t old_reservation;
     wl_columnar_memory_reservation_t growth_reservation;
+    wl_columnar_memory_reservation_t moved_reservation;
     uint64_t value;
 
     TEST("typed admission, growth overlap, arithmetic, and token identity");
     make_resolution(&resolution, 1000, 900);
     wl_columnar_memory_reservation_init(&reservation);
+    wl_columnar_memory_reservation_init(&second);
     if (wl_columnar_memory_governor_init(&governor, &resolution) != 0
         || wl_columnar_memory_size_add(UINT64_MAX, 1, &value)
         || wl_columnar_memory_size_mul(UINT64_MAX, 2, &value)
@@ -298,6 +301,7 @@ test_checked_admission(void)
     }
     wl_columnar_memory_reservation_init(&old_reservation);
     wl_columnar_memory_reservation_init(&growth_reservation);
+    wl_columnar_memory_reservation_init(&moved_reservation);
     if (!wl_columnar_memory_reserve(&governor, 100, &old_reservation)
         || wl_columnar_memory_reserve_growth(&governor, 100, 200,
         &growth_reservation) != WL_COLUMNAR_MEMORY_ADMISSION_OK
@@ -305,6 +309,18 @@ test_checked_admission(void)
         || !wl_columnar_memory_release(&growth_reservation)
         || !wl_columnar_memory_release(&old_reservation)) {
         FAIL("growth did not reserve a distinct overlapping footprint");
+        return 1;
+    }
+    if (!wl_columnar_memory_reserve(&governor, 100, &old_reservation)
+        || !wl_columnar_memory_reserve(&governor, 50, &second)
+        || wl_columnar_memory_reservation_move(&second, &old_reservation)
+        || !wl_columnar_memory_release(&second)
+        || !wl_columnar_memory_reservation_move(&moved_reservation,
+        &old_reservation)
+        || wl_columnar_memory_release(&old_reservation)
+        || !wl_columnar_memory_release(&moved_reservation)
+        || wl_columnar_memory_reserved(&governor) != 0) {
+        FAIL("reservation move did not preserve token ownership");
         return 1;
     }
     make_resolution(&resolution, 1000, 900);
