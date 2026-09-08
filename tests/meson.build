@@ -471,6 +471,20 @@ test_csv_streaming_exe = executable(
 
 test('csv_streaming', test_csv_streaming_exe)
 
+# Issue #1454: executable-only fake protocol contract.  This deliberately does
+# not enter wirelog_backend_src: it is a harness for handoff points #1373,
+# #1372, #1369, and #1451, not a production transport implementation.
+test_tdd_multi_batch_protocol_exe = executable(
+  'test_tdd_multi_batch_protocol',
+  files('test_tdd_multi_batch_protocol.c'),
+  files('../wirelog/columnar/tdd_protocol.c'),
+  thread_src,
+  include_directories: [wirelog_inc, wirelog_src_inc],
+  dependencies: [threads_dep],
+)
+test('tdd_multi_batch_protocol', test_tdd_multi_batch_protocol_exe,
+     suite: 'unit')
+
 # Issue #508: bench_argv shim unit tests. Header-only, portable by
 # construction; runs on every platform including MSVC.
 test_bench_argv_exe = executable(
