@@ -49,10 +49,12 @@ string_ops_src = files(
 
 csv_src = files(
   '../wirelog/io/csv_reader.c',
+  '../wirelog/columnar/memory_governor.c',
 )
 
 io_src = files(
   '../wirelog/io/csv_reader.c',
+  '../wirelog/columnar/memory_governor.c',
   '../wirelog/io/io_adapter.c',
   '../wirelog/io/csv_adapter.c',
   '../wirelog/io/io_ctx.c',

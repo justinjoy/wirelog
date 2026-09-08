@@ -14,6 +14,7 @@
 
 #include "../wirelog-types.h"
 #include "../intern.h"
+#include "columnar/memory_governor.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -216,5 +217,18 @@ wl_csv_read_file_via_ctx_stream(
     void *opaque,
     int64_t (*intern_cb)(void *opaque, const char *str),
     void *intern_opaque);
+
+int
+wl_csv_read_file_via_ctx_stream_admitted(
+    const char *filepath,
+    char delimiter,
+    const wirelog_column_type_t *col_types,
+    uint32_t num_cols,
+    uint32_t max_batch_rows,
+    wl_csv_batch_cb batch_cb,
+    void *opaque,
+    int64_t (*intern_cb)(void *opaque, const char *str),
+    void *intern_opaque,
+    wl_columnar_memory_governor_t *governor);
 
 #endif /* WIRELOG_IO_CSV_READER_H */

@@ -1654,6 +1654,14 @@ col_session_memory_governor_ref(wl_session_t *session)
     return sess->memory_governor;
 }
 
+static wl_columnar_memory_governor_t *
+col_session_memory_governor(wl_session_t *session)
+{
+    wl_columnar_memory_governor_ref_t *ref
+        = col_session_memory_governor_ref(session);
+    return wl_columnar_memory_governor_ref_get(ref);
+}
+
 /* ======================================================================== */
 /* Per-Worker Session State (Issue #315)                                    */
 /* ======================================================================== */
@@ -3123,6 +3131,7 @@ static const wl_compute_backend_t col_backend = {
     .session_step = col_session_step,
     .session_set_delta_cb = col_session_set_delta_cb,
     .session_snapshot = col_session_snapshot,
+    .session_memory_governor = col_session_memory_governor,
 };
 
 const wl_compute_backend_t *

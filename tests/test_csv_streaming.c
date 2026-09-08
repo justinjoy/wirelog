@@ -4,6 +4,7 @@
 
 #include "../wirelog/io/csv_reader.h"
 #include "../wirelog/intern.h"
+#include "../wirelog/columnar/memory_governor.h"
 #include "../wirelog/wirelog-types.h"
 #include "test_tmpdir.h"
 
@@ -100,8 +101,87 @@ test_callback_failure(void)
     return rc != 0 && obs.callbacks == 2 && obs.rows == 2 ? 0 : 1;
 }
 
+static int
+test_admission_denial(void)
+{
+    char path[512];
+    if (write_fixture(path, sizeof(path), "wirelog_csv_streaming_budget.csv",
+        "1,one\n") != 0)
+        return 1;
+
+    wirelog_column_type_t types[] = {
+        WIRELOG_TYPE_INT64, WIRELOG_TYPE_STRING,
+    };
+    wl_intern_t *intern = wl_intern_create();
+    wl_columnar_memory_resolution_t resolution = {
+        .budget_bytes = 1,
+        .headroom_bytes = 0,
+        .usable_bytes = 1,
+        .mode = WL_COLUMNAR_MEMORY_MODE_ENFORCING,
+        .source = WL_COLUMNAR_MEMORY_SOURCE_ENV,
+        .status = WL_COLUMNAR_MEMORY_OK,
+    };
+    wl_columnar_memory_governor_ref_t *ref
+        = wl_columnar_memory_governor_ref_create(&resolution);
+    stream_observer_t obs = {0};
+    int rc = ref
+        ? wl_csv_read_file_via_ctx_stream_admitted(path, ',', types, 2, 2,
+            observe_rows, &obs, intern_cb, intern,
+            wl_columnar_memory_governor_ref_get(ref))
+        : WL_CSV_ERR_MEMORY;
+    int clean = ref != NULL
+        && wl_columnar_memory_reserved(
+        wl_columnar_memory_governor_ref_get(ref)) == 0
+        && rc == WL_CSV_ERR_MEMORY && obs.rows == 0;
+    if (ref)
+        wl_columnar_memory_governor_ref_release(ref);
+    wl_intern_free(intern);
+    remove(path);
+    return clean ? 0 : 1;
+}
+
+static int
+test_admission_release(void)
+{
+    char path[512];
+    if (write_fixture(path, sizeof(path), "wirelog_csv_streaming_release.csv",
+        "1,one\n2,two\n") != 0)
+        return 1;
+
+    wirelog_column_type_t types[] = {
+        WIRELOG_TYPE_INT64, WIRELOG_TYPE_STRING,
+    };
+    wl_intern_t *intern = wl_intern_create();
+    wl_columnar_memory_resolution_t resolution = {
+        .budget_bytes = UINT64_C(64) * 1024 * 1024,
+        .headroom_bytes = 0,
+        .usable_bytes = UINT64_C(64) * 1024 * 1024,
+        .mode = WL_COLUMNAR_MEMORY_MODE_ENFORCING,
+        .source = WL_COLUMNAR_MEMORY_SOURCE_ENV,
+        .status = WL_COLUMNAR_MEMORY_OK,
+    };
+    wl_columnar_memory_governor_ref_t *ref
+        = wl_columnar_memory_governor_ref_create(&resolution);
+    stream_observer_t obs = {0};
+    int rc = ref
+        ? wl_csv_read_file_via_ctx_stream_admitted(path, ',', types, 2, 2,
+            observe_rows, &obs, intern_cb, intern,
+            wl_columnar_memory_governor_ref_get(ref))
+        : WL_CSV_ERR_MEMORY;
+    int clean = ref != NULL
+        && rc == 0 && obs.rows == 2
+        && wl_columnar_memory_reserved(
+        wl_columnar_memory_governor_ref_get(ref)) == 0;
+    if (ref)
+        wl_columnar_memory_governor_ref_release(ref);
+    wl_intern_free(intern);
+    remove(path);
+    return clean ? 0 : 1;
+}
+
 int
 main(void)
 {
-    return test_batches_and_strings() || test_callback_failure();
+    return test_batches_and_strings() || test_callback_failure()
+           || test_admission_denial() || test_admission_release();
 }

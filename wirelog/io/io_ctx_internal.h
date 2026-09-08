@@ -17,6 +17,7 @@
 #include "wirelog/io/io_adapter.h"
 #include "wirelog/intern.h"
 #include "wirelog/ir/program.h"  /* for wl_ir_relation_info_t */
+#include "columnar/memory_governor.h"
 
 struct wirelog_io_ctx {
     const char             *relation_name;
@@ -27,6 +28,7 @@ struct wirelog_io_ctx {
     uint32_t num_params;
     wl_intern_t            *intern;          /* borrowed, not owned */
     void                   *platform_ctx;
+    wl_columnar_memory_governor_t *memory_governor; /* borrowed */
 };
 
 wirelog_io_ctx_t *wirelog_io_ctx_create_test(
@@ -40,5 +42,8 @@ void wirelog_io_ctx_destroy(wirelog_io_ctx_t *ctx);
 wirelog_io_ctx_t *wirelog_io_ctx_create_for_relation(
     const wl_ir_relation_info_t *rel,
     wl_intern_t *intern);
+
+void wirelog_io_ctx_set_memory_governor(
+    wirelog_io_ctx_t *ctx, wl_columnar_memory_governor_t *governor);
 
 #endif /* WIRELOG_IO_IO_CTX_INTERNAL_H */
