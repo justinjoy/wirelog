@@ -24,12 +24,31 @@
 #include <errno.h>
 #include <stddef.h>
 
+void
+wl_session_options_init(wl_session_options_t *options)
+{
+    if (!options)
+        return;
+    options->size = (uint32_t)sizeof(*options);
+    options->version = WL_SESSION_OPTIONS_VERSION;
+    options->windows_job_handle = NULL;
+}
+
+static int
+wl_session_options_valid(const wl_session_options_t *options)
+{
+    if (!options)
+        return 1;
+    return options->version == WL_SESSION_OPTIONS_VERSION
+           && options->size >= (uint32_t)sizeof(*options);
+}
+
 int
 wl_session_create(const wl_compute_backend_t *backend, const wl_plan_t *plan,
     uint32_t num_workers, wl_session_t **out)
 {
-    return wl_session_create_with_snapshot(backend, plan, num_workers, NULL,
-               out);
+    return wl_session_create_with_snapshot_options(backend, plan,
+               num_workers, NULL, NULL, out);
 }
 
 int
@@ -37,11 +56,35 @@ wl_session_create_with_snapshot(const wl_compute_backend_t *backend,
     const wl_plan_t *plan, uint32_t num_workers,
     wirelog_extension_snapshot_t *snapshot, wl_session_t **out)
 {
+    return wl_session_create_with_snapshot_options(backend, plan,
+               num_workers, snapshot, NULL, out);
+}
+
+int
+wl_session_create_with_options(const wl_compute_backend_t *backend,
+    const wl_plan_t *plan, uint32_t num_workers,
+    const wl_session_options_t *options, wl_session_t **out)
+{
+    return wl_session_create_with_snapshot_options(backend, plan,
+               num_workers, NULL, options, out);
+}
+
+int
+wl_session_create_with_snapshot_options(const wl_compute_backend_t *backend,
+    const wl_plan_t *plan, uint32_t num_workers,
+    wirelog_extension_snapshot_t *snapshot,
+    const wl_session_options_t *options, wl_session_t **out)
+{
     int rc;
-    if (!backend || !backend->session_create || !out)
+    if (!backend || !backend->session_create || !out
+        || !wl_session_options_valid(options))
         return -1;
 
-    rc = backend->session_create(plan, num_workers, out);
+    if (options && backend->session_create_with_options)
+        rc = backend->session_create_with_options(plan, num_workers, options,
+                out);
+    else
+        rc = backend->session_create(plan, num_workers, out);
     if (rc == 0 && *out) {
         /* Ensure the backend pointer is correctly bound */
         (*out)->backend = backend;

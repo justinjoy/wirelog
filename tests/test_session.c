@@ -17,6 +17,7 @@
 #include "../wirelog/passes/jpp.h"
 #include "../wirelog/passes/sip.h"
 #include "../wirelog/session.h"
+#include "../wirelog/columnar/memory_governor.h"
 #include "../wirelog/wirelog-parser.h"
 #include "../wirelog/wirelog.h"
 
@@ -25,6 +26,10 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 /* ======================================================================== */
 /* Portability Macros                                                       */
@@ -375,6 +380,124 @@ test_session_create_destroy_columnar(void)
     TEST("session(columnar): create and destroy (duplicate check)");
     test_session_create_destroy_impl(wl_backend_columnar());
 }
+
+static void
+test_session_create_with_options(void)
+{
+    TEST("session: internal host options are accepted");
+    wl_plan_t *ffi = build_plan(".decl a(x: int32)\n"
+            ".decl r(x: int32)\n"
+            "r(x) :- a(x).\n");
+    wl_session_options_t options;
+    wl_session_t *session = NULL;
+    if (!ffi) {
+        FAIL("could not generate FFI plan");
+        return;
+    }
+    wl_session_options_init(&options);
+    /* Invalid on every host, but safe: providers must fall back to advisory. */
+    options.windows_job_handle = (void *)(uintptr_t)1;
+    int rc = wl_session_create_with_options(wl_backend_columnar(), ffi, 1,
+            &options, &session);
+    if (rc != 0 || !session) {
+        wl_plan_free(ffi);
+        FAIL("session options creation failed");
+        return;
+    }
+    wl_session_destroy(session);
+    wl_plan_free(ffi);
+    PASS();
+}
+
+#ifdef _WIN32
+/*
+ * The provider and session plumbing must be tested with a real Job Object,
+ * not only with injected resolver fields.  The session borrows the handle
+ * during creation, so closing the caller's handle before destruction also
+ * verifies that the session does not retain or close it.
+ */
+static void
+test_session_windows_job_options(void)
+{
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits;
+    HANDLE job = NULL;
+    char *saved_budget = NULL;
+    size_t saved_budget_len = 0;
+    wl_plan_t *plan = NULL;
+    wl_session_t *session = NULL;
+    wl_session_options_t options;
+    wl_columnar_memory_governor_t *governor;
+    const uint64_t expected_budget = UINT64_C(512) * 1024 * 1024;
+    int ok = 0;
+
+    TEST("session: real Windows Job Object memory source");
+    if (_dupenv_s(&saved_budget, &saved_budget_len,
+        "WIRELOG_MEMORY_BUDGET") != 0)
+        saved_budget = NULL;
+    /* An explicit environment budget intentionally has precedence. */
+    if (_putenv_s("WIRELOG_MEMORY_BUDGET", "") != 0) {
+        FAIL("could not clear WIRELOG_MEMORY_BUDGET");
+        goto cleanup;
+    }
+
+    job = CreateJobObjectW(NULL, NULL);
+    if (!job) {
+        FAIL("CreateJobObjectW failed");
+        goto cleanup;
+    }
+    memset(&limits, 0, sizeof(limits));
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_PROCESS_MEMORY;
+    limits.ProcessMemoryLimit = (SIZE_T)expected_budget;
+    if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation,
+        &limits, sizeof(limits))) {
+        FAIL("SetInformationJobObject failed");
+        goto cleanup;
+    }
+
+    plan = build_plan(".decl a(x: int32)\n"
+            ".decl r(x: int32)\n"
+            "r(x) :- a(x).\n");
+    if (!plan) {
+        FAIL("could not generate Job Object test plan");
+        goto cleanup;
+    }
+    wl_session_options_init(&options);
+    options.windows_job_handle = (void *)job;
+    if (wl_session_create_with_options(wl_backend_columnar(), plan, 1,
+        &options, &session) != 0 || !session) {
+        FAIL("session creation with Job Object failed");
+        goto cleanup;
+    }
+
+    /* The session must have completed its synchronous probe by now. */
+    CloseHandle(job);
+    job = NULL;
+    governor = wl_session_memory_governor(session);
+    if (!governor
+        || governor->source != WL_COLUMNAR_MEMORY_SOURCE_WINDOWS_JOB
+        || governor->mode != WL_COLUMNAR_MEMORY_MODE_ENFORCING
+        || governor->budget_bytes != expected_budget) {
+        FAIL("session did not enforce the Job Object memory source");
+        goto cleanup;
+    }
+    ok = 1;
+
+cleanup:
+    if (job)
+        CloseHandle(job);
+    if (session)
+        wl_session_destroy(session);
+    if (plan)
+        wl_plan_free(plan);
+    if (saved_budget)
+        _putenv_s("WIRELOG_MEMORY_BUDGET", saved_budget);
+    else
+        _putenv_s("WIRELOG_MEMORY_BUDGET", "");
+    free(saved_budget);
+    if (ok)
+        PASS();
+}
+#endif
 
 /*
  * Test: num_workers > 1 is rejected.
@@ -1102,6 +1225,10 @@ main(void)
     test_retained_relation_admission();
     test_session_create_destroy();
     test_session_create_destroy_columnar();
+    test_session_create_with_options();
+#ifdef _WIN32
+    test_session_windows_job_options();
+#endif
     test_session_create_multi_worker_rejected();
     test_session_step_initial_delta();
     test_session_step_incremental_delta();

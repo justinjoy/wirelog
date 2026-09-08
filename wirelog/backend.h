@@ -29,6 +29,7 @@ extern "C" {
 
 #include "exec_plan.h"
 #include "columnar/memory_governor.h"
+#include "session_options.h"
 #include "wirelog/wirelog-types.h"
 
 #include <stdint.h>
@@ -91,6 +92,11 @@ typedef struct {
     /* Internal hook used by bounded built-in input loaders. */
     wl_columnar_memory_governor_t *(*session_memory_governor)(
         wl_session_t *session);
+
+    /* Optional internal creation path.  Legacy backends leave this NULL. */
+    int (*session_create_with_options)(const wl_plan_t *plan,
+        uint32_t num_workers, const wl_session_options_t *options,
+        wl_session_t **out);
 } wl_compute_backend_t;
 
 /**
