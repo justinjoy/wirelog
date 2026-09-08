@@ -68,6 +68,26 @@ eval_stack_pop(eval_stack_t *s)
     return e;
 }
 
+void
+eval_entry_dispose(eval_entry_t *entry)
+{
+    if (!entry)
+        return;
+
+    free(entry->seg_boundaries);
+    entry->seg_boundaries = NULL;
+    entry->seg_count = 0;
+
+    if (entry->kind == WL_COLUMNAR_EVAL_ENTRY_CONTINUATION) {
+        wl_columnar_continuation_destroy(entry->continuation);
+        entry->continuation = NULL;
+    } else if (entry->owned) {
+        col_rel_destroy(entry->rel);
+        entry->rel = NULL;
+    }
+    entry->owned = false;
+}
+
 int
 eval_stack_pop_relation(eval_stack_t *s, eval_entry_t *out)
 {
@@ -81,16 +101,15 @@ eval_stack_pop_relation(eval_stack_t *s, eval_entry_t *out)
 
     e = eval_stack_pop(s);
     if (e.kind == WL_COLUMNAR_EVAL_ENTRY_CONTINUATION) {
-        wl_columnar_continuation_destroy(e.continuation);
+        eval_entry_dispose(&e);
         return ENOTSUP;
     }
-    if (e.kind != WL_COLUMNAR_EVAL_ENTRY_RELATION || !e.rel) {
-        if (e.seg_boundaries)
-            free(e.seg_boundaries);
-        if (e.owned)
-            col_rel_destroy(e.rel);
+    if (e.kind != WL_COLUMNAR_EVAL_ENTRY_RELATION) {
+        eval_entry_dispose(&e);
         return EINVAL;
     }
+    /* A NULL relation is the legacy no-result stack value.  Preserve it and
+     * let the caller apply its existing no-result behavior. */
     *out = e;
     return 0;
 }
@@ -100,11 +119,6 @@ eval_stack_drain(eval_stack_t *s)
 {
     while (s->top > 0) {
         eval_entry_t e = eval_stack_pop(s);
-        if (e.seg_boundaries)
-            free(e.seg_boundaries);
-        if (e.kind == WL_COLUMNAR_EVAL_ENTRY_CONTINUATION)
-            wl_columnar_continuation_destroy(e.continuation);
-        else if (e.owned)
-            col_rel_destroy(e.rel);
+        eval_entry_dispose(&e);
     }
 }

@@ -53,18 +53,15 @@ col_op_concat(eval_stack_t *stack, wl_col_session_t *sess)
         return pop_rc;
     pop_rc = eval_stack_pop_relation(stack, &a_e);
     if (pop_rc != 0) {
-        if (b_e.owned)
-            col_rel_destroy(b_e.rel);
+        eval_entry_dispose(&b_e);
         return pop_rc;
     }
     col_rel_t *a = a_e.rel;
     col_rel_t *b = b_e.rel;
 
     if (!a || !b || a->ncols != b->ncols) {
-        if (a_e.owned)
-            col_rel_destroy(a);
-        if (b_e.owned)
-            col_rel_destroy(b);
+        eval_entry_dispose(&a_e);
+        eval_entry_dispose(&b_e);
         return EINVAL;
     }
 
@@ -75,10 +72,8 @@ col_op_concat(eval_stack_t *stack, wl_col_session_t *sess)
 
     col_rel_t *out = col_rel_pool_new_like(sess->delta_pool, "$concat", a);
     if (!out) {
-        if (a_e.owned)
-            col_rel_destroy(a);
-        if (b_e.owned)
-            col_rel_destroy(b);
+        eval_entry_dispose(&a_e);
+        eval_entry_dispose(&b_e);
         return ENOMEM;
     }
 
@@ -87,14 +82,8 @@ col_op_concat(eval_stack_t *stack, wl_col_session_t *sess)
         rc = col_rel_append_all(out, b, NULL);
 
     if (rc != 0) {
-        if (a_e.seg_boundaries)
-            free(a_e.seg_boundaries);
-        if (b_e.seg_boundaries)
-            free(b_e.seg_boundaries);
-        if (a_e.owned)
-            col_rel_destroy(a);
-        if (b_e.owned)
-            col_rel_destroy(b);
+        eval_entry_dispose(&a_e);
+        eval_entry_dispose(&b_e);
         col_rel_destroy(out);
         return rc;
     }
@@ -107,14 +96,8 @@ col_op_concat(eval_stack_t *stack, wl_col_session_t *sess)
     uint32_t *out_boundaries
         = (uint32_t *)malloc((total_segs + 1) * sizeof(uint32_t));
     if (!out_boundaries) {
-        if (a_e.seg_boundaries)
-            free(a_e.seg_boundaries);
-        if (b_e.seg_boundaries)
-            free(b_e.seg_boundaries);
-        if (a_e.owned)
-            col_rel_destroy(a);
-        if (b_e.owned)
-            col_rel_destroy(b);
+        eval_entry_dispose(&a_e);
+        eval_entry_dispose(&b_e);
         col_rel_destroy(out);
         return ENOMEM;
     }
@@ -140,15 +123,8 @@ col_op_concat(eval_stack_t *stack, wl_col_session_t *sess)
     }
 
     /* Clean up input boundaries */
-    if (a_e.seg_boundaries)
-        free(a_e.seg_boundaries);
-    if (b_e.seg_boundaries)
-        free(b_e.seg_boundaries);
-
-    if (a_e.owned)
-        col_rel_destroy(a);
-    if (b_e.owned)
-        col_rel_destroy(b);
+    eval_entry_dispose(&a_e);
+    eval_entry_dispose(&b_e);
 
 #ifdef WL_PROFILE
     if (out->nrows == 0)

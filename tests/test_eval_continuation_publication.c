@@ -378,6 +378,49 @@ test_reservation_and_stack_ownership(void)
     CHECK(producer.destroy_calls == 1,
         "drain destroys an unpopped continuation exactly once");
     CHECK(stack.top == 0, "complete relation stack still drains its owner");
+
+    /* Relation-only consumers must retain the historical NULL/no-result
+     * value, while a continuation at the same boundary is rejected and
+     * destroyed. */
+    eval_stack_init(&stack);
+    CHECK(eval_stack_push(&stack, NULL, false) == 0,
+        "legacy NULL no-result can be pushed");
+    {
+        eval_entry_t no_result;
+        CHECK(eval_stack_pop_relation(&stack, &no_result) == 0,
+            "legacy NULL no-result remains successful");
+        CHECK(no_result.rel == NULL
+            && no_result.kind == WL_COLUMNAR_EVAL_ENTRY_RELATION,
+            "legacy NULL no-result is preserved");
+    }
+
+    /* CONCAT pops the right relation before the left operand.  Make the
+     * left operand a continuation and attach owned metadata to the right
+     * operand so the second-pop rejection exercises every cleanup owner. */
+    memset(&producer, 0, sizeof(producer));
+    continuation = make_continuation(&producer);
+    relation = col_rel_new_auto("concat-cleanup", 1);
+    CHECK(relation != NULL, "concat cleanup relation can be created");
+    eval_stack_init(&stack);
+    CHECK(eval_stack_push_continuation(&stack, continuation) == 0,
+        "concat cleanup continuation is pushed first");
+    CHECK(eval_stack_push(&stack, relation, true) == 0,
+        "concat cleanup relation is pushed second");
+    stack.items[stack.top - 1].seg_boundaries
+        = (uint32_t *)malloc(2 * sizeof(uint32_t));
+    CHECK(stack.items[stack.top - 1].seg_boundaries != NULL,
+        "concat cleanup metadata is allocated");
+    if (stack.items[stack.top - 1].seg_boundaries) {
+        stack.items[stack.top - 1].seg_boundaries[0] = 0;
+        stack.items[stack.top - 1].seg_boundaries[1] = 0;
+        stack.items[stack.top - 1].seg_count = 1;
+    }
+    CHECK(col_op_concat(&stack, NULL) == ENOTSUP,
+        "concat rejects a continuation on its second pop");
+    CHECK(producer.destroy_calls == 1,
+        "concat rejection destroys continuation exactly once");
+    CHECK(stack.top == 0,
+        "concat rejection consumes both owned eval entries");
 }
 
 int
