@@ -101,7 +101,10 @@ col_idb_consolidate(col_rel_t *r, wl_col_session_t *sess)
         return rc;
     col_op_consolidate(&stk, sess);
     if (stk.top > 0) {
-        eval_entry_t ce = eval_stack_pop(&stk);
+        eval_entry_t ce;
+        int pop_rc = eval_stack_pop_relation(&stk, &ce);
+        if (pop_rc != 0)
+            return pop_rc;
         if (ce.owned && ce.rel != r) {
             /*
              * r is an IDB relation from the coordinator session, not a

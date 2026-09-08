@@ -2316,6 +2316,8 @@ eval_stack_push_continuation(eval_stack_t *s,
     wl_columnar_continuation_t *continuation);
 eval_entry_t
 eval_stack_pop(eval_stack_t *s);
+int
+eval_stack_pop_relation(eval_stack_t *s, eval_entry_t *out);
 void
 eval_stack_drain(eval_stack_t *s);
 int

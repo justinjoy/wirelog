@@ -39,9 +39,10 @@
 int
 col_op_consolidate_diff(eval_stack_t *stack, wl_col_session_t *sess)
 {
-    eval_entry_t e = eval_stack_pop(stack);
-    if (!e.rel)
-        return EINVAL;
+    eval_entry_t e;
+    int pop_rc = eval_stack_pop_relation(stack, &e);
+    if (pop_rc != 0)
+        return pop_rc;
 
     col_rel_t *in = e.rel;
     if (!wl_columnar_relation_float_values_valid(in)) {
@@ -271,7 +272,10 @@ col_op_exchange(const wl_plan_op_t *op, eval_stack_t *stack,
     /* Pop input from eval stack */
     if (stack->top == 0)
         return EINVAL;
-    eval_entry_t input_entry = eval_stack_pop(stack);
+    eval_entry_t input_entry;
+    int pop_rc = eval_stack_pop_relation(stack, &input_entry);
+    if (pop_rc != 0)
+        return pop_rc;
     col_rel_t *input = input_entry.rel;
 
     /* NULL or empty input is a no-op for exchange */

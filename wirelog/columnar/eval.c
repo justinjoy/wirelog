@@ -231,8 +231,13 @@ nonrec_rule_worker_fn(void *arg)
         eval_stack_drain(&stack);
         return;
     }
-    if (stack.top > 0)
-        ctx->result = eval_stack_pop(&stack);
+    if (stack.top > 0) {
+        ctx->rc = eval_stack_pop_relation(&stack, &ctx->result);
+        if (ctx->rc != 0) {
+            eval_stack_drain(&stack);
+            return;
+        }
+    }
     eval_stack_drain(&stack);
 }
 
@@ -1222,19 +1227,24 @@ tdd_worker_subpass_fn(void *arg)
         if (stack.top == 0)
             continue;
 
-        eval_entry_t result = eval_stack_pop(&stack);
+        eval_entry_t result;
+        int pop_rc = eval_stack_pop_relation(&stack, &result);
+        if (pop_rc != 0) {
+            eval_stack_drain(&stack);
+            ctx->rc = pop_rc;
+            free(snap);
+            sess->tdd_subpass_active = saved_tdd_subpass;
+            sess->tdd_outbound_only_active = saved_outbound_only;
+            sess->diff_operators_active = saved_diff;
+            TDD_WORKER_RETURN();
+        }
         eval_stack_drain(&stack);
 
         /* Post-eval skip: evaluation produced 0 rows.
          *
-         * The !result.rel arm is not analyzer appeasement.  eval_stack_pop()
-         * yields {NULL, ...} only for an empty stack, and the stack.top == 0
-         * check three lines above has already excluded that, so a NULL here
-         * would mean a NULL rel was pushed.  It is dispositioned as "no
-         * result" to match that same branch rather than as an error, so one
-         * observable state does not get two dispositions depending on which
-         * check saw it first.  (diff.c and join.c return EINVAL on a NULL
-         * pop because they pop without a prior emptiness check.)
+         * The relation-only pop above has already rejected continuation and
+         * malformed entries, so a NULL here is only the ordinary empty-result
+         * representation.
          *
          * Two dereferences follow otherwise: ->name / ->ncols on the
          * non-outbound path.  col_rel_new_like() below no longer needs one:

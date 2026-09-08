@@ -232,7 +232,12 @@ col_eval_stratum(const wl_plan_stratum_t *sp, wl_col_session_t *sess,
             if (stack.top == 0)
                 continue;
 
-            eval_entry_t result = eval_stack_pop(&stack);
+            eval_entry_t result;
+            rc = eval_stack_pop_relation(&stack, &result);
+            if (rc != 0) {
+                eval_stack_drain(&stack);
+                return rc;
+            }
             eval_stack_drain(&stack); /* drain any leftover entries */
 
             col_rel_t *target = session_find_rel(sess, rp->name);
@@ -578,22 +583,22 @@ col_eval_stratum(const wl_plan_stratum_t *sp, wl_col_session_t *sess,
                 if (stack.top == 0)
                     continue;
 
-                eval_entry_t result = eval_stack_pop(&stack);
+                eval_entry_t result;
+                rc = eval_stack_pop_relation(&stack, &result);
+                if (rc != 0) {
+                    eval_stack_drain(&stack);
+                    outer_rc = rc;
+                    goto stride_error;
+                }
                 eval_stack_drain(&stack);
 
                 /* Post-eval skip: evaluation produced 0 rows — safety net for
                  * cases not caught by pre-scan (e.g. filters eliminating all
                  * rows).
                  *
-                 * The !result.rel arm is not analyzer appeasement.
-                 * eval_stack_pop() yields {NULL, ...} only for an empty
-                 * stack, and the stack.top == 0 check three lines above has
-                 * already excluded that, so a NULL here would mean a NULL rel
-                 * was pushed.  It is dispositioned as "no result" to match
-                 * that same branch rather than as an error, so one observable
-                 * state does not get two dispositions depending on which
-                 * check saw it first.  (diff.c and join.c return EINVAL on a
-                 * NULL pop because they pop without a prior emptiness check.)
+                 * The relation-only pop above has already rejected
+                 * continuation and malformed entries, so a NULL here is only
+                 * the ordinary empty-result representation.
                  * Otherwise the statements below dereference result.rel:
                  * ->name on the rename arm, ->ncols on the schema-adoption
                  * arm.  col_rel_destroy(NULL) is a no-op, so the continue
