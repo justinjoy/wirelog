@@ -347,6 +347,7 @@ col_op_k_fusion_serial(const wl_plan_op_t *op, eval_stack_t *stack,
                     "<k_fusion_copy>", e.rel);
             if (!copy) {
                 rc = ENOMEM;
+                eval_entry_dispose(&e);
                 eval_stack_drain(&s);
                 goto cleanup;
             }
@@ -745,6 +746,7 @@ col_op_k_fusion_dispatch(const wl_plan_op_t *op, eval_stack_t *stack,
                     "<k_fusion_copy>", e.rel);
             if (!copy) {
                 rc = ENOMEM;
+                eval_entry_dispose(&e);
                 eval_stack_drain(&workers[d].stack);
                 goto cleanup_results;
             }
