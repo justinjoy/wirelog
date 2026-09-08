@@ -159,6 +159,9 @@ mat_cache_entry_destroy(col_mat_cache_t *cache, col_mat_entry_t *e)
     e->result = NULL;
     e->mem_bytes = 0;
     e->eviction_deferred = false;
+    e->owner_alive = false;
+    e->owns_result = false;
+    e->epoch_pin_count = 0;
 }
 
 static void
@@ -221,6 +224,31 @@ col_mat_cache_clear(col_mat_cache_t *cache)
 }
 
 void
+col_mat_cache_release_pins(col_mat_cache_t *cache)
+{
+    if (!cache)
+        return;
+    for (uint32_t i = 0; i < cache->count;) {
+        col_mat_entry_t *entry = &cache->entries[i];
+        if (entry->epoch_pin_count > 0) {
+            assert(entry->pin_count >= entry->epoch_pin_count);
+            entry->pin_count -= entry->epoch_pin_count;
+            assert(cache->active_pins >= entry->epoch_pin_count);
+            cache->active_pins -= entry->epoch_pin_count;
+            entry->epoch_pin_count = 0;
+            entry->pin_epoch = 0;
+        }
+        if (entry->pin_count == 0 && entry->eviction_deferred)
+            mat_cache_remove_at(cache, i);
+        else
+            i++;
+    }
+    cache->pin_epoch++;
+    if (cache->pin_epoch == 0)
+        cache->pin_epoch++;
+}
+
+void
 col_mat_cache_truncate(col_mat_cache_t *cache, uint32_t keep_count)
 {
     /* keep_count is a visible-prefix target.  Pinned suffix entries may keep
@@ -263,6 +291,10 @@ col_rel_t *
 col_mat_cache_lookup(col_mat_cache_t *cache, const col_rel_t *left,
     const col_rel_t *right)
 {
+    if (!cache)
+        return NULL;
+    if (cache->pin_epoch == 0)
+        cache->pin_epoch = 1;
     uint64_t lh = col_mat_cache_key_content(left);
     uint64_t rh = col_mat_cache_key_content(right);
     for (uint32_t i = 0; i < cache->count; i++) {
@@ -270,9 +302,18 @@ col_mat_cache_lookup(col_mat_cache_t *cache, const col_rel_t *left,
             && cache->entries[i].right_hash == rh
             && cache->entries[i].result != NULL
             && !cache->entries[i].eviction_deferred) {
+            col_mat_entry_t *entry = &cache->entries[i];
+            if (entry->owner_alive && entry->generation != 0
+                && entry->pin_epoch != cache->pin_epoch) {
+                entry->pin_count++;
+                entry->epoch_pin_count++;
+                entry->pin_epoch = cache->pin_epoch;
+                assert(cache->active_pins < UINT32_MAX);
+                cache->active_pins++;
+            }
             cache->entries[i].lru_clock = ++cache->clock;
             cache->hits++;
-            return cache->entries[i].result;
+            return entry->result;
         }
     }
     cache->misses++;
@@ -376,7 +417,22 @@ col_mat_cache_insert_pin(col_mat_cache_t *cache, const col_rel_t *left,
     if (e->identity == 0)
         e->identity = ++cache->next_identity;
     e->pin_count = 0;
+    e->epoch_pin_count = 0;
     e->eviction_deferred = false;
+    e->pin_epoch = 0;
+    e->generation = ++cache->next_generation;
+    if (e->generation == 0)
+        e->generation = ++cache->next_generation;
+    e->owner_alive = true;
+    e->owns_result = !result->pool_owned && !result->arena_owned;
+    if (e->owns_result && result->col_shared) {
+        for (uint32_t c = 0; c < result->ncols; c++) {
+            if (result->col_shared[c]) {
+                e->owns_result = false;
+                break;
+            }
+        }
+    }
     cache->total_bytes += result_bytes;
 
     /* Issue #1380: the cache now owns result, so its bytes move from
@@ -409,4 +465,74 @@ col_mat_cache_insert(col_mat_cache_t *cache, const col_rel_t *left,
     const col_rel_t *right, col_rel_t *result)
 {
     return col_mat_cache_insert_pin(cache, left, right, result, NULL);
+}
+
+static wl_mem_reclaim_result_t
+mat_cache_reclaimer(void *owner)
+{
+    col_mat_cache_t *cache = (col_mat_cache_t *)owner;
+    wl_mem_reclaim_result_t total = { 0, 0 };
+    if (!cache || !cache->reclaimer_owner_alive)
+        return total;
+    uint32_t index = 0;
+    while (index < cache->count) {
+        uint64_t generation = cache->entries[index].generation;
+        wl_mem_reclaim_result_t one
+            = col_mat_cache_reclaim_entry(cache, index, generation);
+        if (one.candidates > 0) {
+            total.bytes_released += one.bytes_released;
+            total.candidates += one.candidates;
+        } else {
+            index++;
+        }
+    }
+    return total;
+}
+
+int
+col_mat_cache_attach_reclaimer(col_mat_cache_t *cache)
+{
+    if (!cache || !cache->ledger)
+        return EINVAL;
+    if (cache->reclaimer_handle != 0)
+        return 0;
+    int rc = wl_mem_ledger_register_reclaimer(cache->ledger,
+        mat_cache_reclaimer, cache, &cache->reclaimer_handle);
+    if (rc == 0)
+        cache->reclaimer_owner_alive = true;
+    return rc;
+}
+
+void
+col_mat_cache_detach_reclaimer(col_mat_cache_t *cache)
+{
+    if (!cache)
+        return;
+    cache->reclaimer_owner_alive = false;
+    if (cache->ledger && cache->reclaimer_handle != 0)
+        wl_mem_ledger_unregister_reclaimer(cache->ledger,
+            cache->reclaimer_handle);
+    cache->reclaimer_handle = 0;
+}
+
+wl_mem_reclaim_result_t
+col_mat_cache_reclaim_entry(col_mat_cache_t *cache, uint32_t index,
+    uint64_t expected_generation)
+{
+    wl_mem_reclaim_result_t result = { 0, 0 };
+    if (!cache || index >= cache->count)
+        return result;
+    col_mat_entry_t *entry = &cache->entries[index];
+    if (entry->generation != expected_generation || !entry->owner_alive
+        || !entry->owns_result || !entry->result || entry->pin_count != 0)
+        return result;
+    /* Re-read ownership and pin state immediately before removal. */
+    if (entry->generation != expected_generation || !entry->owner_alive
+        || entry->pin_count != 0)
+        return result;
+    uint64_t released = col_rel_transport_bytes(entry->result);
+    mat_cache_remove_at(cache, index);
+    result.bytes_released = released;
+    result.candidates = 1;
+    return result;
 }
