@@ -1317,6 +1317,19 @@ test_memory_governor_exe = executable(
 )
 test('memory_governor', test_memory_governor_exe, suite: 'unit')
 
+test_memory_admission_arena_exe = executable(
+  'test_memory_admission_arena',
+  files('test_memory_admission_arena.c',
+        '../wirelog/arena/arena.c',
+        '../wirelog/arena/arena_admission.c',
+        '../wirelog/columnar/memory_governor.c',
+        '../wirelog/util/log.c',
+        '../wirelog/util/log_emit.c') + thread_src,
+  include_directories: [wirelog_inc, wirelog_src_inc],
+  dependencies: [threads_dep],
+)
+test('memory_admission_arena', test_memory_admission_arena_exe, suite: 'unit')
+
 # ============================================================================
 # Plan Generator + Session Facts Tests (Phase 2C columnar backend)
 # ============================================================================
@@ -1378,7 +1391,9 @@ backend_src = files(
 
 arena_src = files(
   '../wirelog/arena/arena.c',
+  '../wirelog/arena/arena_admission.c',
   '../wirelog/arena/compound_arena.c',
+  '../wirelog/columnar/memory_governor.c',
 )
 
 workqueue_src = files(
