@@ -163,7 +163,7 @@ read_cgroup_path(const char *prefix, char *out, size_t out_size)
             fclose(file);
             return false;
         }
-        strcpy(out, separator);
+        memcpy(out, separator, strlen(separator) + 1);
         fclose(file);
         return true;
     }
@@ -183,9 +183,10 @@ parent_cgroup_path(char *path)
     while (len > 1 && path[len - 1] == '/')
         path[--len] = '\0';
     slash = strrchr(path, '/');
-    if (!slash || slash == path)
-        strcpy(path, "/");
-    else
+    if (!slash || slash == path) {
+        path[0] = '/';
+        path[1] = '\0';
+    } else
         *slash = '\0';
 }
 
@@ -200,7 +201,7 @@ probe_cgroup_tree(const char *mount_root, const char *path,
 
     if (!mount_root || !path || !out || strlen(path) >= sizeof(current))
         return false;
-    strcpy(current, path);
+    memcpy(current, path, strlen(path) + 1);
     for (;;) {
         char max_path[WL_MEMORY_PATH_MAX];
         char high_path[WL_MEMORY_PATH_MAX];
