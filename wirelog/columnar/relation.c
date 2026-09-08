@@ -532,6 +532,7 @@ col_rel_set_schema(col_rel_t *r, uint32_t ncols, const char *const *col_names)
 {
     wl_columnar_memory_reservation_t pending;
     int pending_rc;
+    int failure_rc = EINVAL;
     uint64_t retained_bytes = 0;
 
     if (!r)
@@ -550,11 +551,13 @@ col_rel_set_schema(col_rel_t *r, uint32_t ncols, const char *const *col_names)
         r->capacity = COL_REL_INIT_CAP;
         r->columns = col_columns_alloc(ncols, r->capacity);
         if (!r->columns) {
+            failure_rc = ENOMEM;
             goto fail;
         }
 
         r->col_names = (char **)calloc(ncols, sizeof(char *));
         if (!r->col_names) {
+            failure_rc = ENOMEM;
             goto fail;
         }
         for (uint32_t i = 0; i < ncols; i++) {
@@ -566,6 +569,7 @@ col_rel_set_schema(col_rel_t *r, uint32_t ncols, const char *const *col_names)
                 r->col_names[i] = wl_strdup(buf);
             }
             if (!r->col_names[i]) {
+                failure_rc = ENOMEM;
                 goto fail;
             }
         }
@@ -603,6 +607,7 @@ col_rel_set_schema(col_rel_t *r, uint32_t ncols, const char *const *col_names)
             r->timestamps != NULL, &retained_bytes)
             || col_rel_publish_retained_reservation(r, &pending,
             retained_bytes) != 0) {
+            failure_rc = ENOMEM;
             goto fail;
         }
     }
@@ -626,7 +631,7 @@ fail:
     }
     r->capacity = 0;
     r->ncols = 0;
-    return EINVAL;
+    return failure_rc;
 }
 
 int

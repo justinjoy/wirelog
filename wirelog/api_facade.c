@@ -303,6 +303,12 @@ ensure_result_relation(wirelog_result_t *result, const char *relation,
             memcpy(rels, result->relations, (size_t)old_bytes);
         memset(rels + result->capacity, 0,
             (next - result->capacity) * sizeof(wl_result_relation_t));
+        if (result->count >= next) {
+            free(name);
+            free(rels);
+            (void)wl_columnar_memory_release(&pending);
+            return NULL;
+        }
         rels[result->count].name = name;
         rels[result->count].cols = cols;
         if (!result_publish_admission(result, &pending, target)) {
