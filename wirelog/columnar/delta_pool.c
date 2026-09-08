@@ -15,8 +15,19 @@
 #define POOL_ALIGN 8
 #define POOL_ALIGN_UP(n) (((n) + (POOL_ALIGN - 1)) & ~(size_t)(POOL_ALIGN - 1))
 
-delta_pool_t *
-delta_pool_create(uint32_t max_slots, size_t slot_size, size_t arena_bytes)
+static bool
+pool_align_up(size_t value, size_t *out)
+{
+    if (!out || value > SIZE_MAX - (POOL_ALIGN - 1))
+        return false;
+    *out = POOL_ALIGN_UP(value);
+    return true;
+}
+
+static delta_pool_t *
+delta_pool_create_impl(uint32_t max_slots, size_t slot_size,
+    size_t arena_bytes, void *admission_context,
+    void (*admission_release)(void *context))
 {
     if (max_slots == 0 || slot_size == 0 || arena_bytes == 0)
         return NULL;
@@ -25,7 +36,12 @@ delta_pool_create(uint32_t max_slots, size_t slot_size, size_t arena_bytes)
     if (!pool)
         return NULL;
 
-    size_t aligned_slot = POOL_ALIGN_UP(slot_size);
+    size_t aligned_slot;
+    if (!pool_align_up(slot_size, &aligned_slot)
+        || max_slots > SIZE_MAX / aligned_slot) {
+        free(pool);
+        return NULL;
+    }
     pool->slab = (char *)calloc(max_slots, aligned_slot);
     if (!pool->slab) {
         free(pool);
@@ -44,7 +60,25 @@ delta_pool_create(uint32_t max_slots, size_t slot_size, size_t arena_bytes)
     pool->slot_used = 0;
     pool->arena_cap = arena_bytes;
     pool->arena_used = 0;
+    pool->admission_context = admission_context;
+    pool->admission_release = admission_release;
     return pool;
+}
+
+delta_pool_t *
+delta_pool_create(uint32_t max_slots, size_t slot_size, size_t arena_bytes)
+{
+    return delta_pool_create_impl(max_slots, slot_size, arena_bytes,
+               NULL, NULL);
+}
+
+delta_pool_t *
+delta_pool_create_with_admission(uint32_t max_slots, size_t slot_size,
+    size_t arena_bytes, void *context,
+    void (*admission_release)(void *context))
+{
+    return delta_pool_create_impl(max_slots, slot_size, arena_bytes,
+               context, admission_release);
 }
 
 void *
@@ -64,8 +98,10 @@ delta_pool_alloc_data(delta_pool_t *pool, size_t bytes)
     if (!pool || bytes == 0)
         return NULL;
 
-    size_t aligned = POOL_ALIGN_UP(bytes);
-    if (pool->arena_used + aligned > pool->arena_cap)
+    size_t aligned;
+    if (!pool_align_up(bytes, &aligned)
+        || pool->arena_used > pool->arena_cap
+        || aligned > pool->arena_cap - pool->arena_used)
         return NULL;
 
     void *ptr = pool->arena + pool->arena_used;
@@ -89,6 +125,8 @@ delta_pool_destroy(delta_pool_t *pool)
         return;
     free(pool->slab);
     free(pool->arena);
+    if (pool->admission_release)
+        pool->admission_release(pool->admission_context);
     free(pool);
 }
 

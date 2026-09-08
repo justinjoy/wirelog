@@ -781,7 +781,10 @@ col_op_k_fusion_dispatch(const wl_plan_op_t *op, eval_stack_t *stack,
             if (pool_slots < 16)
                 pool_slots = 16;
             worker_sess[d].delta_pool
-                = delta_pool_create(pool_slots, sizeof(col_rel_t), pool_arena);
+                = delta_pool_create_managed(pool_slots, sizeof(col_rel_t),
+                    pool_arena,
+                    wl_columnar_memory_governor_ref_get(
+                        sess->memory_governor));
             if (worker_sess[d].delta_pool) {
                 const delta_pool_t *dp = worker_sess[d].delta_pool;
                 wl_mem_ledger_alloc(&sess->mem_ledger, WL_MEM_SUBSYS_ARENA,

@@ -1236,7 +1236,9 @@ col_session_create(const wl_plan_t *plan, uint32_t num_workers,
      * Slab: 256 relations (cover ~20 rules x 5 ops + headroom)
      * Arena: 64MB initial (for row data buffers) */
     sess->delta_pool
-        = delta_pool_create(256, sizeof(col_rel_t), 64UL * 1024 * 1024);
+        = delta_pool_create_managed(256, sizeof(col_rel_t),
+            64UL * 1024 * 1024,
+            wl_columnar_memory_governor_ref_get(sess->memory_governor));
     if (!sess->delta_pool) {
         /* Non-fatal: pool allocation failed, fall back to malloc */
     }
@@ -1802,7 +1804,10 @@ col_worker_session_create(wl_col_session_t *coordinator,
         if (pool_slots < 16)
             pool_slots = 16;
         out_worker->delta_pool
-            = delta_pool_create(pool_slots, sizeof(col_rel_t), pool_arena);
+            = delta_pool_create_managed(pool_slots, sizeof(col_rel_t),
+                pool_arena,
+                wl_columnar_memory_governor_ref_get(
+                    out_worker->memory_governor));
         /* Non-fatal if NULL: operators fall back to malloc */
     }
     ledger_charge_allocators(out_worker); /* Issue #1380: ARENA */
