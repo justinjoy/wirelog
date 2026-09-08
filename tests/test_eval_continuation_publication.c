@@ -435,6 +435,37 @@ test_reservation_and_stack_ownership(void)
         "concat rejection destroys continuation exactly once");
     CHECK(stack.top == 0,
         "concat rejection consumes both owned eval entries");
+
+    /* CONCAT's first pop rejects the top entry before touching the lower
+     * operand.  Keep an owned relation with boundary metadata below it so
+     * the remaining stack ownership is explicit and can be drained safely. */
+    memset(&producer, 0, sizeof(producer));
+    continuation = make_continuation(&producer);
+    relation = col_rel_new_auto("concat-first-pop", 1);
+    CHECK(relation != NULL, "concat first-pop relation can be created");
+    eval_stack_init(&stack);
+    CHECK(eval_stack_push(&stack, relation, true) == 0,
+        "concat first-pop relation is pushed first");
+    stack.items[stack.top - 1].seg_boundaries
+        = (uint32_t *)malloc(2 * sizeof(uint32_t));
+    CHECK(stack.items[stack.top - 1].seg_boundaries != NULL,
+        "concat first-pop metadata is allocated");
+    if (stack.items[stack.top - 1].seg_boundaries) {
+        stack.items[stack.top - 1].seg_boundaries[0] = 0;
+        stack.items[stack.top - 1].seg_boundaries[1] = 0;
+        stack.items[stack.top - 1].seg_count = 1;
+    }
+    CHECK(eval_stack_push_continuation(&stack, continuation) == 0,
+        "concat first-pop continuation is pushed second");
+    CHECK(col_op_concat(&stack, NULL) == ENOTSUP,
+        "concat rejects a continuation on its first pop");
+    CHECK(producer.destroy_calls == 1,
+        "concat first-pop rejection destroys continuation exactly once");
+    CHECK(stack.top == 1 && stack.items[0].rel == relation,
+        "concat first-pop rejection leaves the lower relation on the stack");
+    eval_stack_drain(&stack);
+    CHECK(stack.top == 0,
+        "concat first-pop remainder drains its relation and boundaries");
 }
 
 int
