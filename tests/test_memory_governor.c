@@ -254,6 +254,87 @@ test_concurrent_admission(void)
     return 0;
 }
 
+static int
+test_checked_admission(void)
+{
+    wl_columnar_memory_resolution_t resolution;
+    wl_columnar_memory_governor_t governor;
+    wl_columnar_memory_governor_t other_governor;
+    wl_columnar_memory_reservation_t reservation;
+    wl_columnar_memory_reservation_t copied;
+    wl_columnar_memory_reservation_t old_reservation;
+    wl_columnar_memory_reservation_t growth_reservation;
+    uint64_t value;
+
+    TEST("typed admission, growth overlap, arithmetic, and token identity");
+    make_resolution(&resolution, 1000, 900);
+    wl_columnar_memory_reservation_init(&reservation);
+    if (wl_columnar_memory_governor_init(&governor, &resolution) != 0
+        || wl_columnar_memory_size_add(UINT64_MAX, 1, &value)
+        || wl_columnar_memory_size_mul(UINT64_MAX, 2, &value)
+        || !wl_columnar_memory_size_add(40, 2, &value) || value != 42
+        || !wl_columnar_memory_size_mul(6, 7, &value) || value != 42
+        || wl_columnar_memory_reserve_checked(&governor, 901, &reservation)
+        != WL_COLUMNAR_MEMORY_ADMISSION_DENIED
+        || wl_columnar_memory_reserve_growth(&governor, 20, 10, &reservation)
+        != WL_COLUMNAR_MEMORY_ADMISSION_INVALID
+        || wl_columnar_memory_reserve_growth(&governor, 20, 20, &reservation)
+        != WL_COLUMNAR_MEMORY_ADMISSION_OK
+        || wl_columnar_memory_reserved(&governor) != 20
+        || !wl_columnar_memory_release(&reservation)
+        || !wl_columnar_memory_reserve(&governor, 400, &reservation)
+        || wl_columnar_memory_reserve_growth(&governor, 400, 400,
+        &reservation) != WL_COLUMNAR_MEMORY_ADMISSION_INVALID
+        || wl_columnar_memory_reserved(&governor) != 400) {
+        FAIL("checked admission or overflow arithmetic is wrong");
+        return 1;
+    }
+    copied = reservation;
+    if (wl_columnar_memory_release(&copied)
+        || !wl_columnar_memory_release(&reservation)
+        || wl_columnar_memory_reserved(&governor) != 0) {
+        FAIL("copied reservation token was able to release capacity");
+        return 1;
+    }
+    wl_columnar_memory_reservation_init(&old_reservation);
+    wl_columnar_memory_reservation_init(&growth_reservation);
+    if (!wl_columnar_memory_reserve(&governor, 100, &old_reservation)
+        || wl_columnar_memory_reserve_growth(&governor, 100, 200,
+        &growth_reservation) != WL_COLUMNAR_MEMORY_ADMISSION_OK
+        || wl_columnar_memory_reserved(&governor) != 300
+        || !wl_columnar_memory_release(&growth_reservation)
+        || !wl_columnar_memory_release(&old_reservation)) {
+        FAIL("growth did not reserve a distinct overlapping footprint");
+        return 1;
+    }
+    make_resolution(&resolution, 1000, 900);
+    if (wl_columnar_memory_governor_init(&other_governor, &resolution) != 0
+        || !wl_columnar_memory_reserve(&governor, 400, &reservation)
+        || wl_columnar_memory_reserve_growth(&other_governor, 400, 400,
+        &reservation) != WL_COLUMNAR_MEMORY_ADMISSION_INVALID
+        || !wl_columnar_memory_release(&reservation)) {
+        FAIL("growth accepted a token owned by another governor");
+        return 1;
+    }
+    memset(&resolution, 0, sizeof(resolution));
+    resolution.mode = WL_COLUMNAR_MEMORY_MODE_ADVISORY;
+    resolution.usable_bytes = UINT64_MAX;
+    resolution.status = WL_COLUMNAR_MEMORY_OK;
+    if (wl_columnar_memory_governor_init(&governor, &resolution) != 0) {
+        FAIL("advisory governor initialization failed");
+        return 1;
+    }
+    wl_columnar_memory_reservation_init(&reservation);
+    if (wl_columnar_memory_reserve_growth(&governor, 0, 1, &reservation)
+        != WL_COLUMNAR_MEMORY_ADMISSION_ADVISORY
+        || !wl_columnar_memory_release(&reservation)) {
+        FAIL("advisory admission status was not preserved");
+        return 1;
+    }
+    PASS();
+    return 0;
+}
+
 int
 main(void)
 {
@@ -264,6 +345,7 @@ main(void)
     test_headroom_boundaries();
     test_reservation_lifecycle();
     test_concurrent_admission();
+    test_checked_admission();
     printf("\nPassed %d/%d; Failed %d\n",
         tests_run - tests_failed, tests_run, tests_failed);
     return tests_failed == 0 ? 0 : 1;
