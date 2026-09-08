@@ -802,6 +802,16 @@ col_op_k_fusion_dispatch(const wl_plan_op_t *op, eval_stack_t *stack,
                     (uint64_t)dp->slot_cap * dp->slot_size + dp->arena_cap);
             }
         }
+        /* Acquire the borrowed arena only after coordinator-owned fields have
+        * been nulled, so failed acquisition can use common cleanup safely. */
+        memset(&worker_sess[d].compound_borrow, 0,
+            sizeof(worker_sess[d].compound_borrow));
+        if (worker_sess[d].compound_arena
+            && !wl_compound_arena_borrow(worker_sess[d].compound_arena,
+            &worker_sess[d].compound_borrow)) {
+            rc = EBUSY;
+            goto cleanup_wq;
+        }
 
         workers[d].plan_data.name = "<k_fusion_copy>";
         workers[d].plan_data.ops = meta->k_ops[branch_idx];
@@ -964,6 +974,8 @@ cleanup_wq:
      * its isolated cache — no races at cleanup time. */
     for (uint32_t d = 0; d < live_count; d++) {
         eval_stack_drain(&workers[d].stack);
+        (void)wl_compound_arena_borrow_release(
+            &worker_sess[d].compound_borrow);
         /* Issue #196: worker mat_cache starts empty (zeroed above), so ALL
          * entries were created by this worker — free from index 0.  The
          * worker cache has no ledger (Issue #1380), so this is a plain

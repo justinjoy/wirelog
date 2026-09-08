@@ -140,6 +140,26 @@ typedef struct {
     wl_columnar_memory_reservation_t *entries_admission;
 } wl_compound_gen_t;
 
+struct wl_compound_arena;
+typedef struct wl_compound_arena wl_compound_arena_t;
+
+typedef struct {
+    wl_compound_arena_t *arena;
+    uintptr_t identity;
+} wl_compound_arena_borrow_t;
+
+typedef struct {
+    wl_compound_arena_t *arena;
+    uintptr_t identity;
+} wl_compound_arena_mutation_t;
+
+typedef enum {
+    WL_COMPOUND_FAIL_NONE = 0,
+    WL_COMPOUND_FAIL_PAYLOAD = 1,
+    WL_COMPOUND_FAIL_ENTRY_OFFSETS = 2,
+    WL_COMPOUND_FAIL_MULTIPLICITY = 3,
+} wl_compound_alloc_failpoint_t;
+
 typedef int (*wl_compound_admission_prepare_fn)(void *context,
     uint64_t old_bytes, uint64_t new_bytes,
     wl_columnar_memory_reservation_t *reservation);
@@ -169,7 +189,7 @@ typedef int (*wl_compound_admission_release_fn)(void *context,
  * @live_handles: Total live handles (multiplicity > 0) across all epochs,
  *                maintained by arena_alloc/inc/dec/gc for test introspection.
  */
-typedef struct {
+struct wl_compound_arena {
     uint32_t session_seed;
     uint32_t current_epoch;
     wl_compound_gen_t *gens;
@@ -184,7 +204,9 @@ typedef struct {
     wl_compound_admission_publish_fn admission_publish;
     wl_compound_admission_abort_fn admission_abort;
     wl_compound_admission_release_fn admission_release_reservation;
-} wl_compound_arena_t;
+    wl_atomic_u64 access_gate;
+    uint32_t test_failpoint;
+};
 
 /* ======================================================================== */
 /* API                                                                      */
@@ -223,12 +245,29 @@ wl_compound_arena_create_with_admission(uint32_t session_seed,
     wl_compound_admission_abort_fn abort,
     wl_compound_admission_release_fn release_reservation);
 
+bool
+wl_compound_arena_borrow(wl_compound_arena_t *arena,
+    wl_compound_arena_borrow_t *borrow);
+bool
+wl_compound_arena_borrow_release(wl_compound_arena_borrow_t *borrow);
+bool
+wl_compound_arena_mutation_begin(wl_compound_arena_t *arena,
+    wl_compound_arena_mutation_t *mutation);
+bool
+wl_compound_arena_mutation_end(wl_compound_arena_mutation_t *mutation);
+bool
+wl_compound_arena_free_checked(wl_compound_arena_t *arena);
+void
+wl_compound_arena_test_fail_next(wl_compound_arena_t *arena,
+    wl_compound_alloc_failpoint_t failpoint);
+
 /**
  * wl_compound_arena_free:
  * @arena: (transfer full): arena to free. NULL-safe.
  *
  * Free the arena and all per-generation buffers.  Any handle previously
- * returned by wl_compound_arena_alloc becomes invalid.
+ * returned by wl_compound_arena_alloc becomes invalid.  Callers which need
+ * to observe an active worker lease must use free_checked().
  */
 void
 wl_compound_arena_free(wl_compound_arena_t *arena);
@@ -263,6 +302,10 @@ wl_compound_arena_alloc(wl_compound_arena_t *arena, uint32_t size);
  */
 const void *
 wl_compound_arena_lookup(const wl_compound_arena_t *arena, uint64_t handle,
+    uint32_t *out_size);
+const void *
+wl_compound_arena_lookup_borrowed(
+    const wl_compound_arena_borrow_t *borrow, uint64_t handle,
     uint32_t *out_size);
 
 /**

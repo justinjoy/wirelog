@@ -228,7 +228,7 @@ These exist so struct fields can be declared portably; the audit in
 
 Every `atomic_*` call site in `wirelog/` production sources. Counted
 mechanically by `scripts/ci/check-threading-doc.sh`; row count must
-match the script's count (currently **79**).
+match the script's count (currently **91**).
 
 Format: `file:function[#N]` | field | operation | order | justification.
 
@@ -373,8 +373,28 @@ representation so transfer cannot race a release with a data race.
 | `memory_governor.c:finish_reservation#3` | `reserved_bytes` | `atomic_compare_exchange_weak_explicit` | `release`/`relaxed` | Return exactly this token's bytes without underflow |
 | `memory_governor.c:wl_columnar_memory_reserve_growth` | `reservation->state` | `atomic_load_explicit` | `acquire` | Validate the source token before creating a distinct growth reservation |
 | `memory_governor.c:wl_columnar_memory_reserved` | `reserved_bytes` | `atomic_load_explicit` | `acquire` | Read a coherent observable reservation total |
+| `memory_governor.c:wl_columnar_memory_reservation_move` | `destination->state` | `atomic_load_explicit` | `acquire` | Validate the destination token before moving ownership |
+| `memory_governor.c:wl_columnar_memory_reservation_move#2` | `source->state` | `atomic_load_explicit` | `acquire` | Validate the source token before transferring ownership |
+| `memory_governor.c:wl_columnar_memory_reservation_move#3` | `destination->owner_bits` | `atomic_store_explicit` | `relaxed` | Copy the logical owner into the destination token before publishing its state |
+| `memory_governor.c:wl_columnar_memory_reservation_move#4` | `source->owner_bits` | `atomic_load_explicit` | `relaxed` | Read the source owner while transferring the token |
+| `memory_governor.c:wl_columnar_memory_reservation_move#5` | `destination->state` | `atomic_store_explicit` | `release` | Publish the moved reservation after its owner and governor fields are initialized |
+| `memory_governor.c:wl_columnar_memory_reservation_move#6` | `source->owner_bits` | `atomic_store_explicit` | `relaxed` | Clear the source owner after ownership has moved |
+| `memory_governor.c:wl_columnar_memory_reservation_move#7` | `source->state` | `atomic_store_explicit` | `release` | Publish the empty source state after clearing its ownership |
 
-### 5.9 `wirelog/intern.c` — shared symbol table (3 rows)
+### 5.9 `wirelog/arena/compound_arena.c` — mutation gate (5 rows)
+
+| Anchor (`file:function[#N]`) | Field | Op | Order | Justification |
+|---|---|---|---|---|
+| `compound_arena.c:compound_gate_load` | `arena->access_gate` | `atomic_load_explicit` | `acquire` | Observe the writer/readers gate before acquiring a read lease or validating mutation teardown |
+| `compound_arena.c:compound_gate_store` | `arena->access_gate` | `atomic_store_explicit` | `release` | Initialize the gate before publication; on portable builds this helper is also the release-side gate store |
+| `compound_arena.c:wl_compound_arena_borrow` | `arena->access_gate` | `atomic_compare_exchange_weak_explicit` | `acquire`/`relaxed` | Admit one reader only while no writer owns the gate |
+| `compound_arena.c:wl_compound_arena_borrow_release` | `arena->access_gate` | `atomic_compare_exchange_weak_explicit` | `release`/`relaxed` | Remove exactly one reader lease without reopening a writer-owned gate |
+| `compound_arena.c:wl_compound_arena_mutation_begin` | `arena->access_gate` | `atomic_compare_exchange_weak_explicit` | `acquire`/`relaxed` | Claim exclusive mutation ownership after all reader leases have drained |
+
+On MSVC the helper load/store use interlocked intrinsics because the shared
+`wl_atomic_u64` compatibility type cannot use C11 atomic operations directly.
+
+### 5.10 `wirelog/intern.c` — shared symbol table (3 rows)
 
 The intern table is shared, unsynchronized, by every parallel worker
 (Issue #958). Writers (`wl_intern_put`, `wl_intern_get`) serialize on
@@ -390,9 +410,9 @@ named in the justification.
 | `intern.c:WL_INTERN_LOAD_RELAXED` | `intern->count` | `atomic_load_explicit` | `relaxed` | `WL_INTERN_LOAD_RELAXED`, used by `wl_intern_put`, `intern_resize` and `wl_intern_free`. The writer holds `intern->lock` (or, in `free`, has exclusive access), so no edge is needed |
 | `intern.c:WL_INTERN_STORE_RELEASE` | `intern->count` | `atomic_store_explicit` | `release` | `WL_INTERN_STORE_RELEASE`, used by `wl_intern_put` after the string and its segment pointer are written. Publishing the count first would let a lock-free reader dereference an unwritten slot |
 
-### 5.9 Total
+### 5.11 Total
 
-21 + 4 + 2 + 19 + 1 + 1 + 1 + 3 + 27 = **79 atomic call sites**.
+21 + 4 + 2 + 19 + 1 + 1 + 1 + 3 + 27 + 7 + 5 = **91 atomic call sites**.
 
 The `#N` suffix counts all atomic sites in a symbol, regardless of operation;
 the first site remains unsuffixed. `scripts/ci/check-threading-doc.sh` uses
@@ -821,6 +841,20 @@ advisory leg); issue #826 (native TSan SEGV triage);
 `.github/workflows/ci-pr.yml` `tsan-native` job.
 
 ---
+
+## 11. Compound-arena read leases and mutation windows (#1423)
+
+`wl_compound_arena_t` has one coordinator mutation gate. A worker must hold a
+`wl_compound_arena_borrow_t` while using a lookup result; copying or releasing
+the lease twice is rejected. The coordinator cannot allocate, retain, freeze,
+unfreeze, advance the epoch, or destroy the arena while any read lease is
+active. Coordinator mutation must be completed before worker leases are
+opened, and workers must release their leases before coordinator teardown.
+
+This gate protects pointer lifetime across both append-only metadata changes
+and replacement-buffer growth. `frozen` remains a semantic read-only guard,
+not a synchronization primitive. The unmanaged compound-arena constructor
+and standalone fuzz target do not link the memory governor.
 
 ## 12. References
 

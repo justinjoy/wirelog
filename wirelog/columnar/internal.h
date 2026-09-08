@@ -1516,6 +1516,8 @@ typedef struct wl_col_session_t {
      * The session_seed passed at create time is a placeholder constant; the
      * remap-aware seed will land in the rotation work tracked by #586+. */
     wl_compound_arena_t *compound_arena;
+    /* Worker-owned read lease for the coordinator arena. */
+    wl_compound_arena_borrow_t compound_borrow;
     /* Filtered relation cache (Issue #386): caches apply_right_filter results
      * keyed by (relation_name, filter_expr hash + full content). Prevents
      * redundant O(N) filter scans on each fixpoint iteration when
