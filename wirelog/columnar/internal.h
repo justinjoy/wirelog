@@ -21,6 +21,7 @@
 #include "columnar/diff_trace.h"
 #include "columnar/delta_pool.h"
 #include "columnar/mem_ledger.h"
+#include "columnar/memory_governor.h"
 #include "columnar/kfusion_adaptive.h"
 #include "columnar/progress.h"
 #include "session.h"
@@ -1418,6 +1419,9 @@ typedef struct wl_col_session_t {
      * Initialized in col_session_create via wl_mem_ledger_init().
      * Accessible to all columnar code via &COL_SESSION(sess)->mem_ledger. */
     wl_mem_ledger_t mem_ledger;
+    /* Shared coordinator-owned governor. Workers retain this reference and
+     * never copy or destroy the embedded governor value. */
+    wl_columnar_memory_governor_ref_t *memory_governor;
     /* Issue #1380: memory instrumentation state that is not part of the
      * ledger proper.
      *   mem_channel_ring_bytes: bytes charged to CHANNEL for the MPSC ring
@@ -1493,15 +1497,6 @@ typedef struct wl_col_session_t {
     uint32_t tdd_active_workers;        /* current adaptive TDD width */
     uint32_t tdd_last_active_workers;   /* last selected TDD width */
     uint32_t tdd_max_active_workers;    /* max selected width this eval */
-    /* Per-party memory budget for TDD replicate-mode (Issue #416).
-     * = total_ram*75% / (num_workers+1): the share that keeps aggregate
-     * usage within 75% RAM when coordinator + W workers each hold a full
-     * IDB copy simultaneously.  Coordinator starts with the full budget
-     * and is reduced to this value lazily on the first worker-session init,
-     * so that single-threaded strata (use_tdd=false for all) are not
-     * penalised by an artificially low join-backpressure threshold.
-     * 0 = not applicable (W=1 or env-override path). */
-    uint64_t tdd_budget_per_party;
     /* MPSC delta queue for async delta transport (Issue #410).
      * Created/destroyed per recursive stratum evaluation in
      * col_eval_stratum_tdd_recursive(). NULL outside that scope.

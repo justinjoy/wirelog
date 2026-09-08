@@ -2364,6 +2364,28 @@ test_issue_665_partial_conjunction_multi_worker(void)
     return run_issue_665_partial_conjunction(4, "issue 665 multi-worker");
 }
 
+static int
+test_invalid_memory_budget(void)
+{
+    wirelog_program_t *program = NULL;
+    wirelog_session_t *session = (wirelog_session_t *)(uintptr_t)1;
+    wirelog_error_t error;
+
+    setenv("WIRELOG_MEMORY_BUDGET", "0", 1);
+    program = parse_or_die(PROG_SRC, "invalid-memory-budget");
+    error = wirelog_session_create(program, WIRELOG_BACKEND_DEFAULT, 2,
+            &session);
+    unsetenv("WIRELOG_MEMORY_BUDGET");
+    if (error != WIRELOG_ERR_EXEC || session != NULL) {
+        if (session)
+            wirelog_session_destroy(session);
+        wirelog_program_free(program);
+        return 1;
+    }
+    wirelog_program_free(program);
+    return 0;
+}
+
 int
 main(void)
 {
@@ -2407,6 +2429,7 @@ main(void)
     failures += test_delta_cb_multi_round_recursive_insert();
     failures += test_issue_665_partial_conjunction_default_workers();
     failures += test_issue_665_partial_conjunction_multi_worker();
+    failures += test_invalid_memory_budget();
     failures += test_typed_float_ingress();
     if (failures == 0)
         printf("test_wirelog_advanced: OK\n");

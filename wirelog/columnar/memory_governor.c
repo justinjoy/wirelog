@@ -8,11 +8,11 @@
 #include "columnar/memory_governor.h"
 
 #include <string.h>
+#include <stdlib.h>
 
 #ifndef _WIN32
 #include <errno.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <sys/resource.h>
 #include <unistd.h>
 #else
@@ -48,6 +48,11 @@ finite_source_limit(wl_columnar_memory_source_t source, uint64_t value)
     return source != WL_COLUMNAR_MEMORY_SOURCE_CGROUP_V1
            || value < (UINT64_C(1) << 62);
 }
+
+struct wl_columnar_memory_governor_ref {
+    wl_columnar_memory_governor_t governor;
+    wl_atomic_u64 references;
+};
 
 typedef enum {
     WL_MEMORY_PARSE_INVALID,
@@ -416,6 +421,53 @@ wl_columnar_memory_governor_init(wl_columnar_memory_governor_t *governor,
         memory_order_relaxed);
     atomic_store_explicit(&governor->reserved_bytes, 0, memory_order_relaxed);
     return WL_COLUMNAR_MEMORY_OK;
+}
+
+wl_columnar_memory_governor_ref_t *
+wl_columnar_memory_governor_ref_create(
+    const wl_columnar_memory_resolution_t *resolution)
+{
+    wl_columnar_memory_governor_ref_t *ref;
+
+    if (!resolution || resolution->status != WL_COLUMNAR_MEMORY_OK)
+        return NULL;
+    ref = (wl_columnar_memory_governor_ref_t *)calloc(1, sizeof(*ref));
+    if (!ref)
+        return NULL;
+    if (wl_columnar_memory_governor_init(&ref->governor, resolution)
+        != WL_COLUMNAR_MEMORY_OK) {
+        free(ref);
+        return NULL;
+    }
+    atomic_store_explicit(&ref->references, 1, memory_order_relaxed);
+    return ref;
+}
+
+void
+wl_columnar_memory_governor_ref_retain(
+    wl_columnar_memory_governor_ref_t *ref)
+{
+    if (ref)
+        atomic_fetch_add_explicit(&ref->references, 1, memory_order_relaxed);
+}
+
+void
+wl_columnar_memory_governor_ref_release(
+    wl_columnar_memory_governor_ref_t *ref)
+{
+    if (ref
+        && atomic_fetch_sub_explicit(&ref->references, 1,
+        memory_order_release) == 1) {
+        (void)atomic_load_explicit(&ref->references, memory_order_acquire);
+        free(ref);
+    }
+}
+
+wl_columnar_memory_governor_t *
+wl_columnar_memory_governor_ref_get(
+    wl_columnar_memory_governor_ref_t *ref)
+{
+    return ref ? &ref->governor : NULL;
 }
 
 static bool

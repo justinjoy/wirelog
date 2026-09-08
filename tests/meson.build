@@ -1351,6 +1351,7 @@ backend_src = files(
   '../wirelog/columnar/delta_pool.c',
   '../wirelog/columnar/lftj.c',
   '../wirelog/columnar/mem_ledger.c',
+  '../wirelog/columnar/memory_governor.c',
   '../wirelog/columnar/diff_trace.c',
   '../wirelog/columnar/diff_arrangement.c',
   '../wirelog/columnar/diff_vtable.c',

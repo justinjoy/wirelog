@@ -2502,11 +2502,42 @@ test_snapshot_rebuilds_idb_after_query_mode_input_changes(void)
 /* Main                                                                     */
 /* ======================================================================== */
 
+static void
+test_invalid_memory_budget(void)
+{
+    wirelog_easy_open_opts_t opts = WIRELOG_EASY_OPEN_OPTS_INIT;
+    wirelog_easy_session_t *session = NULL;
+    wirelog_error_t error;
+
+    opts.eager_build = true;
+    setenv("WIRELOG_MEMORY_BUDGET", "0", 1);
+    error = wirelog_easy_open_opts(RELATION_NAME_LIFETIME_SRC, &opts,
+            &session);
+    unsetenv("WIRELOG_MEMORY_BUDGET");
+    if (error != WIRELOG_ERR_EXEC || session != NULL)
+        FAIL("invalid memory budget must fail eager easy-session creation");
+    else
+        PASS();
+
+    session = NULL;
+    setenv("WIRELOG_MEMORY_BUDGET", "0", 1);
+    error = wirelog_easy_open(RELATION_NAME_LIFETIME_SRC, &session);
+    if (error != WIRELOG_OK || !session
+        || wirelog_easy_step(session) != WIRELOG_ERR_EXEC)
+        FAIL("invalid memory budget must fail lazy easy-session build");
+    else
+        PASS();
+    unsetenv("WIRELOG_MEMORY_BUDGET");
+    wirelog_easy_close(session);
+}
+
 int
 main(void)
 {
     printf("wirelog_easy Tests (Issue #441)\n");
     printf("==========================\n\n");
+
+    test_invalid_memory_budget();
 
     test_open_close_null_safe();
     test_open_parse_error();
