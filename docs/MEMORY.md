@@ -487,7 +487,22 @@ WL_MEM_REPORT=1 ./build/bench/bench_flowlog --workload doop \
     --data-doop bench/data/doop --workers 1 --repeat 1 --format json
 ```
 
-## 8. Related
+## 8. Compound-arena mutation window (#1423)
+
+The coordinator owns compound-arena mutation and its governor reservations.
+Workers acquire a non-copyable read lease before using a borrowed arena; the
+lease remains active for the lifetime of any lookup pointer. Allocation,
+retain, freeze/unfreeze, epoch GC, and destruction acquire the exclusive
+mutation gate and therefore fail while a worker lease is active. The
+coordinator must close all worker leases before destroying the arena.
+
+Compound payload, entry-offset, and multiplicity growth is staged as one
+transaction. A failure at any staging allocation frees only the new buffers,
+rolls back pending reservations, and leaves the old pointers, counters and
+governor charge unchanged. The unmanaged constructor remains independent of
+the governor and the standalone fuzz target.
+
+## 9. Related
 
 - Issue #1380 (this instrumentation), #1385 (DOOP under a budget),
   #1367 / #1368 (memory governor and admission), #1375 (K-fusion

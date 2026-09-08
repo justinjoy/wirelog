@@ -166,8 +166,9 @@ worker_fn(void *ctx)
     /* (3) Lookup of pre-freeze sentinel succeeds via borrowed ptr. */
     if (arena) {
         uint32_t out_size = 0;
-        const void *payload = wl_compound_arena_lookup(arena,
-                t->sentinel_handle, &out_size);
+        const void *payload = wl_compound_arena_lookup_borrowed(
+            &t->worker_session->compound_borrow,
+            t->sentinel_handle, &out_size);
         t->lookup_ok = (payload != NULL
             && out_size == t->expected_payload_size);
     } else {
@@ -210,34 +211,8 @@ test_w2_borrow_freeze_lookup(void)
         return;
     }
 
-    /* Two worker sessions, R-5 borrow.  num_partitions=0 keeps the
-     * fixture minimal: we are not testing partition transfer here,
-     * just the borrowed-arena access pattern. */
     wl_col_session_t workers[2];
     memset(workers, 0, sizeof(workers));
-    int rc = col_worker_session_create(coord, 0u, NULL, 0u, &workers[0]);
-    if (rc != 0) {
-        cleanup_coordinator(coord, plan, prog);
-        FAIL("col_worker_session_create #0");
-        return;
-    }
-    rc = col_worker_session_create(coord, 1u, NULL, 0u, &workers[1]);
-    if (rc != 0) {
-        col_worker_session_destroy(&workers[0]);
-        cleanup_coordinator(coord, plan, prog);
-        FAIL("col_worker_session_create #1");
-        return;
-    }
-
-    /* Sanity: R-5 borrow holds at construction time. */
-    if (workers[0].compound_arena != coord->compound_arena
-        || workers[1].compound_arena != coord->compound_arena) {
-        col_worker_session_destroy(&workers[0]);
-        col_worker_session_destroy(&workers[1]);
-        cleanup_coordinator(coord, plan, prog);
-        FAIL("R-5 borrow violated at construction");
-        return;
-    }
 
     wl_work_queue_t *wq = wl_workqueue_create(2u);
     if (!wq) {
@@ -262,6 +237,25 @@ test_w2_borrow_freeze_lookup(void)
         }
 
         wl_compound_arena_freeze(coord->compound_arena);
+
+        /* Open the worker read window only after the coordinator mutation
+         * for this epoch has completed. */
+        int rc = col_worker_session_create(coord, 0u, NULL, 0u,
+                &workers[0]);
+        if (rc == 0)
+            rc = col_worker_session_create(coord, 1u, NULL, 0u,
+                    &workers[1]);
+        if (rc != 0) {
+            printf(" ... FAIL: iter %u worker construction\n", r);
+            verdict = 1;
+            break;
+        }
+        if (workers[0].compound_arena != coord->compound_arena
+            || workers[1].compound_arena != coord->compound_arena) {
+            printf(" ... FAIL: iter %u worker arena mismatch\n", r);
+            verdict = 1;
+            break;
+        }
 
         for (uint32_t k = 0; k < 2u; k++) {
             tasks[k].worker_session = &workers[k];
@@ -316,6 +310,8 @@ test_w2_borrow_freeze_lookup(void)
         if (verdict)
             break;
 
+        col_worker_session_destroy(&workers[0]);
+        col_worker_session_destroy(&workers[1]);
         wl_compound_arena_unfreeze(coord->compound_arena);
         (void)wl_compound_arena_gc_epoch_boundary(coord->compound_arena);
     }

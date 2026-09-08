@@ -1477,7 +1477,7 @@ oom:
     wl_workqueue_destroy(sess->wq);       /* NULL-safe */
     delta_pool_destroy(sess->delta_pool); /* NULL-safe */
     wl_arena_free(sess->eval_arena);      /* NULL-safe; releases admission */
-    wl_compound_arena_free(sess->compound_arena); /* NULL-safe (Issue #559) */
+    (void)wl_compound_arena_free_checked(sess->compound_arena);
     wl_columnar_memory_governor_ref_release(sess->memory_governor);
     free(sess);
     return ENOMEM;
@@ -1636,7 +1636,9 @@ col_session_destroy(wl_session_t *session)
         sess->compound_arena
             ? (unsigned long long)sess->compound_arena->live_handles
             : 0ULL);
-    wl_compound_arena_free(sess->compound_arena);
+    if (!wl_compound_arena_free_checked(sess->compound_arena))
+        WL_LOG(WL_LOG_SEC_SESSION, WL_LOG_ERROR,
+            "compound arena still has active worker leases");
     wl_columnar_memory_governor_ref_release(sess->memory_governor);
     free(sess);
 }
@@ -1715,6 +1717,12 @@ col_worker_session_create(wl_col_session_t *coordinator,
      * (Issue #561) guarantees the arena is frozen for the duration
      * of worker access. */
     out_worker->compound_arena = coordinator->compound_arena;
+    memset(&out_worker->compound_borrow, 0,
+        sizeof(out_worker->compound_borrow));
+    if (out_worker->compound_arena
+        && !wl_compound_arena_borrow(out_worker->compound_arena,
+        &out_worker->compound_borrow))
+        goto cleanup;
     memset(&out_worker->mat_cache, 0, sizeof(col_mat_cache_t));
     /* Exchange buffers are owned by coordinator; worker inherits borrowed ptr */
     out_worker->exchange_bufs = NULL;
@@ -1922,6 +1930,8 @@ col_worker_session_destroy(wl_col_session_t *worker)
     /* compound_arena is BORROWED from coordinator (Issue #579 / R-5).
      * DO NOT call wl_compound_arena_free here — the coordinator owns it
      * and frees it in its own col_session_destroy path. */
+    if (worker->compound_borrow.arena)
+        (void)wl_compound_arena_borrow_release(&worker->compound_borrow);
 
     /* Issue #386: Free filtered relation cache (workers own their own copy) */
     for (uint32_t i = 0; i < worker->filt_cache_count; i++) {

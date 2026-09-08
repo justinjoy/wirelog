@@ -213,8 +213,8 @@ test_worker_borrows_coordinator_arena(void)
      * resolves through the worker's borrowed pointer. */
     if (ok) {
         uint32_t out_size = 0;
-        const void *payload = wl_compound_arena_lookup(
-            worker.compound_arena, handle, &out_size);
+        const void *payload = wl_compound_arena_lookup_borrowed(
+            &worker.compound_borrow, handle, &out_size);
         if (!payload || out_size != 64u)
             ok = 0;
     }
@@ -440,10 +440,9 @@ test_worker_observes_frozen_arena(void)
         return 1;
     }
 
-    /* Build a partition + worker the way K-Fusion does, then freeze the
-     * coordinator's arena.  Order matters: we want the worker to observe
-     * the freeze through the borrowed pointer, so the freeze is the last
-     * coordinator-side mutation before the assertions. */
+    /* Freeze the arena before opening the worker read window.  Once a worker
+     * holds its read lease, coordinator mutations (including freeze changes)
+     * are rejected until the worker is released. */
     int64_t rows[] = { 1, 2 };
     if (insert_edges(coord, rows, 1) != 0) {
         cleanup_coordinator(coord, plan, prog);
@@ -459,6 +458,8 @@ test_worker_observes_frozen_arena(void)
         return 1;
     }
 
+    wl_compound_arena_freeze(coord->compound_arena);
+
     wl_col_session_t worker;
     memset(&worker, 0, sizeof(worker));
     rc = col_worker_session_create(coord, 0, parts, 1, &worker);
@@ -468,8 +469,6 @@ test_worker_observes_frozen_arena(void)
         FAIL("col_worker_session_create");
         return 1;
     }
-
-    wl_compound_arena_freeze(coord->compound_arena);
 
     int ok = (worker.compound_arena == coord->compound_arena
         && worker.compound_arena != NULL
@@ -485,8 +484,8 @@ test_worker_observes_frozen_arena(void)
     /* Lookup of the pre-freeze sentinel must still succeed via worker. */
     if (ok) {
         uint32_t out_size = 0;
-        const void *payload = wl_compound_arena_lookup(
-            worker.compound_arena, sentinel, &out_size);
+        const void *payload = wl_compound_arena_lookup_borrowed(
+            &worker.compound_borrow, sentinel, &out_size);
         if (!payload || out_size != 48u)
             ok = 0;
     }
@@ -495,9 +494,8 @@ test_worker_observes_frozen_arena(void)
      * cleanup against a frozen arena (defensive: the destroy path
      * shouldn't care, but keeping the test isolated avoids cross-
      * coupling future changes). */
-    wl_compound_arena_unfreeze(coord->compound_arena);
-
     col_worker_session_destroy(&worker);
+    wl_compound_arena_unfreeze(coord->compound_arena);
     cleanup_coordinator(coord, plan, prog);
 
     if (!ok) {
