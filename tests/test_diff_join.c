@@ -338,6 +338,21 @@ output_contains_row(const col_rel_t *r, const int64_t *row)
     return false;
 }
 
+static bool
+relation_contents_equal(const col_rel_t *left, const col_rel_t *right)
+{
+    if (!left || !right || left->nrows != right->nrows
+        || left->ncols != right->ncols)
+        return false;
+    for (uint32_t row = 0; row < left->nrows; row++) {
+        for (uint32_t col = 0; col < left->ncols; col++) {
+            if (col_rel_get(left, row, col) != col_rel_get(right, row, col))
+                return false;
+        }
+    }
+    return true;
+}
+
 /* ========================================================================
  * TEST CASES
  * ======================================================================== */
@@ -1280,7 +1295,7 @@ test_materialized_join_cleans_owned_left(void)
     ASSERT_TRUE(rc == 0, "materialized join output");
     eval_entry_t out = eval_stack_pop(&stack);
     ASSERT_TRUE(out.rel != NULL, "result relation exists");
-    ASSERT_TRUE(!out.owned, "materialized result is cache-owned");
+    ASSERT_TRUE(out.owned, "materialized result is an owned deep copy");
     ASSERT_TRUE(out.rel->nrows == 2, "materialized row count");
 
     col_rel_t *left_hit = make_project_left_rel();
@@ -1290,10 +1305,17 @@ test_materialized_join_cleans_owned_left(void)
     rc = col_op_join(&op, &stack, sess);
     ASSERT_TRUE(rc == 0, "materialized cache hit output");
     eval_entry_t hit = eval_stack_pop(&stack);
-    ASSERT_TRUE(hit.rel == out.rel, "cache hit reuses cached result");
-    ASSERT_TRUE(!hit.owned, "cache-hit result is cache-owned");
+    ASSERT_TRUE(hit.owned, "cache-hit result is an owned deep copy");
+    ASSERT_TRUE(hit.rel != out.rel,
+        "cache hit does not alias the first returned copy");
+    ASSERT_TRUE(relation_contents_equal(out.rel, hit.rel),
+        "cache-hit contents match the first returned copy");
     ASSERT_TRUE(hit.rel->nrows == 2, "cache-hit row count");
 
+    /* Both returned copies are caller-owned; the cached original remains
+     * owned by the session materialization cache until session teardown. */
+    col_rel_destroy(out.rel);
+    col_rel_destroy(hit.rel);
     destroy_mock_session(sess);
     PASS;
 }

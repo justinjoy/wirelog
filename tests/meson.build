@@ -2135,6 +2135,24 @@ test_cse_cache_hit_rate_exe = executable(
 test('cse_cache_hit_rate', test_cse_cache_hit_rate_exe)
 
 # ============================================================================
+# Materialization Cache Lifetime Tests (Issue #1435)
+# ============================================================================
+
+test_mat_cache_lifetime_exe = executable(
+  'test_mat_cache_lifetime',
+  files('test_mat_cache_lifetime.c'),
+  backend_src,
+  intern_src,
+  arena_src,
+  thread_src,
+  workqueue_src,
+  include_directories: [wirelog_inc, wirelog_src_inc],
+  dependencies: [nanoarrow_dep, threads_dep, xxhash_dep, mbedtls_dep, math_dep],
+)
+
+test('mat_cache_lifetime', test_mat_cache_lifetime_exe)
+
+# ============================================================================
 # K-way Merge CONSOLIDATE Tests (US-002 TDD RED Phase)
 # ============================================================================
 

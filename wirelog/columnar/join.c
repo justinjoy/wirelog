@@ -995,9 +995,14 @@ wl_columnar_join_op(const wl_plan_op_t *op, eval_stack_t *stack,
      * cache reuse in K-fusion worker sessions, eliminating redundant joins. */
     bool projected_join = op->project_count > 0 && op->project_indices;
     if (op->materialized && !projected_join) {
+        col_mat_cache_pin_t cache_pin = { 0 };
         col_rel_t *cached
-            = col_mat_cache_lookup(&sess->mat_cache, left_e.rel, right);
+            = col_mat_cache_lookup_pin(&sess->mat_cache, left_e.rel, right,
+                &cache_pin);
         if (cached) {
+            col_rel_t *copy = NULL;
+            int copy_rc = col_rel_deep_copy(cached, &copy, NULL);
+            col_mat_cache_pin_release(&cache_pin);
 #ifdef WL_PROFILE
             sess->profile.join_cache_hit_ns += now_ns() - _t0_join;
 #endif
@@ -1005,8 +1010,13 @@ wl_columnar_join_op(const wl_plan_op_t *op, eval_stack_t *stack,
                 col_rel_destroy(right_filtered);
             if (left_e.owned)
                 col_rel_destroy(left_e.rel);
-            return eval_stack_push_delta(stack, cached, false,
-                       left_e.is_delta || used_right_delta);
+            if (copy_rc != 0)
+                return copy_rc;
+            int push_rc = eval_stack_push_delta(stack, copy, true,
+                    left_e.is_delta || used_right_delta);
+            if (push_rc != 0)
+                col_rel_destroy(copy);
+            return push_rc;
         }
     }
 
@@ -1424,13 +1434,21 @@ wl_columnar_join_op(const wl_plan_op_t *op, eval_stack_t *stack,
     bool result_is_delta = projected_join ? false
         : (left_e.is_delta || used_right_delta);
 
-    /* Populate materialization cache when hint is set.
-     * Works with both stable and worker-owned relations.
-     * Cache takes ownership of out; we push a borrowed reference.
-     * This enables K-fusion workers to cache and reuse intermediate joins,
-     * reducing redundant computation across the K worker copies. */
+    /* Populate materialization cache when hint is set.  The cache owns the
+     * computed result only after a successful insert, so retain an independent
+     * copy for the evaluation stack.  This keeps cache lifetime entirely
+     * inside this operation and avoids borrowed stack entries. */
     if (op->materialized && !projected_join) {
-        col_mat_cache_insert(&sess->mat_cache, left, right, out);
+        col_rel_t *copy = NULL;
+        int copy_rc = col_rel_deep_copy(out, &copy, NULL);
+        if (copy_rc != 0) {
+            if (left_e.owned)
+                col_rel_destroy(left);
+            if (right_filtered)
+                col_rel_destroy(right_filtered);
+            return eval_stack_push_delta(stack, out, true, result_is_delta);
+        }
+        int cache_rc = col_mat_cache_insert(&sess->mat_cache, left, right, out);
 #ifdef WL_PROFILE
         if (out->nrows == 0)
             sess->profile.join_empty_out++;
@@ -1440,7 +1458,14 @@ wl_columnar_join_op(const wl_plan_op_t *op, eval_stack_t *stack,
             col_rel_destroy(right_filtered);
         if (left_e.owned)
             col_rel_destroy(left);
-        return eval_stack_push_delta(stack, out, false, result_is_delta);
+        if (cache_rc != 0) {
+            col_rel_destroy(copy);
+            return eval_stack_push_delta(stack, out, true, result_is_delta);
+        }
+        int push_rc = eval_stack_push_delta(stack, copy, true, result_is_delta);
+        if (push_rc != 0)
+            col_rel_destroy(copy);
+        return push_rc;
     }
     if (left_e.owned)
         col_rel_destroy(left);
@@ -2011,15 +2036,25 @@ wl_columnar_join_diff_op(const wl_plan_op_t *op, eval_stack_t *stack,
     /* Materialization cache check */
     bool projected_join = op->project_count > 0 && op->project_indices;
     if (op->materialized && !projected_join) {
+        col_mat_cache_pin_t cache_pin = { 0 };
         col_rel_t *cached
-            = col_mat_cache_lookup(&sess->mat_cache, left_e.rel, right);
+            = col_mat_cache_lookup_pin(&sess->mat_cache, left_e.rel, right,
+                &cache_pin);
         if (cached) {
+            col_rel_t *copy = NULL;
+            int copy_rc = col_rel_deep_copy(cached, &copy, NULL);
+            col_mat_cache_pin_release(&cache_pin);
             if (right_filtered)
                 col_rel_destroy(right_filtered);
             if (left_e.owned)
                 col_rel_destroy(left_e.rel);
-            return eval_stack_push_delta(stack, cached, false,
-                       left_e.is_delta || used_right_delta);
+            if (copy_rc != 0)
+                return copy_rc;
+            int push_rc = eval_stack_push_delta(stack, copy, true,
+                    left_e.is_delta || used_right_delta);
+            if (push_rc != 0)
+                col_rel_destroy(copy);
+            return push_rc;
         }
     }
 
@@ -2397,12 +2432,28 @@ join_success:
     /* Materialization cache: insert BEFORE destroying left, because
      * col_mat_cache_key_content dereferences left to compute content hash. */
     if (op->materialized && !projected_join) {
-        col_mat_cache_insert(&sess->mat_cache, left, right, out);
+        col_rel_t *copy = NULL;
+        int copy_rc = col_rel_deep_copy(out, &copy, NULL);
+        if (copy_rc != 0) {
+            if (left_e.owned)
+                col_rel_destroy(left);
+            if (right_filtered)
+                col_rel_destroy(right_filtered);
+            return eval_stack_push_delta(stack, out, true, result_is_delta);
+        }
+        int cache_rc = col_mat_cache_insert(&sess->mat_cache, left, right, out);
         if (left_e.owned)
             col_rel_destroy(left);
         if (right_filtered)
             col_rel_destroy(right_filtered);
-        return eval_stack_push_delta(stack, out, false, result_is_delta);
+        if (cache_rc != 0) {
+            col_rel_destroy(copy);
+            return eval_stack_push_delta(stack, out, true, result_is_delta);
+        }
+        int push_rc = eval_stack_push_delta(stack, copy, true, result_is_delta);
+        if (push_rc != 0)
+            col_rel_destroy(copy);
+        return push_rc;
     }
     if (left_e.owned)
         col_rel_destroy(left);
