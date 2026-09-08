@@ -81,6 +81,116 @@ test_session_hash_overflow_rejected(void)
     PASS();
 }
 
+static void
+test_retained_relation_admission(void)
+{
+    const uint64_t initial_bytes = 64u * sizeof(int64_t)
+        + 64u * sizeof(col_delta_timestamp_t);
+    const uint64_t grown_bytes = 128u * sizeof(int64_t)
+        + 128u * sizeof(col_delta_timestamp_t);
+    const uint64_t exact_budget = initial_bytes + grown_bytes;
+    wl_columnar_memory_resolution_t resolution = { 0 };
+    wl_columnar_memory_governor_ref_t *ref = NULL;
+    col_rel_t *rel = NULL;
+    int64_t row = 7;
+    int rc;
+
+    TEST("retained relation growth admits peak and releases on destroy");
+    resolution.budget_bytes = exact_budget;
+    resolution.usable_bytes = exact_budget;
+    resolution.mode = WL_COLUMNAR_MEMORY_MODE_ENFORCING;
+    resolution.source = WL_COLUMNAR_MEMORY_SOURCE_ENV;
+    resolution.status = WL_COLUMNAR_MEMORY_OK;
+    ref = wl_columnar_memory_governor_ref_create(&resolution);
+    if (!ref || col_rel_alloc(&rel, "retained") != 0
+        || col_rel_attach_memory_governor(rel, ref) != 0) {
+        if (rel)
+            col_rel_destroy(rel);
+        if (ref)
+            wl_columnar_memory_governor_ref_release(ref);
+        FAIL("retained relation setup failed");
+        return;
+    }
+    rc = col_rel_set_schema(rel, 1, NULL);
+    if (rc == 0)
+        rc = col_rel_enable_timestamps(rel);
+    for (uint32_t i = 0; rc == 0 && i < 64u; i++)
+        rc = col_rel_append_row(rel, &row);
+    if (rc == 0)
+        rc = col_rel_append_row(rel, &row);
+    if (rc != 0 || rel->capacity != 128u || rel->nrows != 65u
+        || rel->timestamps[0].iteration != 0
+        || wl_columnar_memory_reserved(
+            wl_columnar_memory_governor_ref_get(ref)) != grown_bytes) {
+        col_rel_destroy(rel);
+        wl_columnar_memory_governor_ref_release(ref);
+        FAIL("exact-fit retained growth was not committed");
+        return;
+    }
+    rel->nrows = 0;
+    col_rel_compact(rel);
+    if (rel->capacity != 0u
+        || wl_columnar_memory_reserved(
+            wl_columnar_memory_governor_ref_get(ref)) != 0u
+        || col_rel_append_row(rel, &row) != 0
+        || rel->capacity != 64u
+        || wl_columnar_memory_reserved(
+            wl_columnar_memory_governor_ref_get(ref))
+        != 64u * sizeof(int64_t)) {
+        col_rel_destroy(rel);
+        wl_columnar_memory_governor_ref_release(ref);
+        FAIL("empty compaction left a stale retained admission");
+        return;
+    }
+    col_rel_destroy(rel);
+    if (wl_columnar_memory_reserved(
+            wl_columnar_memory_governor_ref_get(ref)) != 0) {
+        wl_columnar_memory_governor_ref_release(ref);
+        FAIL("retained reservation leaked after destroy");
+        return;
+    }
+    wl_columnar_memory_governor_ref_release(ref);
+    PASS();
+
+    TEST("retained relation denial preserves old rows and capacity");
+    resolution.usable_bytes = exact_budget - 1u;
+    resolution.budget_bytes = exact_budget - 1u;
+    ref = wl_columnar_memory_governor_ref_create(&resolution);
+    rel = NULL;
+    if (!ref || col_rel_alloc(&rel, "retained-denied") != 0
+        || col_rel_attach_memory_governor(rel, ref) != 0) {
+        if (rel)
+            col_rel_destroy(rel);
+        if (ref)
+            wl_columnar_memory_governor_ref_release(ref);
+        FAIL("denial setup failed");
+        return;
+    }
+    rc = col_rel_set_schema(rel, 1, NULL);
+    if (rc == 0)
+        rc = col_rel_enable_timestamps(rel);
+    for (uint32_t i = 0; rc == 0 && i < 64u; i++)
+        rc = col_rel_append_row(rel, &row);
+    rc = rc == 0 ? col_rel_append_row(rel, &row) : rc;
+    if (rc != ENOMEM || rel->capacity != 64u || rel->nrows != 64u
+        || wl_columnar_memory_reserved(
+            wl_columnar_memory_governor_ref_get(ref)) != initial_bytes) {
+        col_rel_destroy(rel);
+        wl_columnar_memory_governor_ref_release(ref);
+        FAIL("denied retained growth changed relation state");
+        return;
+    }
+    col_rel_destroy(rel);
+    if (wl_columnar_memory_reserved(
+            wl_columnar_memory_governor_ref_get(ref)) != 0) {
+        wl_columnar_memory_governor_ref_release(ref);
+        FAIL("denied relation reservation leaked after destroy");
+        return;
+    }
+    wl_columnar_memory_governor_ref_release(ref);
+    PASS();
+}
+
 /* ======================================================================== */
 /* Delta Collector                                                          */
 /* ======================================================================== */
@@ -989,6 +1099,7 @@ main(void)
     printf("test_session: persistent columnar session delta tests\n");
 
     test_session_hash_overflow_rejected();
+    test_retained_relation_admission();
     test_session_create_destroy();
     test_session_create_destroy_columnar();
     test_session_create_multi_worker_rejected();

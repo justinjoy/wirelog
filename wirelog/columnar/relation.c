@@ -166,6 +166,240 @@ col_rel_transport_bytes(const col_rel_t *r)
     return cols + ts;
 }
 
+static bool
+col_rel_retained_bytes(uint32_t ncols, uint32_t capacity, bool timestamps,
+    uint64_t *out)
+{
+    uint64_t columns;
+    uint64_t timestamp_bytes = 0;
+
+    if (!out || !wl_columnar_memory_size_mul(ncols, capacity, &columns)
+        || !wl_columnar_memory_size_mul(columns, sizeof(int64_t), &columns))
+        return false;
+    if (timestamps
+        && (!wl_columnar_memory_size_mul(capacity,
+        sizeof(col_delta_timestamp_t), &timestamp_bytes)
+        || !wl_columnar_memory_size_add(columns, timestamp_bytes, out)))
+        return false;
+    if (!timestamps)
+        *out = columns;
+    return true;
+}
+
+static void
+col_rel_reservation_rollback(wl_columnar_memory_reservation_t *reservation)
+{
+    if (!reservation)
+        return;
+    (void)wl_columnar_memory_release(reservation);
+}
+
+static int
+col_rel_reserve_retained_shape(const col_rel_t *r, uint32_t capacity,
+    bool timestamps, wl_columnar_memory_reservation_t *pending)
+{
+    uint64_t bytes;
+    wl_columnar_memory_admission_status_t status;
+
+    if (!r || !pending)
+        return -1;
+    wl_columnar_memory_reservation_init(pending);
+    if (!r->memory_governor)
+        return 0;
+    /* Shared and arena-backed relations are deliberately not attached by
+     * the retained-EDB path yet; their ownership transitions are separate
+     * admission units. */
+    if (r->arena_owned || r->col_shared)
+        return -1;
+    if (!col_rel_retained_bytes(r->ncols, capacity, timestamps, &bytes))
+        return -1;
+    /* A consolidation or bulk append may have reduced the physical
+     * capacity while the committed token still covers the larger shape.
+     * Keep that conservative token: no new admission is needed until the
+     * relation grows beyond it. */
+    if (bytes <= r->retained_reserved_bytes)
+        return 0;
+    if (bytes == 0)
+        return 0;
+    status = wl_columnar_memory_reserve_growth(
+        wl_columnar_memory_governor_ref_get(r->memory_governor),
+        r->retained_reserved_bytes, bytes, pending);
+    if (status != WL_COLUMNAR_MEMORY_ADMISSION_OK
+        && status != WL_COLUMNAR_MEMORY_ADMISSION_ADVISORY)
+        return -1;
+    return 1;
+}
+
+static int
+col_rel_reserve_retained(const col_rel_t *r, uint32_t capacity,
+    wl_columnar_memory_reservation_t *pending)
+{
+    return col_rel_reserve_retained_shape(r, capacity,
+               r->timestamps != NULL, pending);
+}
+
+static int
+col_rel_publish_retained_reservation(col_rel_t *r,
+    wl_columnar_memory_reservation_t *pending, uint64_t bytes)
+{
+    uint64_t old_bytes;
+    wl_columnar_memory_reservation_t previous;
+
+    if (!r || !pending)
+        return EINVAL;
+    if (!r->memory_governor || bytes == 0)
+        return 0;
+    if (!wl_columnar_memory_commit(pending, r))
+        return ENOMEM;
+    old_bytes = r->retained_reserved_bytes;
+    wl_columnar_memory_reservation_init(&previous);
+    if (old_bytes > 0
+        && !wl_columnar_memory_reservation_move(
+            &previous, &r->retained_reservation)) {
+        (void)wl_columnar_memory_release(pending);
+        return ENOMEM;
+    }
+    if (!wl_columnar_memory_reservation_move(&r->retained_reservation,
+        pending)) {
+        if (old_bytes > 0) {
+            wl_columnar_memory_reservation_init(&r->retained_reservation);
+            (void)wl_columnar_memory_reservation_move(
+                &r->retained_reservation, &previous);
+        }
+        (void)wl_columnar_memory_release(pending);
+        return ENOMEM;
+    }
+    if (old_bytes > 0)
+        (void)wl_columnar_memory_release(&previous);
+    r->retained_reserved_bytes = bytes;
+    return 0;
+}
+
+int
+col_rel_attach_memory_governor(col_rel_t *r,
+    wl_columnar_memory_governor_ref_t *memory_governor)
+{
+    if (!r || !memory_governor)
+        return EINVAL;
+    if (r->memory_governor == memory_governor)
+        return 0;
+    if (r->memory_governor || r->retained_reserved_bytes != 0)
+        return EBUSY;
+    r->memory_governor = memory_governor;
+    wl_columnar_memory_governor_ref_retain(memory_governor);
+    wl_columnar_memory_reservation_init(&r->retained_reservation);
+    return 0;
+}
+
+int
+col_rel_enable_timestamps(col_rel_t *r)
+{
+    wl_columnar_memory_reservation_t pending;
+    int reserve_rc;
+    uint64_t new_bytes;
+    col_delta_timestamp_t *timestamps;
+
+    if (!r)
+        return EINVAL;
+    if (r->timestamps || r->capacity == 0)
+        return 0;
+    if (!r->memory_governor) {
+        r->timestamps = (col_delta_timestamp_t *)calloc(
+            r->capacity, sizeof(*r->timestamps));
+        return r->timestamps ? 0 : ENOMEM;
+    }
+    reserve_rc = col_rel_reserve_retained_shape(
+        r, r->capacity, true, &pending);
+    if (reserve_rc < 0)
+        return ENOMEM;
+    if (!col_rel_retained_bytes(r->ncols, r->capacity, true, &new_bytes))
+        goto fail;
+    timestamps = (col_delta_timestamp_t *)calloc(
+        r->capacity, sizeof(*timestamps));
+    if (!timestamps)
+        goto fail;
+    r->timestamps = timestamps;
+    if (reserve_rc > 0
+        && col_rel_publish_retained_reservation(r, &pending, new_bytes) != 0) {
+        r->timestamps = NULL;
+        free(timestamps);
+        goto fail;
+    }
+    col_rel_ledger_reconcile(r, col_rel_owned_ledger_bytes(r));
+    return 0;
+
+fail:
+    col_rel_reservation_rollback(&pending);
+    return ENOMEM;
+}
+
+static int
+col_rel_grow_heap_admitted(col_rel_t *r, uint32_t new_cap)
+{
+    wl_columnar_memory_reservation_t pending;
+    int pending_rc;
+    uint32_t old_cap = r->capacity;
+    uint64_t new_bytes;
+    int64_t **new_columns = NULL;
+    col_delta_timestamp_t *new_timestamps = NULL;
+    int64_t **old_columns;
+    col_delta_timestamp_t *old_timestamps;
+
+    pending_rc = col_rel_reserve_retained(r, new_cap, &pending);
+    if (pending_rc < 0)
+        return ENOMEM;
+    if (!col_rel_retained_bytes(r->ncols, new_cap, r->timestamps != NULL,
+        &new_bytes)) {
+        col_rel_reservation_rollback(&pending);
+        return ENOMEM;
+    }
+    new_columns = col_columns_alloc(r->ncols, new_cap);
+    if (!new_columns)
+        goto fail;
+    if (old_cap > 0 && r->columns) {
+        for (uint32_t c = 0; c < r->ncols; c++)
+            memcpy(new_columns[c], r->columns[c],
+                (size_t)r->nrows * sizeof(int64_t));
+    }
+    if (r->timestamps) {
+        new_timestamps = (col_delta_timestamp_t *)malloc(
+            (size_t)new_cap * sizeof(*new_timestamps));
+        if (!new_timestamps)
+            goto fail;
+        if (old_cap > 0)
+            memcpy(new_timestamps, r->timestamps,
+                (size_t)r->capacity * sizeof(*new_timestamps));
+    }
+
+    old_columns = r->columns;
+    old_timestamps = r->timestamps;
+    r->columns = new_columns;
+    r->timestamps = new_timestamps;
+    r->capacity = new_cap;
+    if (pending_rc > 0
+        && col_rel_publish_retained_reservation(r, &pending, new_bytes) != 0) {
+        r->columns = old_columns;
+        r->timestamps = old_timestamps;
+        r->capacity = old_cap;
+        goto fail_after_publish;
+    }
+    col_columns_free(old_columns, r->ncols);
+    free(old_timestamps);
+    return 0;
+
+fail:
+    col_rel_reservation_rollback(&pending);
+    col_columns_free(new_columns, r->ncols);
+    free(new_timestamps);
+    return ENOMEM;
+
+fail_after_publish:
+    col_rel_reservation_rollback(&pending);
+    col_columns_free(new_columns, r->ncols);
+    free(new_timestamps);
+    return ENOMEM;
+}
+
 /*
  * ledger_sync_timestamps: bring the TIMESTAMP charge for r->timestamps in
  * line with its current size (Issue #1380).  Every relation.c growth and
@@ -226,6 +460,13 @@ col_rel_free_contents(col_rel_t *r)
 {
     if (!r)
         return;
+    if (r->memory_governor) {
+        if (r->retained_reserved_bytes > 0)
+            (void)wl_columnar_memory_release(&r->retained_reservation);
+        r->retained_reserved_bytes = 0;
+        wl_columnar_memory_governor_ref_release(r->memory_governor);
+        r->memory_governor = NULL;
+    }
     /* Release only currently heap-owned, non-borrowed data buffers. */
     col_rel_ledger_release(r);
     free(r->name);
@@ -289,22 +530,32 @@ col_rel_destroy(col_rel_t *r)
 int
 col_rel_set_schema(col_rel_t *r, uint32_t ncols, const char *const *col_names)
 {
+    wl_columnar_memory_reservation_t pending;
+    int pending_rc;
+    uint64_t retained_bytes = 0;
+
+    if (!r)
+        return EINVAL;
     if (r->ncols != 0)
         return 0; /* already initialised */
 
     r->ncols = ncols;
+    pending_rc = col_rel_reserve_retained(r, COL_REL_INIT_CAP, &pending);
+    if (pending_rc < 0) {
+        r->ncols = 0;
+        return ENOMEM;
+    }
 
     if (ncols > 0) {
         r->capacity = COL_REL_INIT_CAP;
         r->columns = col_columns_alloc(ncols, r->capacity);
-        if (!r->columns)
-            return ENOMEM;
+        if (!r->columns) {
+            goto fail;
+        }
 
         r->col_names = (char **)calloc(ncols, sizeof(char *));
         if (!r->col_names) {
-            col_columns_free(r->columns, ncols);
-            r->columns = NULL;
-            return ENOMEM;
+            goto fail;
         }
         for (uint32_t i = 0; i < ncols; i++) {
             if (col_names && col_names[i]) {
@@ -315,13 +566,7 @@ col_rel_set_schema(col_rel_t *r, uint32_t ncols, const char *const *col_names)
                 r->col_names[i] = wl_strdup(buf);
             }
             if (!r->col_names[i]) {
-                for (uint32_t j = 0; j < i; j++)
-                    free(r->col_names[j]);
-                free((void *)r->col_names);
-                col_columns_free(r->columns, ncols);
-                r->col_names = NULL;
-                r->columns = NULL;
-                return ENOMEM;
+                goto fail;
             }
         }
     }
@@ -337,9 +582,7 @@ col_rel_set_schema(col_rel_t *r, uint32_t ncols, const char *const *col_names)
     }
     ArrowSchemaInit(&r->schema);
     if (ArrowSchemaSetTypeStruct(&r->schema, (int64_t)ncols) != NANOARROW_OK) {
-        ArrowSchemaRelease(&r->schema);
-        /* cleanup names/data done by caller via col_rel_free_contents */
-        return EINVAL;
+        goto fail;
     }
     for (uint32_t i = 0; i < ncols; i++) {
         enum ArrowType arrow_type = r->column_types
@@ -348,15 +591,42 @@ col_rel_set_schema(col_rel_t *r, uint32_t ncols, const char *const *col_names)
         ArrowSchemaRelease(r->schema.children[i]);
         if (ArrowSchemaInitFromType(r->schema.children[i], arrow_type)
             != NANOARROW_OK) {
-            ArrowSchemaRelease(&r->schema);
-            return EINVAL;
+            goto fail;
         }
         const char *cname
             = (r->col_names && r->col_names[i]) ? r->col_names[i] : "";
         ArrowSchemaSetName(r->schema.children[i], cname);
     }
     r->schema_ok = true;
+    if (pending_rc > 0) {
+        if (!col_rel_retained_bytes(r->ncols, r->capacity,
+            r->timestamps != NULL, &retained_bytes)
+            || col_rel_publish_retained_reservation(r, &pending,
+            retained_bytes) != 0) {
+            goto fail;
+        }
+    }
     return 0;
+
+fail:
+    col_rel_reservation_rollback(&pending);
+    /* ArrowSchemaSetTypeStruct/InitFromType can fail after partially
+     * initializing the freshly-created schema while schema_ok is still
+     * false.  Release unconditionally: ArrowSchemaRelease is the matching
+     * cleanup for every initialized schema state. */
+    ArrowSchemaRelease(&r->schema);
+    r->schema_ok = false;
+    col_columns_free(r->columns, ncols);
+    r->columns = NULL;
+    if (r->col_names) {
+        for (uint32_t i = 0; i < ncols; i++)
+            free(r->col_names[i]);
+        free((void *)r->col_names);
+        r->col_names = NULL;
+    }
+    r->capacity = 0;
+    r->ncols = 0;
+    return EINVAL;
 }
 
 int
@@ -660,52 +930,59 @@ col_rel_append_row(col_rel_t *r, const int64_t *row)
         uint32_t new_cap = r->capacity ? r->capacity * 2 : COL_REL_INIT_CAP;
         if (new_cap <= r->capacity) /* overflow guard */
             return ENOMEM;
-        /* COW: unshare shared columns before in-place growth (Issue #396) */
-        if (r->col_shared) {
-            int cow_rc = col_rel_cow_unshare(r, 0);
-            if (cow_rc != 0)
-                return cow_rc;
-        }
-        /* Grow timestamps first (if tracking) so we can roll back cleanly
-         * on a subsequent data realloc failure. */
-        if (r->timestamps) {
-            col_delta_timestamp_t *new_ts = (col_delta_timestamp_t *)realloc(
-                r->timestamps, new_cap * sizeof(col_delta_timestamp_t));
-            if (!new_ts) {
-                col_rel_ledger_reconcile(r, ledger_before);
+        if (r->memory_governor && !r->arena_owned && !r->col_shared) {
+            if (col_rel_grow_heap_admitted(r, new_cap) != 0)
                 return ENOMEM;
-            }
-            r->timestamps = new_ts;
-        }
-        if (r->arena_owned) {
-            /* Arena data cannot be realloc'd; migrate to heap */
-            int64_t **new_cols = col_columns_alloc(r->ncols, new_cap);
-            if (!new_cols) {
-                col_rel_ledger_reconcile(r, ledger_before);
-                return ENOMEM;
-            }
-            for (uint32_t c = 0; c < r->ncols; c++)
-                memcpy(new_cols[c], r->columns[c],
-                    sizeof(int64_t) * r->nrows);
-            /* Don't free arena columns; just free the columns array */
-            free((void *)r->columns);
-            r->columns = new_cols;
-            r->arena_owned = false;
-        } else if (r->columns) {
-            if (col_columns_realloc_atomic(r->columns, r->ncols, r->capacity,
-                new_cap) != 0) {
-                col_rel_ledger_reconcile(r, ledger_before);
-                return ENOMEM;
-            }
         } else {
-            r->columns = col_columns_alloc(r->ncols, new_cap);
-            if (!r->columns) {
-                col_rel_ledger_reconcile(r, ledger_before);
-                return ENOMEM;
+            /* COW: unshare shared columns before in-place growth (Issue #396) */
+            if (r->col_shared) {
+                int cow_rc = col_rel_cow_unshare(r, 0);
+                if (cow_rc != 0)
+                    return cow_rc;
             }
+            /* Grow timestamps first (if tracking) so we can roll back cleanly
+             * on a subsequent data realloc failure. */
+            if (r->timestamps) {
+                col_delta_timestamp_t *new_ts =
+                    (col_delta_timestamp_t *)realloc(
+                    r->timestamps, new_cap * sizeof(col_delta_timestamp_t));
+                if (!new_ts) {
+                    col_rel_ledger_reconcile(r, ledger_before);
+                    return ENOMEM;
+                }
+                r->timestamps = new_ts;
+            }
+            if (r->arena_owned) {
+                /* Arena data cannot be realloc'd; migrate to heap */
+                int64_t **new_cols = col_columns_alloc(r->ncols, new_cap);
+                if (!new_cols) {
+                    col_rel_ledger_reconcile(r, ledger_before);
+                    return ENOMEM;
+                }
+                for (uint32_t c = 0; c < r->ncols; c++)
+                    memcpy(new_cols[c], r->columns[c],
+                        sizeof(int64_t) * r->nrows);
+                /* Don't free arena columns; just free the columns array */
+                free((void *)r->columns);
+                r->columns = new_cols;
+                r->arena_owned = false;
+            } else if (r->columns) {
+                if (col_columns_realloc_atomic(r->columns, r->ncols,
+                    r->capacity,
+                    new_cap) != 0) {
+                    col_rel_ledger_reconcile(r, ledger_before);
+                    return ENOMEM;
+                }
+            } else {
+                r->columns = col_columns_alloc(r->ncols, new_cap);
+                if (!r->columns) {
+                    col_rel_ledger_reconcile(r, ledger_before);
+                    return ENOMEM;
+                }
+            }
+            r->capacity = new_cap;
+            col_rel_ledger_reconcile(r, ledger_before);
         }
-        r->capacity = new_cap;
-        col_rel_ledger_reconcile(r, ledger_before);
     }
     if (r->timestamps)
         memset(&r->timestamps[r->nrows], 0, sizeof(col_delta_timestamp_t));
@@ -932,6 +1209,18 @@ col_rel_compact(col_rel_t *r)
 
     if (r->nrows == 0) {
         col_rel_ledger_release(r);
+        if (r->memory_governor) {
+            /* Empty compaction drops every retained buffer.  Release the
+             * matching admission before allowing a later append to start a
+             * new capacity; otherwise reserve_growth() would compare the
+             * new shape with a stale, larger token. */
+            if (r->retained_reserved_bytes > 0)
+                (void)wl_columnar_memory_release(
+                    &r->retained_reservation);
+            r->retained_reserved_bytes = 0;
+            wl_columnar_memory_reservation_init(
+                &r->retained_reservation);
+        }
         if (!r->arena_owned) {
             if (r->col_shared && r->columns) {
                 /* COW: free only non-shared columns (Issue #396) */
@@ -964,6 +1253,15 @@ col_rel_compact(col_rel_t *r)
     /* Only compact when buffer is more than 4x oversized.
      * Cast to uint64_t to prevent overflow when nrows > UINT32_MAX/4. */
     if (r->capacity <= (uint64_t)r->nrows * 4)
+        goto free_merge_buf;
+
+    /* A retained relation's admission token covers the complete live heap
+     * shape.  The governor has no atomic shrink operation: reserving the
+     * replacement while the old token is committed would incorrectly charge
+     * the temporary overlap, while releasing first would make compaction
+     * failure observable.  Keep the existing buffers in this case; this is
+     * conservative and preserves an exact token for subsequent growth. */
+    if (r->memory_governor)
         goto free_merge_buf;
 
     {

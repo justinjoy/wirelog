@@ -1359,6 +1359,11 @@ col_session_create(const wl_plan_t *plan, uint32_t num_workers,
         int rc = col_rel_alloc(&r, plan->edb_relations[i]);
         if (rc != 0)
             goto oom;
+        rc = col_rel_attach_memory_governor(r, sess->memory_governor);
+        if (rc != 0) {
+            col_rel_destroy(r);
+            goto oom;
+        }
         /* Issue #535: propagate graph-column metadata from plan to col_rel_t.
          * Guard on non-NULL array to stay compatible with callers that have
          * not populated edb_has_graph_column (defensive; wl_plan_from_program
@@ -1425,6 +1430,12 @@ col_session_create(const wl_plan_t *plan, uint32_t num_workers,
             int rc = col_rel_alloc(&meta, "__graph_metadata");
             if (rc != 0)
                 goto oom;
+            rc = col_rel_attach_memory_governor(meta,
+                    sess->memory_governor);
+            if (rc != 0) {
+                col_rel_destroy(meta);
+                goto oom;
+            }
             static const char *const meta_cols[6] = {
                 "graph_id", "tenant", "timestamp", "location", "risk",
                 "description"
