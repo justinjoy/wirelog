@@ -98,6 +98,10 @@ typedef struct {
     uint32_t *key_cols;
 } wl_plan_op_lftj_t;
 
+/* Borrowed from the session; callers retaining it must call retain(). */
+wl_columnar_memory_governor_ref_t *
+col_session_memory_governor_ref(wl_session_t *session);
+
 /* ======================================================================== */
 /* Exchange Metadata (Issue #316)                                           */
 /* ======================================================================== */

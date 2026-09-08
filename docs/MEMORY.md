@@ -187,10 +187,14 @@ An enforcing resolution reserves 5% cleanup headroom, capped at 256 MiB and
 never above half the budget. Ordinary reservations can consume only the
 remaining usable limit. Reservation tokens move through reserved, committed,
 and released states; rollback is valid only from reserved, and release
-returns capacity exactly once. This foundation is wired into session creation
-and fixed eval-arena/delta-pool backing storage; session lifetime/public error
-integration is #1413. Other allocation-site enforcement remains split between #1369,
-#1417, and #1418.
+returns capacity exactly once. Session lifetime/public error integration is
+#1413. Allocation-site admission remains the responsibility of #1369, with
+the public batch result collector as the scoped exception implemented by
+#1418: the result object, relation table, names, row buffers, and type arrays
+share one governor reservation. Growth uses replacement buffers and admits
+the full new footprint while the old buffer is still live, so a failed growth
+leaves the previous result unchanged. The result retains the governor until
+`wirelog_result_free()`, which releases the reservation exactly once.
 
 The #1413 integration adds a reference-counted coordinator-owned governor to
 columnar sessions before relation, pool, arena, cache, or worker setup. Worker
@@ -207,10 +211,11 @@ reporting share so the aggregate threshold does not multiply by the worker
 count. The removed `tdd_budget_per_party` value is no longer a second governor
 admission domain.
 Explicit invalid budgets fail session creation with the existing public
-execution error mapping and leave output handles null. Compound-arena fixed
-object, generation-table, and lazy-growth admission are now covered by #1417;
-parser/plan/result allocations remain tracked by #1418. The parent #1369
-contract is therefore only partially implemented until those units land.
+execution error mapping and leave output handles null. Parser AST, IR/program,
+execution plan, executor wrapper, caller-owned fact buffers, CSV staging, and
+advanced-API conversion buffers remain outside the result-only admission unit;
+extending admission across parse → IR → optimize → plan requires a separate
+lifetime and caller-owned context design.
 
 The next #1369 allocation unit, #1425, admits only the `ht_head` and
 `ht_next` backing arrays of primary, delta, and filtered hash arrangements.
@@ -221,6 +226,37 @@ reservation remains live until publication, and failed admission leaves the
 old index unchanged. Sorted and differential arrangements, registry metadata,
 relation/timestamp storage, cache policy, and join/TDD scratch remain separate
 allocation classes.
+
+## #1418 Allocation Coverage Matrix
+
+The following matrix is the boundary for allocations created outside a
+managed columnar session. “Covered” means that the owner retains a governor
+reservation and publishes growth only after both admission and allocation
+succeed. “Excluded” is an explicit non-guarantee; the owner must still
+propagate failure and must not report a truncated successful result.
+
+| Allocation class | Owner and lifetime | #1418 status | Failure contract |
+| --- | --- | --- | --- |
+| Parser AST, interned names, and parse diagnostics | `wirelog_program_t`, released by `wirelog_program_free()` | Excluded; parse context is created before a managed session | Return `NULL` with `WIRELOG_ERR_PARSE` or `WIRELOG_ERR_MEMORY`; no partial program is published |
+| IR/program relation metadata | `wirelog_program_t`, released with the program | Excluded; same owner as parser output | Return `NULL` with the existing parse/IR error; callers retain no partially initialized program |
+| Optimized execution plan | `wirelog_executor_t`, released by `wirelog_executor_free()` | Excluded; plan construction precedes result collection | Return `NULL` with `WIRELOG_ERR_INVALID_IR`, `WIRELOG_ERR_MEMORY`, or the existing executor error |
+| Executor/session wrapper and columnar session storage | `wirelog_executor_t` and its session | Covered by #1413/#1369 session admission, not charged again here | Session creation fails with the existing public memory error and releases all reservations |
+| Public result object, relation table, names, row buffers, and type arrays | `wirelog_result_t`, released by `wirelog_result_free()` | Covered by #1418 | Reserve the prospective footprint before replacement allocation; rollback leaves the old result unchanged and reports `WIRELOG_ERR_MEMORY` |
+| Caller-owned fact buffers and input rows | Caller, released by the caller or input adapter | Excluded; ownership is external to wirelog | Reject the operation or return the existing input error; never charge or free caller storage |
+| CSV staging and advanced-API conversion buffers | CSV/advanced API call, released at call completion | Excluded; temporary caller-facing buffers have independent ownership | Return `false` or the existing API error and discard the temporary buffer |
+
+The matrix intentionally has one admission owner per allocation. The result
+collector uses reservation move semantics when publishing a new token, so
+the reservation identity follows `wirelog_result_t` rather than a temporary
+stack object. The governor's denial, rollback, overflow, and exact-release
+fixtures provide the admission primitive evidence; the Linux-only
+`wirelog_result_oom` test uses linker allocation-failure injection over a
+32-row result so relation-table and row-buffer growth cannot silently return
+a truncated success. `wirelog_public_api` covers result lifetime after
+executor destruction and the public error path. Other platforms retain the
+same production transaction and ABI checks, while platform-specific allocator
+failure injection remains outside this unit because GNU `--wrap` is not a
+portable linker contract.
 # wirelog Memory Instrumentation
 
 This document describes what the columnar engine measures about its own
