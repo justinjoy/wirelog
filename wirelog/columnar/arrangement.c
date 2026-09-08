@@ -220,6 +220,41 @@ arr_ledger_bytes(const col_arrangement_t *arr)
     return (uint64_t)bytes;
 }
 
+static bool
+arr_reserve_bytes(col_arrangement_t *arr, uint64_t bytes,
+    wl_columnar_memory_reservation_t *pending)
+{
+    wl_columnar_memory_governor_t *governor;
+
+    if (!arr || !pending || bytes == 0)
+        return bytes == 0;
+    governor = wl_columnar_memory_governor_ref_get(arr->memory_governor);
+    if (!governor)
+        return true;
+    wl_columnar_memory_reservation_init(pending);
+    if (!wl_columnar_memory_reserve(governor, bytes, pending)
+        || !wl_columnar_memory_commit(pending, arr)) {
+        (void)wl_columnar_memory_release(pending);
+        return false;
+    }
+    return true;
+}
+
+static void
+arr_publish_reservation(col_arrangement_t *arr,
+    wl_columnar_memory_reservation_t *pending, uint64_t bytes)
+{
+    if (!arr || !arr->memory_governor)
+        return;
+    if (bytes == arr->reserved_bytes) {
+        (void)wl_columnar_memory_release(pending);
+        return;
+    }
+    (void)wl_columnar_memory_release(&arr->reservation);
+    (void)wl_columnar_memory_reservation_move(&arr->reservation, pending);
+    arr->reserved_bytes = bytes;
+}
+
 /*
  * arr_ledger_sync: charge or credit the difference between @before and the
  * arrangement's current footprint under ARRANGEMENT (Issue #1380).
@@ -248,6 +283,27 @@ col_arr_attach_ledger(col_arrangement_t *arr, wl_mem_ledger_t *ledger)
 }
 
 void
+col_arr_attach_memory_governor(col_arrangement_t *arr,
+    wl_columnar_memory_governor_ref_t *memory_governor)
+{
+    if (!arr || arr->memory_governor || !memory_governor)
+        return;
+    arr->memory_governor = memory_governor;
+    wl_columnar_memory_governor_ref_retain(memory_governor);
+}
+
+void
+col_arr_detach_memory_governor(col_arrangement_t *arr)
+{
+    if (!arr)
+        return;
+    (void)wl_columnar_memory_release(&arr->reservation);
+    arr->reserved_bytes = 0;
+    wl_columnar_memory_governor_ref_release(arr->memory_governor);
+    arr->memory_governor = NULL;
+}
+
+void
 arr_free_contents(col_arrangement_t *arr)
 {
     if (!arr)
@@ -260,6 +316,8 @@ arr_free_contents(col_arrangement_t *arr)
     }
     free(arr->ht_head);
     free(arr->ht_next);
+    (void)wl_columnar_memory_release(&arr->reservation);
+    arr->reserved_bytes = 0;
     arr->ht_head = NULL;
     arr->ht_next = NULL;
     arr->nbuckets = 0;
@@ -318,6 +376,11 @@ arr_build_full_impl(col_arrangement_t *arr, const col_rel_t *rel)
     uint64_t *new_head = NULL;
     uint32_t *new_next = NULL;
     uint32_t new_cap = arr->ht_cap;
+    size_t prospective_head_bytes;
+    size_t prospective_next_bytes;
+    uint64_t prospective_bytes;
+    wl_columnar_memory_reservation_t pending;
+    bool pending_valid = false;
 
     /* Prepare every potentially failing allocation before publishing any
      * part of the new arrangement.  This keeps a failed rebuild usable. */
@@ -325,11 +388,6 @@ arr_build_full_impl(col_arrangement_t *arr, const col_rel_t *rel)
         size_t head_bytes = (size_t)nbuckets * sizeof(uint64_t);
         if (nbuckets != 0 && head_bytes / sizeof(uint64_t) != nbuckets)
             return ENOMEM;
-        new_head = (uint64_t *)malloc(head_bytes);
-        if (!new_head)
-            return ENOMEM;
-        /* Zero has generation zero, which cannot match a live generation. */
-        memset(new_head, 0, head_bytes);
     }
     /* Grow chain array if needed. */
     if (nrows > arr->ht_cap) {
@@ -343,9 +401,44 @@ arr_build_full_impl(col_arrangement_t *arr, const col_rel_t *rel)
             free(new_head);
             return ENOMEM;
         }
+    }
+
+    prospective_head_bytes = (size_t)nbuckets * sizeof(uint64_t);
+    prospective_next_bytes = (size_t)new_cap * sizeof(uint32_t);
+    if ((nbuckets != 0
+        && prospective_head_bytes / sizeof(uint64_t) != nbuckets)
+        || (new_cap != 0
+        && prospective_next_bytes / sizeof(uint32_t) != new_cap)
+        || prospective_head_bytes > SIZE_MAX - prospective_next_bytes) {
+        free(new_head);
+        return ENOMEM;
+    }
+    prospective_bytes = (uint64_t)(prospective_head_bytes
+        + prospective_next_bytes);
+    if (nbuckets != arr->nbuckets || new_cap != arr->ht_cap) {
+        if (!arr_reserve_bytes(arr, prospective_bytes, &pending)) {
+            free(new_head);
+            return ENOMEM;
+        }
+        pending_valid = arr->memory_governor != NULL;
+    }
+    if (nbuckets != arr->nbuckets) {
+        new_head = (uint64_t *)malloc(prospective_head_bytes);
+        if (!new_head) {
+            if (pending_valid)
+                (void)wl_columnar_memory_release(&pending);
+            return ENOMEM;
+        }
+        /* Zero has generation zero, which cannot match a live generation. */
+        memset(new_head, 0, prospective_head_bytes);
+    }
+    if (new_cap != arr->ht_cap) {
+        size_t next_bytes = prospective_next_bytes;
         new_next = (uint32_t *)malloc(next_bytes);
         if (!new_next) {
             free(new_head);
+            if (pending_valid)
+                (void)wl_columnar_memory_release(&pending);
             return ENOMEM;
         }
     }
@@ -360,6 +453,8 @@ arr_build_full_impl(col_arrangement_t *arr, const col_rel_t *rel)
         arr->ht_next = new_next;
         arr->ht_cap = new_cap;
     }
+    if (pending_valid)
+        arr_publish_reservation(arr, &pending, prospective_bytes);
 
     /* Start a new epoch.  Only wraparound needs a full clear; normal rebuilds
      * lazily replace each bucket head as that bucket receives its first row. */
@@ -428,12 +523,33 @@ arr_update_incremental_impl(col_arrangement_t *arr, const col_rel_t *rel,
     /* Grow chain array if needed. */
     if (nrows > arr->ht_cap) {
         uint32_t new_cap = nrows * 2u < 16u ? 16u : nrows * 2u;
-        uint32_t *nxt
-            = (uint32_t *)realloc(arr->ht_next, new_cap * sizeof(uint32_t));
-        if (!nxt)
+        size_t next_bytes = (size_t)new_cap * sizeof(uint32_t);
+        size_t head_bytes = (size_t)arr->nbuckets * sizeof(uint64_t);
+        uint64_t target_bytes;
+        wl_columnar_memory_reservation_t pending;
+        bool pending_valid;
+        if (new_cap != 0 && next_bytes / sizeof(uint32_t) != new_cap)
             return ENOMEM;
+        if (head_bytes > SIZE_MAX - next_bytes)
+            return ENOMEM;
+        target_bytes = (uint64_t)(head_bytes + next_bytes);
+        if (!arr_reserve_bytes(arr, target_bytes, &pending))
+            return ENOMEM;
+        pending_valid = arr->memory_governor != NULL;
+        uint32_t *nxt = (uint32_t *)malloc(next_bytes);
+        if (!nxt){
+            if (pending_valid)
+                (void)wl_columnar_memory_release(&pending);
+            return ENOMEM;
+        }
+        if (arr->ht_next && arr->ht_cap > 0)
+            memcpy(nxt, arr->ht_next,
+                (size_t)arr->ht_cap * sizeof(uint32_t));
+        free(arr->ht_next);
         arr->ht_next = nxt;
         arr->ht_cap = new_cap;
+        if (pending_valid)
+            arr_publish_reservation(arr, &pending, target_bytes);
     }
 
     uint32_t nb = arr->nbuckets;
@@ -624,10 +740,12 @@ col_session_get_arrangement(wl_session_t *sess, const char *rel_name,
         /* Reuse tombstone: free its old ownership before overwriting. */
         free(cs->arr_entries[slot].rel_name);
         free(cs->arr_entries[slot].key_cols);
+        col_arr_detach_memory_governor(&cs->arr_entries[slot].arr);
     }
 
     col_arr_entry_t *e = &cs->arr_entries[slot];
     memset(e, 0, sizeof(*e));
+    wl_columnar_memory_reservation_init(&e->arr.reservation);
 
     e->rel_name = wl_strdup(rel_name);
     if (!e->rel_name) {
@@ -649,9 +767,12 @@ col_session_get_arrangement(wl_session_t *sess, const char *rel_name,
     e->arr.key_cols = e->key_cols; /* shared view; key_cols owned by entry */
     e->arr.key_count = key_count;
     e->arr.ledger = &cs->mem_ledger; /* Issue #1380: ARRANGEMENT accounting */
+    col_arr_attach_memory_governor(&e->arr, cs->memory_governor);
 
     /* Initial build. */
     if (arr_build_full(&e->arr, rel) != 0) {
+        arr_free_contents(&e->arr);
+        col_arr_detach_memory_governor(&e->arr);
         free(e->rel_name);
         free(e->key_cols);
         memset(e, 0, sizeof(*e));
@@ -661,6 +782,7 @@ col_session_get_arrangement(wl_session_t *sess, const char *rel_name,
     }
     if (!arr_memory_bytes(&e->arr, &e->mem_bytes)) {
         arr_free_contents(&e->arr);
+        col_arr_detach_memory_governor(&e->arr);
         free(e->rel_name);
         free(e->key_cols);
         memset(e, 0, sizeof(*e));
@@ -801,6 +923,7 @@ col_session_free_delta_arrangements(wl_col_session_t *cs)
         free(e->rel_name);
         free(e->key_cols);
         arr_free_contents(&e->arr);
+        col_arr_detach_memory_governor(&e->arr);
     }
     free(cs->darr_entries);
     cs->darr_entries = NULL;
@@ -850,9 +973,12 @@ col_session_get_delta_arrangement(wl_col_session_t *cs, const char *rel_name,
             continue;
         /* Found: rebuild if stale (delta changed size). */
         if (e->arr.indexed_rows != delta_rel->nrows) {
-            arr_free_contents(&e->arr);
-            if (delta_rel->nrows > 0 && arr_build_full(&e->arr, delta_rel) != 0)
-                return NULL;
+            if (delta_rel->nrows > 0) {
+                if (arr_build_full(&e->arr, delta_rel) != 0)
+                    return NULL;
+            } else {
+                arr_free_contents(&e->arr);
+            }
         }
         return &e->arr;
     }
@@ -870,6 +996,7 @@ col_session_get_delta_arrangement(wl_col_session_t *cs, const char *rel_name,
 
     col_arr_entry_t *e = &cs->darr_entries[cs->darr_count];
     memset(e, 0, sizeof(*e));
+    wl_columnar_memory_reservation_init(&e->arr.reservation);
 
     e->rel_name = wl_strdup(rel_name);
     if (!e->rel_name)
@@ -886,10 +1013,13 @@ col_session_get_delta_arrangement(wl_col_session_t *cs, const char *rel_name,
     e->arr.key_cols = e->key_cols; /* shared view; owned by entry */
     e->arr.key_count = key_count;
     e->arr.ledger = &cs->mem_ledger; /* Issue #1380 */
+    col_arr_attach_memory_governor(&e->arr, cs->memory_governor);
     cs->darr_count++;
 
     /* Initial build. */
     if (delta_rel->nrows > 0 && arr_build_full(&e->arr, delta_rel) != 0) {
+        arr_free_contents(&e->arr);
+        col_arr_detach_memory_governor(&e->arr);
         cs->darr_count--;
         free(e->rel_name);
         free(e->key_cols);
@@ -962,10 +1092,12 @@ col_session_get_filt_arrangement(wl_col_session_t *cs, const char *rel_name,
             continue;
         /* Found: rebuild if stale (filtered_rel grew since last build). */
         if (e->arr.indexed_rows != filtered_rel->nrows) {
-            arr_free_contents(&e->arr);
-            if (filtered_rel->nrows > 0
-                && arr_build_full(&e->arr, filtered_rel) != 0)
-                return NULL;
+            if (filtered_rel->nrows > 0) {
+                if (arr_build_full(&e->arr, filtered_rel) != 0)
+                    return NULL;
+            } else {
+                arr_free_contents(&e->arr);
+            }
         }
         return &e->arr;
     }
@@ -983,6 +1115,7 @@ col_session_get_filt_arrangement(wl_col_session_t *cs, const char *rel_name,
 
     col_filt_arr_entry_t *e = &cs->filt_arr_entries[cs->filt_arr_count];
     memset(e, 0, sizeof(*e));
+    wl_columnar_memory_reservation_init(&e->arr.reservation);
 
     e->rel_name = wl_strdup(rel_name);
     if (!e->rel_name)
@@ -1000,10 +1133,13 @@ col_session_get_filt_arrangement(wl_col_session_t *cs, const char *rel_name,
     e->arr.key_cols = e->key_cols; /* shared view; owned by entry */
     e->arr.key_count = key_count;
     e->arr.ledger = &cs->mem_ledger; /* Issue #1380 */
+    col_arr_attach_memory_governor(&e->arr, cs->memory_governor);
     cs->filt_arr_count++;
 
     if (filtered_rel->nrows > 0
         && arr_build_full(&e->arr, filtered_rel) != 0) {
+        arr_free_contents(&e->arr);
+        col_arr_detach_memory_governor(&e->arr);
         cs->filt_arr_count--;
         free(e->rel_name);
         free(e->key_cols);
@@ -1028,6 +1164,7 @@ col_session_free_filt_arrangements(wl_col_session_t *cs)
         free(cs->filt_arr_entries[i].rel_name);
         free(cs->filt_arr_entries[i].key_cols);
         arr_free_contents(&cs->filt_arr_entries[i].arr);
+        col_arr_detach_memory_governor(&cs->filt_arr_entries[i].arr);
     }
     free(cs->filt_arr_entries);
     cs->filt_arr_entries = NULL;

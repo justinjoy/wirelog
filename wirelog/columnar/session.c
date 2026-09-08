@@ -1568,6 +1568,7 @@ col_session_destroy(wl_session_t *session)
         free(sess->arr_entries[i].rel_name);
         free(sess->arr_entries[i].key_cols);
         arr_free_contents(&sess->arr_entries[i].arr);
+        col_arr_detach_memory_governor(&sess->arr_entries[i].arr);
     }
     free(sess->arr_entries);
     col_session_free_delta_arrangements(sess);
@@ -1816,7 +1817,7 @@ col_worker_session_create(wl_col_session_t *coordinator,
     if (coordinator->arr_count > 0) {
         int rc = col_arr_entries_clone(coordinator->arr_entries,
                 coordinator->arr_count, &out_worker->arr_entries,
-                &out_worker->arr_cap);
+                &out_worker->arr_cap, out_worker->memory_governor);
         if (rc != 0)
             goto cleanup;
         out_worker->arr_count = coordinator->arr_count;
@@ -1880,6 +1881,7 @@ col_worker_session_destroy(wl_col_session_t *worker)
         free(worker->arr_entries[i].rel_name);
         free(worker->arr_entries[i].key_cols);
         arr_free_contents(&worker->arr_entries[i].arr);
+        col_arr_detach_memory_governor(&worker->arr_entries[i].arr);
     }
     free(worker->arr_entries);
     col_session_free_delta_arrangements(worker);

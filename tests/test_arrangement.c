@@ -21,7 +21,10 @@
  *   If the private struct layout changes, update the mirrors below.
  */
 
+#define _POSIX_C_SOURCE 200809L
+
 #include "../wirelog/columnar/columnar_nanoarrow.h"
+#include "../wirelog/columnar/internal.h"
 #include "../wirelog/exec_plan_gen.h"
 #include "../wirelog/passes/fusion.h"
 #include "../wirelog/passes/jpp.h"
@@ -36,6 +39,24 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef _WIN32
+static int
+wl_test_setenv_(const char *name, const char *value, int overwrite)
+{
+    (void)overwrite;
+    return _putenv_s(name, (value && *value) ? value : "1");
+}
+
+static int
+wl_test_unsetenv_(const char *name)
+{
+    return _putenv_s(name, "");
+}
+
+#define setenv wl_test_setenv_
+#define unsetenv wl_test_unsetenv_
+#endif
 
 /* ----------------------------------------------------------------
  * Test framework
@@ -199,6 +220,26 @@ free_session(wl_session_t *sess, wl_plan_t *plan, wirelog_program_t *prog)
     wirelog_program_free(prog);
 }
 
+static void
+set_memory_budget_for_test(void)
+{
+#ifdef _WIN32
+    (void)_putenv_s("WIRELOG_MEMORY_BUDGET", "268435456");
+#else
+    (void)setenv("WIRELOG_MEMORY_BUDGET", "268435456", 1);
+#endif
+}
+
+static void
+clear_memory_budget_for_test(void)
+{
+#ifdef _WIN32
+    (void)_putenv_s("WIRELOG_MEMORY_BUDGET", "");
+#else
+    (void)unsetenv("WIRELOG_MEMORY_BUDGET");
+#endif
+}
+
 /*
  * find_rel_mirror: locate a relation by name in the mirrored session.
  * Returns NULL if not found.
@@ -234,21 +275,90 @@ find_rel_mirror(wl_session_t *sess, const char *rel_name)
  *   uint32_t  generation   4  (offset 48)
  *   (4 bytes padding)
  *   struct wl_mem_ledger *ledger 8 (offset 56, Issue #1380)
- *                         = 64 bytes total
+ *                         = 120 bytes total
  * ================================================================ */
 static void
 test_arrangement_struct_size(void)
 {
     TEST("col_arrangement_t struct size (layout sentinel)");
-
-    /* 64 bytes: 4 pointers (32) + 5 uint32 (20) + 1 uint64 (8) + 4 pad. */
-    ASSERT(sizeof(col_arrangement_t) == 64,
-        "col_arrangement_t must be 64 bytes; update if struct changes");
+    /* 120 bytes: legacy fields plus governor reference, reservation, and
+     * reserved byte count. */
+    ASSERT(sizeof(col_arrangement_t) == 120,
+        "col_arrangement_t must be 120 bytes; update if struct changes");
     ASSERT(offsetof(col_arrangement_t, ht_head) == 16,
         "ht_head layout changed unexpectedly");
     ASSERT(offsetof(col_arrangement_t, generation) == 48,
         "generation layout changed unexpectedly");
 
+    PASS();
+}
+
+static void
+test_arrangement_admission_denial(void)
+{
+    const char *src =
+        ".decl edge(x:int32,y:int32)\n"
+        "edge(1,2).\n"
+        "edge(2,3).\n"
+        "edge(3,4).\n";
+    wl_session_t *sess = NULL;
+    wl_plan_t *plan = NULL;
+    wirelog_program_t *prog = NULL;
+    wl_col_session_t *cs;
+    wl_columnar_memory_governor_t *governor;
+    wl_columnar_memory_reservation_t blocker;
+    test_col_rel_mirror_t *rel;
+    uint64_t usable;
+    uint64_t reserved;
+    uint32_t key_cols[] = { 0 };
+    col_arrangement_t *arr;
+
+    TEST("arrangement admission denies before allocation and recovers");
+    set_memory_budget_for_test();
+    if (make_session(src, &sess, &plan, &prog) != 0) {
+        clear_memory_budget_for_test();
+        FAIL("session setup failed");
+    }
+    cs = COL_SESSION(sess);
+    governor = wl_columnar_memory_governor_ref_get(cs->memory_governor);
+    usable = atomic_load_explicit(&governor->usable_bytes,
+            memory_order_relaxed);
+    reserved = wl_columnar_memory_reserved(governor);
+    if (usable <= reserved + 1) {
+        free_session(sess, plan, prog);
+        clear_memory_budget_for_test();
+        FAIL("session consumed the entire test budget");
+    }
+    wl_columnar_memory_reservation_init(&blocker);
+    ASSERT(wl_columnar_memory_reserve(governor, usable - reserved - 1,
+        &blocker), "failed to install admission blocker");
+    arr = col_session_get_arrangement(sess, "edge", key_cols, 1);
+    ASSERT(arr == NULL, "arrangement bypassed a denied reservation");
+    ASSERT(wl_columnar_memory_reserved(governor)
+        >= usable - 1,
+        "denied arrangement changed reservation accounting");
+    ASSERT(wl_columnar_memory_release(&blocker),
+        "failed to release admission blocker");
+    arr = col_session_get_arrangement(sess, "edge", key_cols, 1);
+    ASSERT(arr != NULL, "arrangement did not recover after release");
+    rel = find_rel_mirror(sess, "edge");
+    ASSERT(rel != NULL, "edge relation disappeared");
+    rel->nrows = 16;
+    reserved = wl_columnar_memory_reserved(governor);
+    wl_columnar_memory_reservation_init(&blocker);
+    ASSERT(wl_columnar_memory_reserve(governor, usable - reserved - 1,
+        &blocker), "failed to install rebuild blocker");
+    ASSERT(col_session_get_arrangement(sess, "edge", key_cols, 1) == NULL,
+        "bucket-only rebuild bypassed admission");
+    ASSERT(arr->indexed_rows == 3,
+        "denied bucket rebuild destroyed the previous index");
+    ASSERT(wl_columnar_memory_release(&blocker),
+        "failed to release rebuild blocker");
+    ASSERT(col_session_get_arrangement(sess, "edge", key_cols, 1) != NULL
+        && arr->indexed_rows == 16,
+        "bucket-only rebuild did not recover after release");
+    free_session(sess, plan, prog);
+    clear_memory_budget_for_test();
     PASS();
 }
 
@@ -650,6 +760,7 @@ main(void)
     test_arrangement_invalidate();
     test_arrangement_registry_cache();
     test_arrangement_generation_wrap();
+    test_arrangement_admission_denial();
 
     printf("\nResults: %d/%d passed", pass_count, test_count);
     if (fail_count > 0)

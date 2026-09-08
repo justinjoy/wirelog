@@ -242,7 +242,8 @@ col_rel_merge_k(col_rel_t **relations, uint32_t k)
  * Returns 0 on success; dst is memset-zeroed before returning on failure.
  */
 static int
-col_arr_entry_clone(const col_arr_entry_t *src, col_arr_entry_t *dst)
+col_arr_entry_clone(const col_arr_entry_t *src, col_arr_entry_t *dst,
+    wl_columnar_memory_governor_ref_t *memory_governor)
 {
     size_t head_bytes = 0;
     size_t next_bytes = 0;
@@ -273,53 +274,60 @@ col_arr_entry_clone(const col_arr_entry_t *src, col_arr_entry_t *dst)
     dst->arr.nbuckets = src->arr.nbuckets;
     dst->arr.ht_cap = src->arr.ht_cap;
     dst->arr.generation = src->arr.generation;
+    col_arr_attach_memory_governor(&dst->arr, memory_governor);
+    if (dst->arr.memory_governor && src->mem_bytes > 0) {
+        wl_columnar_memory_governor_t *governor
+            = wl_columnar_memory_governor_ref_get(memory_governor);
+        wl_columnar_memory_reservation_init(&dst->arr.reservation);
+        if (!wl_columnar_memory_reserve(governor, src->mem_bytes,
+            &dst->arr.reservation)
+            || !wl_columnar_memory_commit(&dst->arr.reservation, dst)) {
+            (void)wl_columnar_memory_release(&dst->arr.reservation);
+            col_arr_detach_memory_governor(&dst->arr);
+            free(dst->key_cols);
+            free(dst->rel_name);
+            memset(dst, 0, sizeof(*dst));
+            return ENOMEM;
+        }
+        dst->arr.reserved_bytes = src->mem_bytes;
+    }
     /* Issue #216: copy LRU metadata so worker clones inherit access state. */
     dst->lru_clock = src->lru_clock;
     dst->mem_bytes = src->mem_bytes;
 
     if (src->arr.nbuckets > 0 && src->arr.ht_head) {
         head_bytes = (size_t)src->arr.nbuckets * sizeof(uint64_t);
-        if (head_bytes / sizeof(uint64_t) != src->arr.nbuckets) {
-            free(dst->key_cols);
-            free(dst->rel_name);
-            memset(dst, 0, sizeof(*dst));
-            return ENOMEM;
-        }
+        if (head_bytes / sizeof(uint64_t) != src->arr.nbuckets)
+            goto fail;
         dst->arr.ht_head
             = (uint64_t *)malloc(head_bytes);
-        if (!dst->arr.ht_head) {
-            free(dst->key_cols);
-            free(dst->rel_name);
-            memset(dst, 0, sizeof(*dst));
-            return ENOMEM;
-        }
+        if (!dst->arr.ht_head)
+            goto fail;
         memcpy(dst->arr.ht_head, src->arr.ht_head,
             head_bytes);
     }
 
     if (src->arr.ht_cap > 0 && src->arr.ht_next) {
         next_bytes = (size_t)src->arr.ht_cap * sizeof(uint32_t);
-        if (next_bytes / sizeof(uint32_t) != src->arr.ht_cap) {
-            free(dst->arr.ht_head);
-            free(dst->key_cols);
-            free(dst->rel_name);
-            memset(dst, 0, sizeof(*dst));
-            return ENOMEM;
-        }
+        if (next_bytes / sizeof(uint32_t) != src->arr.ht_cap)
+            goto fail;
         dst->arr.ht_next
             = (uint32_t *)malloc(next_bytes);
-        if (!dst->arr.ht_next) {
-            free(dst->arr.ht_head);
-            free(dst->key_cols);
-            free(dst->rel_name);
-            memset(dst, 0, sizeof(*dst));
-            return ENOMEM;
-        }
+        if (!dst->arr.ht_next)
+            goto fail;
         memcpy(dst->arr.ht_next, src->arr.ht_next,
             next_bytes);
     }
 
     return 0;
+
+fail:
+    arr_free_contents(&dst->arr);
+    col_arr_detach_memory_governor(&dst->arr);
+    free(dst->key_cols);
+    free(dst->rel_name);
+    memset(dst, 0, sizeof(*dst));
+    return ENOMEM;
 }
 
 /**
@@ -331,7 +339,8 @@ col_arr_entry_clone(const col_arr_entry_t *src, col_arr_entry_t *dst)
  */
 int
 col_arr_entries_clone(const col_arr_entry_t *src, uint32_t count,
-    col_arr_entry_t **out_entries, uint32_t *out_cap)
+    col_arr_entry_t **out_entries, uint32_t *out_cap,
+    wl_columnar_memory_governor_ref_t *memory_governor)
 {
     *out_entries = NULL;
     *out_cap = 0;
@@ -345,12 +354,14 @@ col_arr_entries_clone(const col_arr_entry_t *src, uint32_t count,
         return ENOMEM;
 
     for (uint32_t i = 0; i < count; i++) {
-        int clone_rc = col_arr_entry_clone(&src[i], &cloned[i]);
+        int clone_rc = col_arr_entry_clone(&src[i], &cloned[i],
+                memory_governor);
         if (clone_rc != 0) {
             for (uint32_t j = 0; j < i; j++) {
                 free(cloned[j].rel_name);
                 free(cloned[j].key_cols);
                 arr_free_contents(&cloned[j].arr);
+                col_arr_detach_memory_governor(&cloned[j].arr);
             }
             free(cloned);
             return clone_rc;
@@ -983,6 +994,7 @@ cleanup_wq:
             free(e->rel_name);
             free(e->key_cols);
             arr_free_contents(&e->arr);
+            col_arr_detach_memory_governor(&e->arr);
         }
         free(worker_sess[d].arr_entries);
         /* Free worker's private delta-arrangement cache (darr_*). */

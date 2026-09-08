@@ -482,6 +482,43 @@ reservation_identity_valid(const wl_columnar_memory_reservation_t *reservation)
 }
 
 bool
+wl_columnar_memory_reservation_move(
+    wl_columnar_memory_reservation_t *destination,
+    wl_columnar_memory_reservation_t *source)
+{
+    uint64_t destination_state;
+    uint64_t state;
+
+    if (!destination || !source || destination == source
+        || !reservation_identity_valid(destination)
+        || !reservation_identity_valid(source))
+        return false;
+    destination_state = atomic_load_explicit(&destination->state,
+            memory_order_acquire);
+    if (destination_state != WL_COLUMNAR_MEMORY_RESERVATION_EMPTY
+        && destination_state != WL_COLUMNAR_MEMORY_RESERVATION_RELEASED)
+        return false;
+    state = atomic_load_explicit(&source->state, memory_order_acquire);
+    if (state != WL_COLUMNAR_MEMORY_RESERVATION_RESERVED
+        && state != WL_COLUMNAR_MEMORY_RESERVATION_COMMITTED)
+        return false;
+    destination->governor = source->governor;
+    destination->bytes = source->bytes;
+    atomic_store_explicit(&destination->owner_bits,
+        atomic_load_explicit(&source->owner_bits, memory_order_relaxed),
+        memory_order_relaxed);
+    atomic_store_explicit(&destination->state, state, memory_order_release);
+    destination->identity = destination;
+    source->governor = NULL;
+    source->bytes = 0;
+    atomic_store_explicit(&source->owner_bits, 0, memory_order_relaxed);
+    atomic_store_explicit(&source->state,
+        WL_COLUMNAR_MEMORY_RESERVATION_EMPTY, memory_order_release);
+    source->identity = source;
+    return true;
+}
+
+bool
 wl_columnar_memory_size_add(uint64_t left, uint64_t right, uint64_t *out)
 {
     if (!out || left > UINT64_MAX - right)

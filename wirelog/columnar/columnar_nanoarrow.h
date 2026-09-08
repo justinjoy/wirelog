@@ -43,6 +43,7 @@
 
 #include "../backend.h"
 #include "../exec_plan.h"
+#include "columnar/memory_governor.h"
 
 /* ======================================================================== */
 /* K-Fusion Metadata                                                        */
@@ -254,6 +255,11 @@ typedef struct {
      * reported under WL_MEM_SUBSYS_ARRANGEMENT.  Set by the registry that
      * owns the entry; NULL for arrangements built outside a session. */
     struct wl_mem_ledger *ledger;
+    /* Arrangement-owned admission lifetime.  The reservation covers only
+     * ht_head/ht_next; the reference survives tombstone rebuilds. */
+    wl_columnar_memory_governor_ref_t *memory_governor;
+    wl_columnar_memory_reservation_t reservation;
+    uint64_t reserved_bytes;
 } col_arrangement_t;
 
 /**

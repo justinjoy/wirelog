@@ -128,6 +128,12 @@ void
 wl_columnar_memory_reservation_init(
     wl_columnar_memory_reservation_t *reservation);
 
+/* Move an active token to another caller-owned storage location. */
+bool
+wl_columnar_memory_reservation_move(
+    wl_columnar_memory_reservation_t *destination,
+    wl_columnar_memory_reservation_t *source);
+
 const char *
 wl_columnar_memory_source_name(wl_columnar_memory_source_t source);
 

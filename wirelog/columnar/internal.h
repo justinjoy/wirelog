@@ -1946,6 +1946,13 @@ arr_free_contents(col_arrangement_t *arr);
  */
 void
 col_arr_attach_ledger(col_arrangement_t *arr, wl_mem_ledger_t *ledger);
+
+void
+col_arr_attach_memory_governor(col_arrangement_t *arr,
+    wl_columnar_memory_governor_ref_t *memory_governor);
+
+void
+col_arr_detach_memory_governor(col_arrangement_t *arr);
 col_arrangement_t *
 col_session_get_delta_arrangement(wl_col_session_t *cs, const char *rel_name,
     const col_rel_t *delta_rel,
@@ -1970,7 +1977,8 @@ col_session_free_diff_arrangements(wl_col_session_t *cs);
 /* Issue #260: Deep-copy arrangement entries for K-fusion worker isolation. */
 int
 col_arr_entries_clone(const col_arr_entry_t *src, uint32_t count,
-    col_arr_entry_t **out_entries, uint32_t *out_cap);
+    col_arr_entry_t **out_entries, uint32_t *out_cap,
+    wl_columnar_memory_governor_ref_t *memory_governor);
 /* Issue #274: Deep-copy differential arrangement entries for K-fusion worker isolation. */
 int
 col_diff_arr_entries_clone(const col_diff_arr_entry_t *src, uint32_t count,

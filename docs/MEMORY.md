@@ -211,6 +211,16 @@ execution error mapping and leave output handles null. Compound-arena
 admission remains a separate follow-up unit in #1417; parser/plan/result
 allocations remain tracked by #1418. The parent #1369
 contract is therefore only partially implemented until those units land.
+
+The next #1369 allocation unit, #1425, admits only the `ht_head` and
+`ht_next` backing arrays of primary, delta, and filtered hash arrangements.
+Each arrangement retains the shared session governor while its registry entry
+is alive. Full rebuilds and incremental capacity growth reserve the
+prospective footprint before allocating replacement arrays; the old
+reservation remains live until publication, and failed admission leaves the
+old index unchanged. Sorted and differential arrangements, registry metadata,
+relation/timestamp storage, cache policy, and join/TDD scratch remain separate
+allocation classes.
 # wirelog Memory Instrumentation
 
 This document describes what the columnar engine measures about its own
