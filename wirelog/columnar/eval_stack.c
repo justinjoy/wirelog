@@ -24,6 +24,25 @@ eval_stack_push(eval_stack_t *s, col_rel_t *r, bool owned)
     s->items[s->top].is_delta = false;
     s->items[s->top].seg_boundaries = NULL;
     s->items[s->top].seg_count = 0;
+    s->items[s->top].kind = WL_COLUMNAR_EVAL_ENTRY_RELATION;
+    s->items[s->top].continuation = NULL;
+    s->top++;
+    return 0;
+}
+
+int
+eval_stack_push_continuation(eval_stack_t *s,
+    wl_columnar_continuation_t *continuation)
+{
+    if (!s || !continuation || s->top >= COL_STACK_MAX)
+        return ENOBUFS;
+    s->items[s->top].rel = NULL;
+    s->items[s->top].owned = false;
+    s->items[s->top].is_delta = false;
+    s->items[s->top].seg_boundaries = NULL;
+    s->items[s->top].seg_count = 0;
+    s->items[s->top].kind = WL_COLUMNAR_EVAL_ENTRY_CONTINUATION;
+    s->items[s->top].continuation = continuation;
     s->top++;
     return 0;
 }
@@ -41,7 +60,7 @@ eval_stack_push_delta(eval_stack_t *s, col_rel_t *r, bool owned, bool is_delta)
 eval_entry_t
 eval_stack_pop(eval_stack_t *s)
 {
-    eval_entry_t e = { NULL, false, false, NULL, 0 };
+    eval_entry_t e = { 0 };
     if (s->top > 0)
         e = s->items[--s->top];
     return e;
@@ -54,7 +73,9 @@ eval_stack_drain(eval_stack_t *s)
         eval_entry_t e = eval_stack_pop(s);
         if (e.seg_boundaries)
             free(e.seg_boundaries);
-        if (e.owned)
+        if (e.kind == WL_COLUMNAR_EVAL_ENTRY_CONTINUATION)
+            wl_columnar_continuation_destroy(e.continuation);
+        else if (e.owned)
             col_rel_destroy(e.rel);
     }
 }

@@ -1415,6 +1415,7 @@ backend_src = files(
   '../wirelog/columnar/session_hash.c',
   '../wirelog/columnar/delta_pool.c',
   '../wirelog/columnar/delta_pool_admission.c',
+  '../wirelog/columnar/continuation.c',
   '../wirelog/columnar/lftj.c',
   '../wirelog/columnar/mem_ledger.c',
   '../wirelog/columnar/memory_governor.c',
@@ -1453,6 +1454,24 @@ arena_src = files(
 workqueue_src = files(
   '../wirelog/workqueue.c',
 )
+
+# Issue #1450: internal continuation/publication contract.  This test uses
+# fake producer/sink callbacks only; complete-relation execution remains the
+# default and no join producer is wired to this contract yet.
+test_eval_continuation_publication_exe = executable(
+  'test_eval_continuation_publication',
+  files('test_eval_continuation_publication.c'),
+  backend_src,
+  io_src,
+  intern_src,
+  arena_src,
+  thread_src,
+  workqueue_src,
+  include_directories: [wirelog_inc, wirelog_src_inc],
+  dependencies: [nanoarrow_dep, threads_dep, xxhash_dep, mbedtls_dep, math_dep],
+)
+test('eval_continuation_publication', test_eval_continuation_publication_exe,
+     suite: 'unit')
 
 test_optimizer_equivalence_exe = executable(
   'test_optimizer_equivalence',
