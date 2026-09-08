@@ -844,9 +844,10 @@ int
 wl_columnar_join_op(const wl_plan_op_t *op, eval_stack_t *stack,
     wl_col_session_t *sess)
 {
-    eval_entry_t left_e = eval_stack_pop(stack);
-    if (!left_e.rel)
-        return EINVAL;
+    eval_entry_t left_e;
+    int pop_rc = eval_stack_pop_relation(stack, &left_e);
+    if (pop_rc != 0)
+        return pop_rc;
 
     /* right_filtered: non-NULL only when right was pool-allocated by
      * wl_columnar_filter_apply_right_filter (non-cached path: antijoin/semijoin callers).
@@ -1489,9 +1490,10 @@ int
 wl_columnar_antijoin_op(const wl_plan_op_t *op, eval_stack_t *stack,
     wl_col_session_t *sess)
 {
-    eval_entry_t left_e = eval_stack_pop(stack);
-    if (!left_e.rel)
-        return EINVAL;
+    eval_entry_t left_e;
+    int pop_rc = eval_stack_pop_relation(stack, &left_e);
+    if (pop_rc != 0)
+        return pop_rc;
 
     col_rel_t *right_filtered = NULL;
     col_rel_t *right = session_find_rel(sess, op->right_relation);
@@ -1638,9 +1640,10 @@ wl_columnar_semijoin_op(const wl_plan_op_t *op, eval_stack_t *stack,
     wl_col_session_t *sess)
 {
     col_rel_t *right_filtered = NULL;
-    eval_entry_t left_e = eval_stack_pop(stack);
-    if (!left_e.rel)
-        return EINVAL;
+    eval_entry_t left_e;
+    int pop_rc = eval_stack_pop_relation(stack, &left_e);
+    if (pop_rc != 0)
+        return pop_rc;
 
     col_rel_t *right = session_find_rel(sess, op->right_relation);
     if (!right)
@@ -1920,9 +1923,10 @@ wl_columnar_join_diff_op(const wl_plan_op_t *op, eval_stack_t *stack,
     wl_col_session_t *sess)
 {
     col_rel_t *right_filtered = NULL;
-    eval_entry_t left_e = eval_stack_pop(stack);
-    if (!left_e.rel)
-        return EINVAL;
+    eval_entry_t left_e;
+    int pop_rc = eval_stack_pop_relation(stack, &left_e);
+    if (pop_rc != 0)
+        return pop_rc;
 
     col_rel_t *right = session_find_rel(sess, op->right_relation);
     if (!right) {

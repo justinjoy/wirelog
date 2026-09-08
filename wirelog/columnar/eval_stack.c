@@ -63,19 +63,36 @@ eval_entry_t
 eval_stack_pop(eval_stack_t *s)
 {
     eval_entry_t e = { 0 };
-    if (s && s->top > 0) {
+    if (s && s->top > 0)
         e = s->items[--s->top];
-        /* The legacy evaluator API returns a relation entry.  Consume and
-        * destroy continuation ownership at this boundary so existing
-        * consumers that reject NULL relations cannot leak or double-own a
-        * continuation.  eval_stack_drain() handles entries not popped. */
-        if (e.kind == WL_COLUMNAR_EVAL_ENTRY_CONTINUATION) {
-            wl_columnar_continuation_destroy(e.continuation);
-            e.continuation = NULL;
-            e.owned = false;
-        }
-    }
     return e;
+}
+
+int
+eval_stack_pop_relation(eval_stack_t *s, eval_entry_t *out)
+{
+    eval_entry_t e;
+
+    if (!out)
+        return EINVAL;
+    memset(out, 0, sizeof(*out));
+    if (!s || s->top == 0)
+        return EINVAL;
+
+    e = eval_stack_pop(s);
+    if (e.kind == WL_COLUMNAR_EVAL_ENTRY_CONTINUATION) {
+        wl_columnar_continuation_destroy(e.continuation);
+        return ENOTSUP;
+    }
+    if (e.kind != WL_COLUMNAR_EVAL_ENTRY_RELATION || !e.rel) {
+        if (e.seg_boundaries)
+            free(e.seg_boundaries);
+        if (e.owned)
+            col_rel_destroy(e.rel);
+        return EINVAL;
+    }
+    *out = e;
+    return 0;
 }
 
 void

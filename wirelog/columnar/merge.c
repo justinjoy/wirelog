@@ -46,8 +46,17 @@ col_op_concat(eval_stack_t *stack, wl_col_session_t *sess)
     if (stack->top < 2)
         return 0; /* single-item passthrough for K-copy boundary marker */
 
-    eval_entry_t b_e = eval_stack_pop(stack);
-    eval_entry_t a_e = eval_stack_pop(stack);
+    eval_entry_t b_e;
+    eval_entry_t a_e;
+    int pop_rc = eval_stack_pop_relation(stack, &b_e);
+    if (pop_rc != 0)
+        return pop_rc;
+    pop_rc = eval_stack_pop_relation(stack, &a_e);
+    if (pop_rc != 0) {
+        if (b_e.owned)
+            col_rel_destroy(b_e.rel);
+        return pop_rc;
+    }
     col_rel_t *a = a_e.rel;
     col_rel_t *b = b_e.rel;
 
@@ -840,9 +849,10 @@ col_op_consolidate_kway_merge(col_rel_t *rel, const uint32_t *seg_boundaries,
 int
 col_op_consolidate(eval_stack_t *stack, wl_col_session_t *sess)
 {
-    eval_entry_t e = eval_stack_pop(stack);
-    if (!e.rel)
-        return EINVAL;
+    eval_entry_t e;
+    int pop_rc = eval_stack_pop_relation(stack, &e);
+    if (pop_rc != 0)
+        return pop_rc;
 
     col_rel_t *in = e.rel;
     if (!wl_columnar_relation_float_values_valid(in)) {

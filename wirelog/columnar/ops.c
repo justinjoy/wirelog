@@ -174,9 +174,10 @@ col_op_variable(const wl_plan_op_t *op, eval_stack_t *stack,
 int
 col_op_map(const wl_plan_op_t *op, eval_stack_t *stack, wl_col_session_t *sess)
 {
-    eval_entry_t e = eval_stack_pop(stack);
-    if (!e.rel)
-        return EINVAL;
+    eval_entry_t e;
+    int pop_rc = eval_stack_pop_relation(stack, &e);
+    if (pop_rc != 0)
+        return pop_rc;
 
     uint32_t pc = op->project_count;
     col_rel_t *out = col_rel_pool_new_auto(sess->delta_pool, sess->eval_arena,
@@ -329,9 +330,10 @@ int
 col_op_reduce(const wl_plan_op_t *op, eval_stack_t *stack,
     wl_col_session_t *sess)
 {
-    eval_entry_t e = eval_stack_pop(stack);
-    if (!e.rel)
-        return EINVAL;
+    eval_entry_t e;
+    int pop_rc = eval_stack_pop_relation(stack, &e);
+    if (pop_rc != 0)
+        return pop_rc;
 
     col_rel_t *in = e.rel;
     uint32_t gc = op->group_by_count;

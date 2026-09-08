@@ -332,9 +332,9 @@ col_op_k_fusion_serial(const wl_plan_op_t *op, eval_stack_t *stack,
             goto cleanup;
         }
 
-        eval_entry_t e = eval_stack_pop(&s);
-        if (!e.rel) {
-            rc = EINVAL;
+        eval_entry_t e;
+        rc = eval_stack_pop_relation(&s, &e);
+        if (rc != 0) {
             eval_stack_drain(&s);
             goto cleanup;
         }
@@ -731,9 +731,9 @@ col_op_k_fusion_dispatch(const wl_plan_op_t *op, eval_stack_t *stack,
             goto cleanup_results;
         }
 
-        eval_entry_t e = eval_stack_pop(&workers[d].stack);
-        if (!e.rel) {
-            rc = EINVAL;
+        eval_entry_t e;
+        rc = eval_stack_pop_relation(&workers[d].stack, &e);
+        if (rc != 0) {
             eval_stack_drain(&workers[d].stack);
             goto cleanup_results;
         }

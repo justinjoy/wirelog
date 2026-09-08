@@ -319,6 +319,8 @@ test_reservation_and_stack_ownership(void)
         "successful exact-fit retry retains its reservation");
     wl_columnar_continuation_destroy(continuation);
 
+    sink = (fake_sink_t){ UINT64_C(128), 0, 0, 0, 0, 0, 0, 0 };
+    sink_spec = make_sink(&sink);
     eval_stack_init(&stack);
     relation = col_rel_new_auto("complete", 1);
     CHECK(relation != NULL, "complete relation can still be pushed");
@@ -332,16 +334,46 @@ test_reservation_and_stack_ownership(void)
         eval_entry_t entry = eval_stack_pop(&stack);
         CHECK(entry.kind == WL_COLUMNAR_EVAL_ENTRY_CONTINUATION,
             "stack distinguishes continuation entries");
-        CHECK(entry.rel == NULL && entry.continuation == NULL,
-            "popping a continuation safely consumes its ownership");
+        CHECK(entry.rel == NULL && entry.continuation == continuation,
+            "continuation-aware pop preserves the handoff ownership");
+        CHECK(wl_columnar_continuation_publish(entry.continuation, &sink_spec)
+            == WL_COLUMNAR_CONTINUATION_OK,
+            "continuation-aware consumer can publish the carried result");
+        wl_columnar_continuation_destroy(entry.continuation);
     }
     CHECK(producer.destroy_calls == 1,
-        "popped continuation is destroyed exactly once");
+        "handed-off continuation is destroyed exactly once");
+
+    memset(&producer, 0, sizeof(producer));
+    continuation = make_continuation(&producer);
+    CHECK(eval_stack_push_continuation(&stack, continuation) == 0,
+        "continuation can reach a legacy boundary");
+    {
+        eval_entry_t rejected;
+        CHECK(eval_stack_pop_relation(&stack, &rejected) == ENOTSUP,
+            "legacy relation-only boundary rejects continuation explicitly");
+        CHECK(rejected.continuation == NULL && rejected.rel == NULL,
+            "legacy rejection does not expose a materialized relation");
+    }
+    CHECK(producer.destroy_calls == 1,
+        "legacy rejection destroys continuation exactly once");
 
     memset(&producer, 0, sizeof(producer));
     continuation = make_continuation(&producer);
     CHECK(eval_stack_push_continuation(&stack, continuation) == 0,
         "second continuation is retained for drain");
+    {
+        wl_plan_op_t op = { 0 };
+        CHECK(col_op_map(&op, &stack, NULL) == ENOTSUP,
+            "materializing MAP boundary rejects continuation before output");
+    }
+    CHECK(producer.destroy_calls == 1,
+        "materializing boundary rejection does not leak continuation");
+
+    memset(&producer, 0, sizeof(producer));
+    continuation = make_continuation(&producer);
+    CHECK(eval_stack_push_continuation(&stack, continuation) == 0,
+        "mixed stack accepts a continuation for drain");
     eval_stack_drain(&stack);
     CHECK(producer.destroy_calls == 1,
         "drain destroys an unpopped continuation exactly once");
