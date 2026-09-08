@@ -2240,24 +2240,27 @@ col_session_remove(wl_session_t *session, const char *relation,
     /* Compact: remove matching rows */
     for (uint32_t di = 0; di < num_rows; di++) {
         const int64_t *del = data + (size_t)di * num_cols;
+        uint32_t old_nrows = r->nrows;
         uint32_t out_r = 0;
         for (uint32_t ri = 0; ri < r->nrows; ri++) {
             col_rel_row_copy_out(r, ri, row_buf);
             if (memcmp(row_buf, del, sizeof(int64_t) * num_cols) != 0) {
                 if (out_r != ri)
-                    col_rel_row_copy_in(r, out_r, row_buf);
+                    col_rel_row_copy_in_raw(r, out_r, row_buf);
                 out_r++;
             } else {
                 /* Remove first matching row only */
                 di = num_rows; /* break outer loop after this one */
                 for (uint32_t rest = ri + 1; rest < r->nrows; rest++, out_r++)
-                    col_rel_row_move(r, out_r, rest);
+                    col_rel_row_move_raw(r, out_r, rest);
                 r->nrows = out_r;
                 goto next_del;
             }
         }
         r->nrows = out_r;
 next_del:;
+        if (r->nrows != old_nrows)
+            wl_columnar_relation_touch_view(r);
     }
     if (row_buf != row_stack)
         free(row_buf);
@@ -2351,24 +2354,27 @@ col_session_remove_incremental(wl_session_t *session, const char *relation,
     /* Remove rows from the EDB using existing compact logic */
     for (uint32_t di = 0; di < num_rows; di++) {
         const int64_t *del = data + (size_t)di * num_cols;
+        uint32_t old_nrows = r->nrows;
         uint32_t out_r = 0;
         for (uint32_t ri = 0; ri < r->nrows; ri++) {
             col_rel_row_copy_out(r, ri, row_buf);
             if (memcmp(row_buf, del, sizeof(int64_t) * num_cols) != 0) {
                 if (out_r != ri)
-                    col_rel_row_copy_in(r, out_r, row_buf);
+                    col_rel_row_copy_in_raw(r, out_r, row_buf);
                 out_r++;
             } else {
                 /* Remove first matching row only */
                 di = num_rows; /* break outer loop after this one */
                 for (uint32_t rest = ri + 1; rest < r->nrows; rest++, out_r++)
-                    col_rel_row_move(r, out_r, rest);
+                    col_rel_row_move_raw(r, out_r, rest);
                 r->nrows = out_r;
                 goto next_del_incr;
             }
         }
         r->nrows = out_r;
 next_del_incr:;
+        if (r->nrows != old_nrows)
+            wl_columnar_relation_touch_view(r);
     }
     if (row_buf != row_stack)
         free(row_buf);
@@ -2654,6 +2660,7 @@ col_session_clear_idb_rows(const wl_plan_t *plan, wl_col_session_t *sess)
             r->sorted_nrows = 0;
             r->run_count = 0;
             r->base_nrows = 0;
+            wl_columnar_relation_touch_view(r);
             col_session_invalidate_arrangements(&sess->base, r->name);
         }
     }
@@ -3025,8 +3032,10 @@ col_session_snapshot(wl_session_t *session, wirelog_on_tuple_fn callback,
                 for (uint32_t ri = 0; ri < cnrels; ri++) {
                     col_rel_t *r = session_find_rel(
                         sess, csp->relations[ri].name);
-                    if (r)
+                    if (r) {
                         r->nrows = 0;
+                        wl_columnar_relation_touch_view(r);
+                    }
                     if (pre_saved[ri] && r) {
                         if (r->ncols == 0
                             && pre_saved[ri]->ncols > 0)
@@ -3061,8 +3070,10 @@ col_session_snapshot(wl_session_t *session, wirelog_on_tuple_fn callback,
                 for (uint32_t ri = 0; ri < cnrels; ri++) {
                     col_rel_t *r = session_find_rel(
                         sess, csp->relations[ri].name);
-                    if (r)
+                    if (r) {
                         r->nrows = 0;
+                        wl_columnar_relation_touch_view(r);
+                    }
                     if (tdd_saved[ri] && r) {
                         if (r->ncols == 0
                             && tdd_saved[ri]->ncols > 0)

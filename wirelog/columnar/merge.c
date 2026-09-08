@@ -551,8 +551,9 @@ col_op_consolidate_hash_dedup(col_rel_t *rel)
 
     /* Write unique rows back to relation */
     for (uint32_t r = 0; r < uniq_count; r++)
-        col_rel_row_copy_in(rel, r, uniq_buf + (size_t)r * nc);
+        col_rel_row_copy_in_raw(rel, r, uniq_buf + (size_t)r * nc);
     rel->nrows = uniq_count;
+    wl_columnar_relation_touch_view(rel);
     free(uniq_buf);
 
     /* Sort the small unique set */
@@ -565,11 +566,12 @@ col_op_consolidate_hash_dedup(col_rel_t *rel)
         for (uint32_t i = 1; i < uniq_count; i++) {
             if (col_rel_row_cmp(rel, i - 1, i) != 0) {
                 if (out != i)
-                    col_rel_row_move(rel, out, i);
+                    col_rel_row_move_raw(rel, out, i);
                 out++;
             }
         }
         rel->nrows = out;
+        wl_columnar_relation_touch_view(rel);
     }
 
     return 0;
@@ -648,7 +650,7 @@ col_op_consolidate_kway_merge(col_rel_t *rel, const uint32_t *seg_boundaries,
             for (uint32_t r = start + 1; r < end; r++) {
                 if (col_rel_row_cmp(rel, out_r - 1, r) != 0) {
                     if (out_r != r)
-                        col_rel_row_move(rel, out_r, r);
+                        col_rel_row_move_raw(rel, out_r, r);
                     out_r++;
                 }
             }
@@ -661,6 +663,7 @@ col_op_consolidate_kway_merge(col_rel_t *rel, const uint32_t *seg_boundaries,
     /* K=1: already sorted+deduped by the loop above */
     if (seg_count == 1) {
         rel->nrows = seg_ends[0];
+        wl_columnar_relation_touch_view(rel);
         free(seg_starts);
         free(seg_ends);
         return 0;
@@ -727,8 +730,9 @@ col_op_consolidate_kway_merge(col_rel_t *rel, const uint32_t *seg_boundaries,
 
         /* Scatter flat merged buffer back into column-major */
         for (uint32_t r = 0; r < out; r++)
-            col_rel_row_copy_in(rel, r, merged + (size_t)r * nc);
+            col_rel_row_copy_in_raw(rel, r, merged + (size_t)r * nc);
         rel->nrows = out;
+        wl_columnar_relation_touch_view(rel);
         free(merged);
         free(seg_starts);
         free(seg_ends);
@@ -823,8 +827,9 @@ col_op_consolidate_kway_merge(col_rel_t *rel, const uint32_t *seg_boundaries,
 
     /* Scatter flat merged buffer back into column-major */
     for (uint32_t r = 0; r < out; r++)
-        col_rel_row_copy_in(rel, r, merged + (size_t)r * nc);
+        col_rel_row_copy_in_raw(rel, r, merged + (size_t)r * nc);
     rel->nrows = out;
+    wl_columnar_relation_touch_view(rel);
     free(merged);
     free(heap);
     free(seg_starts);
@@ -912,7 +917,7 @@ col_op_consolidate(eval_stack_t *stack, wl_col_session_t *sess)
         uint32_t d_unique = 1;
         for (uint32_t i = 1; i < delta_count; i++) {
             if (col_rel_row_cmp(work, sn + i - 1, sn + i) != 0) {
-                col_rel_row_move(work, sn + d_unique, sn + i);
+                col_rel_row_move_raw(work, sn + d_unique, sn + i);
                 d_unique++;
             }
         }
@@ -990,8 +995,10 @@ col_op_consolidate(eval_stack_t *stack, wl_col_session_t *sess)
             work->capacity = work->merge_buf_cap;
             work->merge_columns = old_cols;
             work->merge_buf_cap = old_cap;
+            wl_columnar_relation_touch_storage(work);
         }
         work->nrows = out;
+        wl_columnar_relation_touch_view(work);
         work->sorted_nrows = out;
         work->run_count = 1;
         work->run_ends[0] = out;
@@ -1001,8 +1008,10 @@ col_op_consolidate(eval_stack_t *stack, wl_col_session_t *sess)
             uint32_t tight = out + out / 4;
             if (tight < COL_REL_INIT_CAP)
                 tight = COL_REL_INIT_CAP;
-            if (col_columns_realloc(work->columns, nc, tight) == 0)
+            if (col_columns_realloc(work->columns, nc, tight) == 0) {
                 work->capacity = tight;
+                wl_columnar_relation_touch_storage(work);
+            }
         }
 
         return eval_stack_push(stack, work, work_owned);
@@ -1015,11 +1024,12 @@ col_op_consolidate(eval_stack_t *stack, wl_col_session_t *sess)
     uint32_t out_r = 1; /* first row always kept */
     for (uint32_t r = 1; r < nr; r++) {
         if (col_rel_row_cmp(work, r - 1, r) != 0) {
-            col_rel_row_move(work, out_r, r);
+            col_rel_row_move_raw(work, out_r, r);
             out_r++;
         }
     }
     work->nrows = out_r;
+    wl_columnar_relation_touch_view(work);
     work->sorted_nrows = out_r;
     work->run_count = 1;
     work->run_ends[0] = out_r;
@@ -1062,7 +1072,7 @@ col_op_consolidate_incremental(col_rel_t *rel, uint32_t old_nrows)
     uint32_t d_unique = 1;
     for (uint32_t i = 1; i < delta_count; i++) {
         if (col_rel_row_cmp(rel, old_nrows + i - 1, old_nrows + i) != 0) {
-            col_rel_row_move(rel, old_nrows + d_unique, old_nrows + i);
+            col_rel_row_move_raw(rel, old_nrows + d_unique, old_nrows + i);
             d_unique++;
         }
     }
@@ -1109,9 +1119,10 @@ col_op_consolidate_incremental(col_rel_t *rel, uint32_t old_nrows)
 
     /* Scatter flat merged buffer back into column-major */
     for (uint32_t r = 0; r < out; r++)
-        col_rel_row_copy_in(rel, r, merged + (size_t)r * nc);
+        col_rel_row_copy_in_raw(rel, r, merged + (size_t)r * nc);
     free(merged);
     rel->nrows = out;
+    wl_columnar_relation_touch_view(rel);
     return 0;
 }
 
@@ -1242,10 +1253,11 @@ col_rel_compact_runs(col_rel_t *rel)
 
     /* Scatter flat merged buffer back into column-major */
     for (uint32_t r = 0; r < out; r++)
-        col_rel_row_copy_in(rel, r, merged + (size_t)r * nc);
+        col_rel_row_copy_in_raw(rel, r, merged + (size_t)r * nc);
     free(merged);
 
     rel->nrows = out;
+    wl_columnar_relation_touch_view(rel);
     rel->sorted_nrows = out;
     rel->run_count = 1;
     rel->run_ends[0] = out;
@@ -1307,7 +1319,7 @@ col_op_consolidate_incremental_delta(col_rel_t *rel, uint32_t old_nrows,
     uint32_t d_unique = 1;
     for (uint32_t i = 1; i < delta_count; i++) {
         if (col_rel_row_cmp(rel, old_nrows + i - 1, old_nrows + i) != 0) {
-            col_rel_row_move(rel, old_nrows + d_unique, old_nrows + i);
+            col_rel_row_move_raw(rel, old_nrows + d_unique, old_nrows + i);
             d_unique++;
         }
     }
@@ -1356,6 +1368,7 @@ col_op_consolidate_incremental_delta(col_rel_t *rel, uint32_t old_nrows,
             col_row_buf_release(&drb);
         }
         rel->nrows = old_nrows + d_unique;
+        wl_columnar_relation_touch_view(rel);
         rel->sorted_nrows = rel->nrows;
 
         /* Register as new run */
@@ -1373,6 +1386,7 @@ col_op_consolidate_incremental_delta(col_rel_t *rel, uint32_t old_nrows,
         if (rel->timestamps) {
             free(rel->timestamps);
             rel->timestamps = NULL;
+            wl_columnar_relation_touch_storage(rel);
         }
         if (out_fast_path)
             *out_fast_path = 1;
@@ -1401,7 +1415,7 @@ col_op_consolidate_incremental_delta(col_rel_t *rel, uint32_t old_nrows,
             if (!found) {
                 /* Novel row: compact to front of delta region */
                 if (novel_count != i)
-                    col_rel_row_move(rel, old_nrows + novel_count, row_idx);
+                    col_rel_row_move_raw(rel, old_nrows + novel_count, row_idx);
                 if (delta_out) {
                     /* Issue #1000: the one converted site that is NOT
                      * covered by a test, and the one that inits inside a
@@ -1433,6 +1447,7 @@ col_op_consolidate_incremental_delta(col_rel_t *rel, uint32_t old_nrows,
 
         if (novel_count > 0) {
             rel->nrows = old_nrows + novel_count;
+            wl_columnar_relation_touch_view(rel);
             /* Register novel rows as new run */
             if (rel->run_count < COL_MAX_RUNS) {
                 rel->run_ends[rel->run_count] = rel->nrows;
@@ -1448,13 +1463,15 @@ col_op_consolidate_incremental_delta(col_rel_t *rel, uint32_t old_nrows,
                     return rc;
                 uint32_t compacted = rel->nrows;
                 for (uint32_t j = 0; j < novel_count; j++)
-                    col_rel_row_move(rel, compacted + j, old_nrows + j);
+                    col_rel_row_move_raw(rel, compacted + j, old_nrows + j);
                 rel->nrows = compacted + novel_count;
+                wl_columnar_relation_touch_view(rel);
                 rel->run_ends[rel->run_count] = rel->nrows;
                 rel->run_count++;
             }
         } else {
             rel->nrows = old_nrows; /* no new rows */
+            wl_columnar_relation_touch_view(rel);
         }
         rel->sorted_nrows = rel->nrows;
 
@@ -1508,9 +1525,10 @@ col_op_consolidate_incremental_delta(col_rel_t *rel, uint32_t old_nrows,
         }
         uint32_t compacted = rel->nrows;
         for (uint32_t j = 0; j < d_unique; j++)
-            col_rel_row_move(rel, compacted + j, delta_phys + j);
+            col_rel_row_move_raw(rel, compacted + j, delta_phys + j);
         old_nrows = compacted;
         rel->nrows = compacted + d_unique;
+        wl_columnar_relation_touch_view(rel);
     }
 
     uint32_t oi = 0, di = 0, out = 0;
@@ -1564,8 +1582,10 @@ col_op_consolidate_incremental_delta(col_rel_t *rel, uint32_t old_nrows,
         rel->capacity = rel->merge_buf_cap;
         rel->merge_columns = old_cols;
         rel->merge_buf_cap = old_cap;
+        wl_columnar_relation_touch_storage(rel);
     }
     rel->nrows = out;
+    wl_columnar_relation_touch_view(rel);
     rel->sorted_nrows = out;
     rel->run_count = 1;
     rel->run_ends[0] = out;
@@ -1576,12 +1596,14 @@ col_op_consolidate_incremental_delta(col_rel_t *rel, uint32_t old_nrows,
         if (tight < COL_REL_INIT_CAP)
             tight = COL_REL_INIT_CAP;
         if (col_columns_realloc(rel->columns, nc, tight) == 0)
-            rel->capacity = tight;
+            wl_columnar_relation_touch_storage(rel);
+        rel->capacity = tight;
     }
 
     if (rel->timestamps) {
         free(rel->timestamps);
         rel->timestamps = NULL;
+        wl_columnar_relation_touch_storage(rel);
     }
     if (out_fast_path)
         *out_fast_path = 0;

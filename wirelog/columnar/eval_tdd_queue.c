@@ -152,6 +152,7 @@ wl_columnar_eval_tdd_queue_publish_delta(col_eval_tdd_worker_ctx_t *ctx,
         col_rel_destroy(delta);
         return ENOMEM;
     }
+    wl_columnar_relation_touch_storage(delta);
     for (uint32_t ti = 0; ti < delta->nrows; ti++) {
         delta->timestamps[ti].iteration = eff_iter;
         delta->timestamps[ti].stratum = ctx->stratum_idx;

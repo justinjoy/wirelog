@@ -117,6 +117,7 @@ col_idb_consolidate(col_rel_t *r, wl_col_session_t *sess)
             r->columns = ce.rel->columns;
             r->nrows = ce.rel->nrows;
             r->capacity = ce.rel->capacity;
+            wl_columnar_relation_touch_replacement(r);
             ce.rel->columns = NULL;
             col_rel_destroy(ce.rel);
         }
@@ -201,6 +202,9 @@ col_stratum_step_retraction_nonrecursive(const wl_plan_stratum_t *sp,
         r->nrows = 0;
         r->sorted_nrows = 0;
         r->run_count = 0;
+        /* Retraction publishes a temporary empty view.  Restoration below
+         * must receive a fresh generation, never the saved one. */
+        wl_columnar_relation_touch_replacement(r);
     }
 
     /* Step 1: Enable retraction-seeded mode and evaluate stratum.
@@ -264,6 +268,7 @@ col_stratum_step_retraction_nonrecursive(const wl_plan_stratum_t *sp,
             r->retract_backup_capacity = 0;
             r->retract_backup_sorted_nrows = 0;
             r->retract_backup_run_count = 0;
+            wl_columnar_relation_touch_replacement(r);
         }
         free((void *)retract_data);
         free(retract_nrows);
@@ -300,6 +305,7 @@ col_stratum_step_retraction_nonrecursive(const wl_plan_stratum_t *sp,
                         r2->retract_backup_capacity = 0;
                         r2->retract_backup_sorted_nrows = 0;
                         r2->retract_backup_run_count = 0;
+                        wl_columnar_relation_touch_replacement(r2);
                     }
                     free(retract_data[i]);
                 }
@@ -340,6 +346,7 @@ col_stratum_step_retraction_nonrecursive(const wl_plan_stratum_t *sp,
         r->retract_backup_capacity = 0;
         r->retract_backup_sorted_nrows = 0;
         r->retract_backup_run_count = 0;
+        wl_columnar_relation_touch_replacement(r);
     }
 
     /* Step 4: Remove retracted rows and fire delta callbacks */
@@ -378,15 +385,16 @@ col_stratum_step_retraction_nonrecursive(const wl_plan_stratum_t *sp,
                     /* Copy remaining rows forward */
                     for (uint32_t rest = src_idx + 1; rest < r->nrows;
                         rest++) {
-                        col_rel_row_move(r, out_r, rest);
+                        col_rel_row_move_raw(r, out_r, rest);
                         out_r++;
                     }
                     r->nrows = out_r;
+                    wl_columnar_relation_touch_view(r);
                     break;
                 } else {
                     /* Keep this row */
                     if (out_r != src_idx)
-                        col_rel_row_copy_in(r, out_r, src_buf);
+                        col_rel_row_copy_in_raw(r, out_r, src_buf);
                     out_r++;
                 }
             }
@@ -460,6 +468,7 @@ col_stratum_step_with_delta(const wl_plan_stratum_t *sp, wl_col_session_t *sess,
             r->nrows = 0;
             r->capacity = 0;
             r->sorted_nrows = 0;
+            wl_columnar_relation_touch_replacement(r);
         } else {
             prev_nrows[ri] = 0;
         }
@@ -586,13 +595,14 @@ cleanup:
                     for (uint32_t row = 0; row < nr; row++) {
                         const int64_t *rowp
                             = prev_data[i] + (size_t)row * nc;
-                        col_rel_row_copy_in(r, row, rowp);
+                        col_rel_row_copy_in_raw(r, row, rowp);
                     }
                     r->nrows = nr;
                     r->capacity = nr > 0 ? nr : 1;
                     r->sorted_nrows = nr;
                     r->run_count = 1;
                     r->run_ends[0] = nr;
+                    wl_columnar_relation_touch_replacement(r);
                 }
                 free(prev_data[i]);
                 prev_data[i] = NULL;

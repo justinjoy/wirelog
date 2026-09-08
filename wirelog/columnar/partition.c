@@ -145,11 +145,13 @@ col_rel_partition_by_key(const col_rel_t *src,
                 goto cleanup;
             }
             part->capacity = counts[w];
+            wl_columnar_relation_touch_storage(part);
         } else if (counts[w] == 0) {
             /* Empty partition: free the default allocation */
             col_columns_free(part->columns, ncols);
             part->columns = NULL;
             part->capacity = 0;
+            wl_columnar_relation_touch_storage(part);
         }
 
         out_parts[w] = part;
@@ -194,6 +196,7 @@ col_rel_partition_by_key(const col_rel_t *src,
                 rc = ENOMEM;
                 goto cleanup;
             }
+            wl_columnar_relation_touch_storage(out_parts[w]);
         }
         memset(offsets, 0, num_workers * sizeof(uint32_t));
         for (uint32_t i = 0; i < nrows; i++) {
@@ -207,8 +210,11 @@ col_rel_partition_by_key(const col_rel_t *src,
     part_idx = NULL;
 
     /* Set final row counts */
-    for (uint32_t w = 0; w < num_workers; w++)
+    for (uint32_t w = 0; w < num_workers; w++) {
         out_parts[w]->nrows = counts[w];
+        if (counts[w] > 0)
+            wl_columnar_relation_touch_view(out_parts[w]);
+    }
 
     /* Cleanup temporaries */
     if (key_count > COL_STACK_MAX)
@@ -284,10 +290,12 @@ col_rel_merge_partitions(col_rel_t **parts, uint32_t num_workers,
             return ENOMEM;
         }
         merged->capacity = total_rows;
+        wl_columnar_relation_touch_storage(merged);
     } else if (total_rows == 0) {
         col_columns_free(merged->columns, ncols);
         merged->columns = NULL;
         merged->capacity = 0;
+        wl_columnar_relation_touch_storage(merged);
     }
 
     /* Copy partition data contiguously per column */
@@ -318,6 +326,7 @@ col_rel_merge_partitions(col_rel_t **parts, uint32_t num_workers,
         if (!merged->timestamps) {
             col_rel_destroy(merged); return ENOMEM;
         }
+        wl_columnar_relation_touch_storage(merged);
         uint32_t off = 0;
         for (uint32_t w = 0; w < num_workers; w++) {
             if (parts[w]->nrows > 0 && parts[w]->timestamps)
@@ -328,6 +337,8 @@ col_rel_merge_partitions(col_rel_t **parts, uint32_t num_workers,
     }
 
     merged->nrows = total_rows;
+    if (total_rows > 0)
+        wl_columnar_relation_touch_view(merged);
 
     *out = merged;
     return 0;

@@ -459,7 +459,92 @@ typedef struct {
      * protect.  Using 0 rather than a sentinel keeps every calloc()
      * allocation path correct by default, as the block above requires. */
     uint32_t declared_ncols;
+
+    /* Internal snapshot identity and invalidation generations (#1441).
+     *
+     * These fields intentionally remain at the end of the structure.  The
+     * prefix above is an existing private layout consumed by arrangement
+     * fixtures and other in-tree mirrors; inserting new fields in that
+     * prefix changes their offsets even though col_rel_t is private.
+     *
+     * relation_identity is stable for the lifetime of this relation object;
+     * copies get their own identity.  view_generation describes logical
+     * values, row order, and schema/type interpretation.  The storage
+     * generation describes backing-buffer replacement or ownership changes.
+     * UINT64_MAX is a poisoned value: once a counter reaches it, equality
+     * must not be used as evidence that two snapshots match. */
+    uint64_t relation_identity;
+    uint64_t view_generation;
+    uint64_t storage_generation;
 } col_rel_t;
+
+/* Preserve the legacy mirror prefix: name, ncols, columns, column_types,
+ * nrows, and capacity must precede all #1441 generation state. */
+_Static_assert(offsetof(col_rel_t, name) == 0,
+    "col_rel_t name must remain the first field");
+_Static_assert(offsetof(col_rel_t, ncols) == sizeof(char *),
+    "col_rel_t ncols offset changed");
+_Static_assert(offsetof(col_rel_t, columns) > offsetof(col_rel_t, ncols),
+    "col_rel_t columns must follow ncols");
+_Static_assert(offsetof(col_rel_t, column_types) > offsetof(col_rel_t, columns),
+    "col_rel_t column_types must follow columns");
+_Static_assert(offsetof(col_rel_t, nrows) > offsetof(col_rel_t, column_types),
+    "col_rel_t nrows must follow column_types");
+_Static_assert(offsetof(col_rel_t, capacity) > offsetof(col_rel_t, nrows),
+    "col_rel_t capacity must follow nrows");
+_Static_assert(offsetof(col_rel_t, relation_identity) >
+    offsetof(col_rel_t, declared_ncols),
+    "relation generation fields must remain outside the legacy prefix");
+
+/* Generation counters are intentionally checked rather than wrapping.  A
+ * saturated counter is invalid for cache equality; the next cache unit will
+ * use wl_columnar_relation_generation_valid() before accepting a hit. */
+#define WL_COLUMNAR_REL_GENERATION_INVALID UINT64_MAX
+
+static inline bool
+wl_columnar_relation_generation_valid(uint64_t generation)
+{
+    return generation != WL_COLUMNAR_REL_GENERATION_INVALID;
+}
+
+static inline int
+wl_columnar_relation_generation_advance(uint64_t *generation)
+{
+    if (!generation)
+        return EINVAL;
+    if (*generation >= WL_COLUMNAR_REL_GENERATION_INVALID - 1u) {
+        *generation = WL_COLUMNAR_REL_GENERATION_INVALID;
+        return EOVERFLOW;
+    }
+    (*generation)++;
+    return 0;
+}
+
+static inline void
+wl_columnar_relation_touch_view(col_rel_t *rel)
+{
+    if (rel)
+        (void)wl_columnar_relation_generation_advance(&rel->view_generation);
+}
+
+static inline void
+wl_columnar_relation_touch_storage(col_rel_t *rel)
+{
+    if (rel)
+        (void)wl_columnar_relation_generation_advance(
+            &rel->storage_generation);
+}
+
+static inline void
+wl_columnar_relation_touch_replacement(col_rel_t *rel)
+{
+    wl_columnar_relation_touch_view(rel);
+    wl_columnar_relation_touch_storage(rel);
+}
+
+/* Bulk relation writers use raw row helpers and publish one logical touch at
+ * their commit point.  Keeping these helpers separate prevents a row loop
+ * from advancing the generation once per copied row. */
 
 /* Float lanes are stored as binary64 bits but invalid values are rejected at
  * the relation boundary.  Sorting/consolidation also has entry points that
@@ -539,6 +624,10 @@ wl_columnar_hash_value(uint32_t hash, const col_rel_t *rel, uint32_t col,
 /* Layout: int64_t **columns; columns[col][row]                             */
 /* ======================================================================== */
 
+/* Defined in relation.c.  The accessor layer must use the same COW
+ * publication path as the bulk mutation entry points. */
+int col_rel_cow_unshare(col_rel_t *r, uint32_t new_cap);
+
 /** Read a single cell value at (row, col). */
 static inline int64_t
 col_rel_get(const col_rel_t *r, uint32_t row, uint32_t col)
@@ -550,7 +639,8 @@ col_rel_get(const col_rel_t *r, uint32_t row, uint32_t col)
 static inline int
 col_rel_set(col_rel_t *r, uint32_t row, uint32_t col, int64_t val)
 {
-    if (!r || !r->columns || col >= r->ncols)
+    if (!r || !r->columns || row >= r->capacity || col >= r->ncols
+        || !r->columns[col])
         return EINVAL;
     if (r->column_types && r->column_types[col] == WIRELOG_TYPE_FLOAT) {
         if (!wl_columnar_float_bits_valid(val))
@@ -558,7 +648,14 @@ col_rel_set(col_rel_t *r, uint32_t row, uint32_t col, int64_t val)
         if (wl_columnar_float_bits_zero(val))
             val = 0;
     }
+    /* A shared view is a borrowed storage view.  Detach it before the first
+     * write so the source relation and its generations remain untouched.
+     * col_rel_cow_unshare() advances storage_generation once; this logical
+     * cell mutation advances view_generation below. */
+    if (r->col_shared && col_rel_cow_unshare(r, 0) != 0)
+        return ENOMEM;
     r->columns[col][row] = val;
+    wl_columnar_relation_touch_view(r);
     return 0;
 }
 
@@ -591,7 +688,7 @@ col_rel_row_copy_out(const col_rel_t *r, uint32_t row, int64_t *dst)
 
 /** Copy one row in from a caller-provided buffer. */
 static inline int
-col_rel_row_copy_in(col_rel_t *r, uint32_t row, const int64_t *src)
+col_rel_row_copy_in_raw(col_rel_t *r, uint32_t row, const int64_t *src)
 {
     if (!r || !r->columns || !src)
         return EINVAL;
@@ -613,6 +710,15 @@ col_rel_row_copy_in(col_rel_t *r, uint32_t row, const int64_t *src)
         memcpy(&r->columns[c][row], &value, sizeof(value));
     }
     return 0;
+}
+
+static inline int
+col_rel_row_copy_in(col_rel_t *r, uint32_t row, const int64_t *src)
+{
+    int rc = col_rel_row_copy_in_raw(r, row, src);
+    if (rc == 0)
+        wl_columnar_relation_touch_view(r);
+    return rc;
 }
 
 /** Compute buffer size in bytes for row_count rows. */
@@ -890,12 +996,20 @@ col_agg_better(wirelog_agg_fn_t fn, wl_plan_agg_operand_t domain,
 /** Copy row src_row to dst_row within the same relation.
  *  Column-major: each column copy is independent, no temp buffer needed. */
 static inline void
-col_rel_row_move(col_rel_t *r, uint32_t dst_row, uint32_t src_row)
+col_rel_row_move_raw(col_rel_t *r, uint32_t dst_row, uint32_t src_row)
 {
     if (dst_row == src_row)
         return;
     for (uint32_t c = 0; c < r->ncols; c++)
         r->columns[c][dst_row] = r->columns[c][src_row];
+}
+
+static inline void
+col_rel_row_move(col_rel_t *r, uint32_t dst_row, uint32_t src_row)
+{
+    col_rel_row_move_raw(r, dst_row, src_row);
+    if (dst_row != src_row)
+        wl_columnar_relation_touch_view(r);
 }
 
 /**
@@ -1864,6 +1978,10 @@ void
 col_rel_compact(col_rel_t *r);
 int
 col_rel_install_shared_view(col_rel_t *dst, const col_rel_t *src);
+
+/* Test seam for the non-wrapping relation identity allocator. */
+int
+col_rel_test_set_next_identity(uint64_t next);
 void
 col_rel_radix_sort_int64(col_rel_t *r);
 

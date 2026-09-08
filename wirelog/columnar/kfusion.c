@@ -339,7 +339,9 @@ col_op_k_fusion_serial(const wl_plan_op_t *op, eval_stack_t *stack,
             goto cleanup;
         }
 
-        /* If not owned, share columns zero-copy (parity with parallel path). */
+        /* If not owned, use the common shared-view publication helper.  This
+         * preserves the worker-local identity and advances its destination
+         * epoch instead of copying the coordinator's generation numbers. */
         if (!e.owned) {
             col_rel_t *copy = col_rel_pool_new_like(sess->delta_pool,
                     "<k_fusion_copy>", e.rel);
@@ -348,20 +350,15 @@ col_op_k_fusion_serial(const wl_plan_op_t *op, eval_stack_t *stack,
                 eval_stack_drain(&s);
                 goto cleanup;
             }
-            copy->col_shared = (bool *)calloc(e.rel->ncols, sizeof(bool));
-            if (copy->col_shared) {
-                for (uint32_t c = 0; c < e.rel->ncols; c++) {
-                    free(copy->columns[c]); /* free pool-allocated column */
-                    copy->columns[c] = e.rel->columns[c];
-                    copy->col_shared[c] = true;
+            rc = col_rel_install_shared_view(copy, e.rel);
+            if (rc != 0) {
+                rc = col_rel_append_all(copy, e.rel, NULL);
+                if (rc != 0) {
+                    col_rel_destroy(copy);
+                    eval_stack_drain(&s);
+                    goto cleanup;
                 }
-            } else {
-                /* Fallback: deep copy on alloc failure */
-                for (uint32_t c = 0; c < e.rel->ncols; c++)
-                    memcpy(copy->columns[c], e.rel->columns[c],
-                        (size_t)e.rel->nrows * sizeof(int64_t));
             }
-            copy->nrows = e.rel->nrows;
             results[n_results++] = copy;
         } else {
             results[n_results++] = e.rel;
@@ -741,8 +738,8 @@ col_op_k_fusion_dispatch(const wl_plan_op_t *op, eval_stack_t *stack,
             goto cleanup_results;
         }
 
-        /* If not owned, share columns zero-copy (6B optimization).
-         * The source relation outlives the merge, so borrowing is safe. */
+        /* If not owned, publish a worker-local shared view through the common
+         * helper so identity and generation epochs cannot be aliased. */
         if (!e.owned) {
             col_rel_t *copy = col_rel_pool_new_like(worker_sess[d].delta_pool,
                     "<k_fusion_copy>", e.rel);
@@ -751,20 +748,15 @@ col_op_k_fusion_dispatch(const wl_plan_op_t *op, eval_stack_t *stack,
                 eval_stack_drain(&workers[d].stack);
                 goto cleanup_results;
             }
-            copy->col_shared = (bool *)calloc(e.rel->ncols, sizeof(bool));
-            if (copy->col_shared) {
-                for (uint32_t c = 0; c < e.rel->ncols; c++) {
-                    free(copy->columns[c]); /* free pool-allocated column */
-                    copy->columns[c] = e.rel->columns[c];
-                    copy->col_shared[c] = true;
+            rc = col_rel_install_shared_view(copy, e.rel);
+            if (rc != 0) {
+                rc = col_rel_append_all(copy, e.rel, NULL);
+                if (rc != 0) {
+                    col_rel_destroy(copy);
+                    eval_stack_drain(&workers[d].stack);
+                    goto cleanup_results;
                 }
-            } else {
-                /* Fallback: deep copy on alloc failure */
-                for (uint32_t c = 0; c < e.rel->ncols; c++)
-                    memcpy(copy->columns[c], e.rel->columns[c],
-                        (size_t)e.rel->nrows * sizeof(int64_t));
             }
-            copy->nrows = e.rel->nrows;
             results[d] = copy;
         } else {
             results[d] = e.rel;
