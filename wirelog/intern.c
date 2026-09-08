@@ -52,9 +52,12 @@
 
 #include "intern.h"
 
+#include "columnar/memory_governor.h"
+
 #include "thread.h"
 
 #include <stdint.h>
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -146,7 +149,77 @@ struct wl_intern {
 
     /* Writers only.  Readers (reverse/count) never take it. */
     mutex_t lock;
+
+    /* Interned strings are program-owned and may outlive any session. */
+    wl_columnar_memory_governor_ref_t *memory_governor;
+    wl_columnar_memory_reservation_t reservation;
+    uint64_t reserved_bytes;
 };
+
+static inline uint32_t intern_seg_size(uint32_t seg);
+static inline char *intern_string_at(const wl_intern_t *intern,
+    uint32_t id);
+
+static uint64_t
+intern_retained_bytes_locked(const wl_intern_t *intern)
+{
+    uint64_t total = (uint64_t)intern->slot_capacity
+        * sizeof(wl_intern_slot_t);
+    uint32_t count = WL_INTERN_LOAD_RELAXED(&intern->count);
+
+    for (uint32_t seg = 0; seg < INTERN_MAX_SEGMENTS; seg++) {
+        if (intern->segments[seg]) {
+            uint64_t bytes = (uint64_t)intern_seg_size(seg)
+                * sizeof(char *);
+            if (UINT64_MAX - total < bytes)
+                return UINT64_MAX;
+            total += bytes;
+        }
+    }
+    for (uint32_t i = 0; i < count; i++) {
+        const char *str = intern_string_at(intern, i);
+        size_t len = strlen(str);
+        if (len == SIZE_MAX)
+            return UINT64_MAX;
+        len++;
+        if ((uint64_t)len > UINT64_MAX - total)
+            return UINT64_MAX;
+        total += (uint64_t)len;
+    }
+    return total;
+}
+
+static int
+intern_publish_reservation(wl_intern_t *intern,
+    wl_columnar_memory_reservation_t *pending, uint64_t bytes)
+{
+    wl_columnar_memory_reservation_t previous;
+    if (!intern || !pending || !intern->memory_governor)
+        return EINVAL;
+    if (!wl_columnar_memory_commit(pending, intern))
+        return ENOMEM;
+    wl_columnar_memory_reservation_init(&previous);
+    if (intern->reserved_bytes > 0
+        && !wl_columnar_memory_reservation_move(
+            &previous, &intern->reservation)) {
+        (void)wl_columnar_memory_release(pending);
+        return ENOMEM;
+    }
+    if (!wl_columnar_memory_reservation_move(
+            &intern->reservation, pending)) {
+        if (intern->reserved_bytes > 0) {
+            wl_columnar_memory_reservation_init(&intern->reservation);
+            (void)wl_columnar_memory_reservation_move(
+                &intern->reservation, &previous);
+        }
+        (void)wl_columnar_memory_release(pending);
+        return ENOMEM;
+    }
+    if (intern->reserved_bytes > 0)
+        (void)wl_columnar_memory_release(&previous);
+    intern->reserved_bytes = bytes;
+    return 0;
+}
 
 /* ======================================================================== */
 /* FNV-1a Hash                                                              */
@@ -220,26 +293,6 @@ intern_string_at(const wl_intern_t *intern, uint32_t id)
     return intern->segments[seg][id - intern_seg_base(seg)];
 }
 
-/* Make sure the segment holding @id exists.  Caller holds @lock. */
-static int
-intern_seg_ensure(wl_intern_t *intern, uint32_t id)
-{
-    uint32_t seg = intern_seg_of(id);
-
-    if (seg >= INTERN_MAX_SEGMENTS)
-        return -1;
-    if (intern->segments[seg])
-        return 0;
-
-    char **block = (char **)calloc((size_t)intern_seg_size(seg),
-            sizeof(char *));
-    if (!block)
-        return -1;
-
-    intern->segments[seg] = block;
-    return 0;
-}
-
 /* ======================================================================== */
 /* Internal Helpers                                                         */
 /* ======================================================================== */
@@ -252,14 +305,19 @@ intern_seg_ensure(wl_intern_t *intern, uint32_t id)
  * be freed here.
  */
 static int
-intern_resize(wl_intern_t *intern)
+intern_resize_prepare(const wl_intern_t *intern,
+    wl_intern_slot_t **out_slots, uint32_t *out_capacity)
 {
-    uint32_t count = WL_INTERN_LOAD_RELAXED(&intern->count);
+    uint32_t count;
+    wl_intern_slot_t *new_slots;
+    uint32_t new_cap;
 
-    if (intern->slot_capacity > UINT32_MAX / 2U)
+    if (!intern || !out_slots || !out_capacity
+        || intern->slot_capacity > UINT32_MAX / 2U)
         return -1;
-    uint32_t new_cap = intern->slot_capacity * 2U;
-    wl_intern_slot_t *new_slots
+    count = WL_INTERN_LOAD_RELAXED(&intern->count);
+    new_cap = intern->slot_capacity * 2U;
+    new_slots
         = (wl_intern_slot_t *)malloc((size_t)new_cap
             * sizeof(wl_intern_slot_t));
     if (!new_slots)
@@ -275,9 +333,8 @@ intern_resize(wl_intern_t *intern)
         new_slots[h].string_id = i;
     }
 
-    free(intern->slots);
-    intern->slots = new_slots;
-    intern->slot_capacity = new_cap;
+    *out_slots = new_slots;
+    *out_capacity = new_cap;
     return 0;
 }
 
@@ -322,6 +379,8 @@ wl_intern_create(void)
         return NULL;
     }
 
+    wl_columnar_memory_reservation_init(&intern->reservation);
+
     WL_INTERN_STORE_RELEASE(&intern->count, 0u);
 
     intern->slot_capacity = INTERN_INITIAL_CAP;
@@ -339,13 +398,95 @@ wl_intern_create(void)
     return intern;
 }
 
+int
+wl_intern_attach_memory_governor(
+    wl_intern_t *intern,
+    wl_columnar_memory_governor_ref_t *governor_ref)
+{
+    wl_columnar_memory_reservation_t pending;
+    wl_columnar_memory_admission_status_t status;
+    wl_columnar_memory_governor_t *governor;
+    uint64_t bytes;
+
+    if (!intern || !governor_ref)
+        return EINVAL;
+
+    mutex_lock(&intern->lock);
+    if (intern->memory_governor) {
+        int rc = intern->memory_governor == governor_ref ? EALREADY : EBUSY;
+        mutex_unlock(&intern->lock);
+        return rc;
+    }
+
+    governor = wl_columnar_memory_governor_ref_get(governor_ref);
+    bytes = intern_retained_bytes_locked(intern);
+    if (!governor || bytes == UINT64_MAX) {
+        mutex_unlock(&intern->lock);
+        return ENOMEM;
+    }
+    wl_columnar_memory_reservation_init(&pending);
+    status = wl_columnar_memory_reserve_checked(governor, bytes, &pending);
+    if (status != WL_COLUMNAR_MEMORY_ADMISSION_OK
+        && status != WL_COLUMNAR_MEMORY_ADMISSION_ADVISORY) {
+        mutex_unlock(&intern->lock);
+        return status == WL_COLUMNAR_MEMORY_ADMISSION_DENIED
+            ? ENOMEM : EOVERFLOW;
+    }
+    if (!wl_columnar_memory_commit(&pending, intern)) {
+        (void)wl_columnar_memory_release(&pending);
+        mutex_unlock(&intern->lock);
+        return ENOMEM;
+    }
+    wl_columnar_memory_governor_ref_retain(governor_ref);
+    intern->memory_governor = governor_ref;
+    (void)wl_columnar_memory_reservation_move(
+        &intern->reservation, &pending);
+    intern->reserved_bytes = bytes;
+    mutex_unlock(&intern->lock);
+    return 0;
+}
+
+int
+wl_intern_detach_memory_governor(
+    wl_intern_t *intern,
+    wl_columnar_memory_governor_ref_t *governor_ref)
+{
+    if (!intern || !governor_ref)
+        return EINVAL;
+    mutex_lock(&intern->lock);
+    if (!intern->memory_governor) {
+        mutex_unlock(&intern->lock);
+        return 0;
+    }
+    if (intern->memory_governor != governor_ref) {
+        mutex_unlock(&intern->lock);
+        return EBUSY;
+    }
+    if (intern->reserved_bytes > 0)
+        (void)wl_columnar_memory_release(&intern->reservation);
+    intern->reserved_bytes = 0;
+    intern->memory_governor = NULL;
+    wl_columnar_memory_governor_ref_release(governor_ref);
+    mutex_unlock(&intern->lock);
+    return 0;
+}
+
 void
 wl_intern_free(wl_intern_t *intern)
 {
     if (!intern)
         return;
 
-    uint32_t count = WL_INTERN_LOAD_RELAXED(&intern->count);
+    uint32_t count;
+
+    mutex_lock(&intern->lock);
+    count = WL_INTERN_LOAD_RELAXED(&intern->count);
+    if (intern->reserved_bytes > 0)
+        (void)wl_columnar_memory_release(&intern->reservation);
+    intern->reserved_bytes = 0;
+    wl_columnar_memory_governor_ref_release(intern->memory_governor);
+    intern->memory_governor = NULL;
+    mutex_unlock(&intern->lock);
     for (uint32_t i = 0; i < count; i++)
         free(intern_string_at(intern, i));
 
@@ -360,71 +501,129 @@ wl_intern_free(wl_intern_t *intern)
 int64_t
 wl_intern_put(wl_intern_t *intern, const char *str)
 {
+    wl_columnar_memory_reservation_t pending;
+    bool pending_valid = false;
+    char *copy = NULL;
+    char **new_segment = NULL;
+    wl_intern_slot_t *new_slots = NULL;
+    uint32_t h = 0;
+    uint32_t new_id;
+    uint32_t seg;
+    uint32_t new_cap;
+    bool needs_segment;
+    bool needs_resize;
+    uint64_t old_bytes = 0;
+    uint64_t new_bytes = 0;
+    size_t slen;
+    size_t copy_bytes;
+    int64_t existing;
+
     if (!intern || !str)
         return -1;
-
-    /* Prepare the owned copy before taking the writer lock.  strlen/malloc/
-     * memcpy are independent of the table and used to make every worker wait
-     * behind the lock while doing allocation and copying (#961).  A duplicate
-     * discovered below simply releases this speculative copy. */
-    size_t slen = strlen(str);
-    char *copy = (char *)malloc(slen + 1);
-    if (!copy)
-        return -1;
-    memcpy(copy, str, slen + 1);
-
     mutex_lock(&intern->lock);
-
-    /* Check if already interned */
-    uint32_t h = 0;
-    int64_t existing = intern_lookup_locked(intern, str, &h);
+    existing = intern_lookup_locked(intern, str, &h);
     if (existing >= 0) {
-        free(copy);
         mutex_unlock(&intern->lock);
         return existing;
     }
-
-    /* New string: make room for it in the segmented storage. */
-    uint32_t new_id = WL_INTERN_LOAD_RELAXED(&intern->count);
-    if (new_id >= INTERN_MAX_STRINGS
-        || intern_seg_ensure(intern, new_id) != 0) {
-        free(copy);
+    slen = strlen(str);
+    if (slen == SIZE_MAX) {
         mutex_unlock(&intern->lock);
         return -1;
     }
+    copy_bytes = slen + 1;
+    new_id = WL_INTERN_LOAD_RELAXED(&intern->count);
+    if (new_id >= INTERN_MAX_STRINGS) {
+        mutex_unlock(&intern->lock);
+        return -1;
+    }
+    seg = intern_seg_of(new_id);
+    needs_segment = intern->segments[seg] == NULL;
+    needs_resize = (uint64_t)(new_id + 1U) * INTERN_LOAD_FACTOR_DEN
+        > (uint64_t)intern->slot_capacity * INTERN_LOAD_FACTOR_NUM;
+    if (needs_resize && intern->slot_capacity > UINT32_MAX / 2U) {
+        mutex_unlock(&intern->lock);
+        return -1;
+    }
+    new_cap = needs_resize ? intern->slot_capacity * 2U
+                           : intern->slot_capacity;
 
-    /* Resize hash table before insertion if the new entry would exceed the load factor. */
-    if ((uint64_t)(new_id + 1U) * INTERN_LOAD_FACTOR_DEN
-        > (uint64_t)intern->slot_capacity * INTERN_LOAD_FACTOR_NUM) {
-        if (intern_resize(intern) != 0) {
-            free(copy);
+    if (intern->memory_governor) {
+        uint64_t segment_bytes = needs_segment
+            ? (uint64_t)intern_seg_size(seg) * sizeof(char *) : 0;
+        uint64_t slot_bytes = needs_resize
+            ? (uint64_t)new_cap * sizeof(wl_intern_slot_t) : 0;
+        old_bytes = intern_retained_bytes_locked(intern);
+        if (old_bytes == UINT64_MAX
+            || segment_bytes > SIZE_MAX || slot_bytes > SIZE_MAX
+            || (uint64_t)copy_bytes > UINT64_MAX - old_bytes
+            || segment_bytes > UINT64_MAX - old_bytes - (uint64_t)copy_bytes
+            || slot_bytes > UINT64_MAX - old_bytes - (uint64_t)copy_bytes
+            - segment_bytes) {
             mutex_unlock(&intern->lock);
             return -1;
         }
-        uint32_t mask = intern->slot_capacity - 1U;
-        h = fnv1a(str) & mask;
-        while (intern->slots[h].string_id != SLOT_EMPTY)
-            h = (h + 1U) & mask;
+        new_bytes = old_bytes + (uint64_t)copy_bytes
+            + segment_bytes + slot_bytes;
+        wl_columnar_memory_reservation_init(&pending);
+        wl_columnar_memory_admission_status_t status
+            = wl_columnar_memory_reserve_growth(
+                wl_columnar_memory_governor_ref_get(
+                    intern->memory_governor), old_bytes, new_bytes,
+                &pending);
+        if (status != WL_COLUMNAR_MEMORY_ADMISSION_OK
+            && status != WL_COLUMNAR_MEMORY_ADMISSION_ADVISORY) {
+            mutex_unlock(&intern->lock);
+            return -1;
+        }
+        pending_valid = true;
     }
 
-    uint32_t seg = intern_seg_of(new_id);
+    copy = (char *)malloc(copy_bytes);
+    if (!copy)
+        goto fail;
+    memcpy(copy, str, copy_bytes);
+    if (needs_segment) {
+        new_segment = (char **)calloc((size_t)intern_seg_size(seg),
+                sizeof(char *));
+        if (!new_segment)
+            goto fail;
+    }
+    if (needs_resize
+        && intern_resize_prepare(intern, &new_slots, &new_cap) != 0)
+        goto fail;
+    if (pending_valid
+        && intern_publish_reservation(intern, &pending, new_bytes) != 0)
+        goto fail;
+    pending_valid = false;
+    if (new_slots) {
+        free(intern->slots);
+        intern->slots = new_slots;
+        intern->slot_capacity = new_cap;
+        new_slots = NULL;
+    }
+    if (needs_resize) {
+        h = fnv1a(str) & (intern->slot_capacity - 1U);
+        while (intern->slots[h].string_id != SLOT_EMPTY)
+            h = (h + 1U) & (intern->slot_capacity - 1U);
+    }
+    if (new_segment)
+        intern->segments[seg] = new_segment;
     intern->segments[seg][new_id - intern_seg_base(seg)] = copy;
-
-    /* Release store: any reader that acquire-loads a count greater than
-     * new_id also sees the segment pointer and the string above.  The
-     * entry must be complete before the count is published, never the
-     * other way round. */
-    /* Release is sufficient only because EVERY store to count happens
-     * under intern->lock: another writer's segment and slot writes are
-     * ordered before its unlock, which is ordered before our lock and
-     * therefore before this store.  An unlocked count store would break
-     * the transitivity a lock-free reverse() depends on. */
-    WL_INTERN_STORE_RELEASE(&intern->count, new_id + 1U);
-
+    copy = NULL;
     intern->slots[h].string_id = new_id;
-
+    WL_INTERN_STORE_RELEASE(&intern->count, new_id + 1U);
     mutex_unlock(&intern->lock);
     return (int64_t)new_id;
+
+fail:
+    free(copy);
+    free(new_segment);
+    free(new_slots);
+    if (pending_valid)
+        (void)wl_columnar_memory_rollback(&pending);
+    mutex_unlock(&intern->lock);
+    return -1;
 }
 
 int64_t

@@ -40,6 +40,7 @@ optimizer_src = files(
 # Meson deduplicates against targets that already list thread_src.
 intern_src = [
   files('../wirelog/intern.c'),
+  files('../wirelog/columnar/memory_governor.c'),
   wirelog_thread_src,
 ]
 
@@ -1300,6 +1301,19 @@ test_intern_exe = executable(
 )
 
 test('intern', test_intern_exe)
+
+test_memory_admission_intern_exe = executable(
+  'test_memory_admission_intern',
+  files('test_memory_admission_intern.c',
+    '../wirelog/columnar/memory_governor.c'),
+  intern_src,
+  thread_src,
+  include_directories: [wirelog_inc, wirelog_src_inc],
+  dependencies: [threads_dep],
+)
+
+test('memory_admission_intern', test_memory_admission_intern_exe,
+     suite: 'unit')
 
 # Issue #1381: execute the memory-ledger arithmetic contract.  This remains
 # accounting-only; reservation/admission is owned by the #1368/#1369 units.
