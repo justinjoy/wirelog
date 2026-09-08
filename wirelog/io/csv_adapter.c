@@ -121,9 +121,10 @@ wl_csv_adapter_stream_read(wirelog_io_ctx_t *ctx, uint32_t max_batch_rows,
     wirelog_column_type_t *types = NULL;
     int rc = csv_types(ctx, &types);
     if (rc == WL_CSV_OK) {
-        rc = wl_csv_read_file_via_ctx_stream(path, csv_delimiter(ctx), types,
+        rc = wl_csv_read_file_via_ctx_stream_admitted(path, csv_delimiter(ctx),
+                types,
                 wirelog_io_ctx_num_cols(ctx), max_batch_rows, batch_cb, opaque,
-                csv_intern_trampoline, ctx);
+                csv_intern_trampoline, ctx, ctx->memory_governor);
     }
     free(types);
     return rc;

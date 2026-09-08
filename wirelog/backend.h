@@ -28,6 +28,7 @@ extern "C" {
 #endif
 
 #include "exec_plan.h"
+#include "columnar/memory_governor.h"
 #include "wirelog/wirelog-types.h"
 
 #include <stdint.h>
@@ -86,6 +87,10 @@ typedef struct {
 
     int (*session_snapshot)(wl_session_t *session, wirelog_on_tuple_fn callback,
         void *user_data);
+
+    /* Internal hook used by bounded built-in input loaders. */
+    wl_columnar_memory_governor_t *(*session_memory_governor)(
+        wl_session_t *session);
 } wl_compute_backend_t;
 
 /**

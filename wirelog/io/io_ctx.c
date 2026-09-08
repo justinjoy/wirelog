@@ -139,6 +139,14 @@ wirelog_io_ctx_destroy(wirelog_io_ctx_t *ctx)
     free(ctx);
 }
 
+void
+wirelog_io_ctx_set_memory_governor(wirelog_io_ctx_t *ctx,
+    wl_columnar_memory_governor_t *governor)
+{
+    if (ctx)
+        ctx->memory_governor = governor;
+}
+
 /* ------------------------------------------------------------------------ */
 /* Accessors                                                                */
 /* ------------------------------------------------------------------------ */

@@ -115,6 +115,8 @@ wl_session_load_input_files(wl_session_t *sess,
                 rel->name);
             return wl_session_input_load_fail(sess);
         }
+        wirelog_io_ctx_set_memory_governor(ctx,
+            wl_session_memory_governor(sess));
 
         /* Optional validation pass */
         if (adapter->validate) {

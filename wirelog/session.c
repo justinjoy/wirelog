@@ -79,6 +79,15 @@ wl_session_insert(wl_session_t *session, const char *relation,
                num_cols);
 }
 
+wl_columnar_memory_governor_t *
+wl_session_memory_governor(wl_session_t *session)
+{
+    if (!session || !session->backend
+        || !session->backend->session_memory_governor)
+        return NULL;
+    return session->backend->session_memory_governor(session);
+}
+
 int
 wl_session_make_compound(wl_session_t *session, const char *functor,
     uint32_t arity, const wirelog_compound_arg_t *args,

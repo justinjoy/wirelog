@@ -115,6 +115,10 @@ int
 wl_session_insert(wl_session_t *session, const char *relation,
     const int64_t *data, uint32_t num_rows, uint32_t num_cols);
 
+/* Internal: return the backend's shared admission governor, when available. */
+wl_columnar_memory_governor_t *
+wl_session_memory_governor(wl_session_t *session);
+
 /**
  * wl_session_make_compound:
  * @session:    The active execution session.
