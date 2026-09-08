@@ -253,6 +253,7 @@ if get_option('enable_fuzz')
         files('fuzz/csv_reader_fuzz.c'),
         files(
           '../wirelog/io/csv_reader.c',
+          '../wirelog/columnar/memory_governor.c',
           '../wirelog/intern.c',
         ),
         wirelog_thread_src,
@@ -5535,7 +5536,7 @@ endif
 
 test_io_adapter_exe = executable(
   'test_io_adapter',
-  files('test_io_adapter.c', '../wirelog/io/io_adapter.c', '../wirelog/io/csv_adapter.c', '../wirelog/io/csv_reader.c', '../wirelog/io/io_ctx.c', '../wirelog/intern.c'),
+  files('test_io_adapter.c', '../wirelog/io/io_adapter.c', '../wirelog/io/csv_adapter.c', '../wirelog/io/csv_reader.c', '../wirelog/columnar/memory_governor.c', '../wirelog/io/io_ctx.c', '../wirelog/intern.c'),
   thread_src,
   include_directories: [wirelog_inc, wirelog_src_inc],
   c_args: ['-DWIRELOG_BUILDING'],
@@ -5759,6 +5760,7 @@ test_io_adapter_concurrent_exe = executable(
         '../wirelog/io/io_adapter.c',
         '../wirelog/io/csv_adapter.c',
         '../wirelog/io/csv_reader.c',
+        '../wirelog/columnar/memory_governor.c',
         '../wirelog/io/io_ctx.c',
         '../wirelog/intern.c'),
   thread_src,
@@ -5781,6 +5783,7 @@ test_io_adapter_asan_exe = executable(
         '../wirelog/io/io_adapter.c',
         '../wirelog/io/csv_adapter.c',
         '../wirelog/io/csv_reader.c',
+        '../wirelog/columnar/memory_governor.c',
         '../wirelog/io/io_ctx.c',
         '../wirelog/intern.c'),
   thread_src,
@@ -5821,6 +5824,7 @@ if io_plugin_dlopen_option == 'enabled' and not is_windows
           '../wirelog/io/io_adapter.c',
           '../wirelog/io/csv_adapter.c',
           '../wirelog/io/csv_reader.c',
+          '../wirelog/columnar/memory_governor.c',
           '../wirelog/io/io_ctx.c',
           '../wirelog/intern.c'),
     thread_src,
