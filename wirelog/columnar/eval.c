@@ -968,6 +968,7 @@ tdd_refresh_global_read_relation(const wl_plan_stratum_t *sp,
                 int rc = col_rel_install_shared_view(dst, src);
                 if (rc != 0) {
                     dst->nrows = 0;
+                    wl_columnar_relation_touch_view(dst);
                     rc = col_rel_append_all(dst, src, NULL);
                 }
                 if (rc != 0)
@@ -975,6 +976,7 @@ tdd_refresh_global_read_relation(const wl_plan_stratum_t *sp,
             }
         } else {
             dst->nrows = 0;
+            wl_columnar_relation_touch_view(dst);
         }
         col_session_invalidate_arrangements(&coord->tdd_workers[w].base,
             name);
@@ -1418,6 +1420,7 @@ tdd_worker_subpass_fn(void *arg)
             d->nrows = 0;
             free(d->timestamps);
             d->timestamps = NULL;
+            wl_columnar_relation_touch_replacement(d);
         }
     }
 
@@ -1464,7 +1467,7 @@ tdd_worker_subpass_fn(void *arg)
                 if (WL_COLUMNAR_EVAL_DEDUP_SET_INSERT(r, h)) {
                     /* New row: compact into [keep] and emit to delta. */
                     if (keep != i)
-                        col_rel_row_move(r, keep, i);
+                        col_rel_row_move_raw(r, keep, i);
                     for (uint32_t c = 0; c < r->ncols; c++)
                         rbuf[c] = r->columns[c][keep];
                     rc2 = col_rel_append_row(delta, rbuf);
@@ -1475,6 +1478,7 @@ tdd_worker_subpass_fn(void *arg)
             }
             r->nrows = keep;
             r->sorted_nrows = keep; /* not truly sorted but OK for hash joins */
+            wl_columnar_relation_touch_view(r);
             if (rbuf != row_buf)
                 free(rbuf);
         } else {
@@ -1512,6 +1516,7 @@ tdd_worker_subpass_fn(void *arg)
                 sess->diff_operators_active = saved_diff;
                 TDD_WORKER_RETURN();
             }
+            wl_columnar_relation_touch_storage(delta);
             for (uint32_t ti = 0; ti < delta->nrows; ti++) {
                 delta->timestamps[ti].iteration = eff_iter;
                 delta->timestamps[ti].stratum = ctx->stratum_idx;
@@ -1802,6 +1807,7 @@ tdd_dedup_rel(col_rel_t *r)
                 }
                 free(keep);
                 r->nrows = out;
+                wl_columnar_relation_touch_view(r);
                 return;
             }
         }
@@ -1827,6 +1833,7 @@ tdd_dedup_rel(col_rel_t *r)
         }
     }
     r->nrows = out;
+    wl_columnar_relation_touch_view(r);
 }
 
 /*
@@ -1873,6 +1880,7 @@ tdd_sorted_merge_append(col_rel_t *dst, col_rel_t *src)
         if (col_columns_realloc(dst->columns, ncols, total) != 0)
             return ENOMEM;
         dst->capacity = total;
+        wl_columnar_relation_touch_storage(dst);
     }
 
     /* Two-pointer merge: both sequences are sorted, no overlap */
@@ -1916,6 +1924,7 @@ tdd_sorted_merge_append(col_rel_t *dst, col_rel_t *src)
         wr++;
     }
     dst->nrows = total;
+    wl_columnar_relation_touch_view(dst);
     return 0;
 }
 
@@ -2664,24 +2673,18 @@ tdd_init_workers_hybrid(const wl_plan_stratum_t *sp, wl_col_session_t *coord,
                     rc = ENOMEM;
                     break;
                 }
-                if (rel->nrows > 0) {
-                    view->col_shared = (bool *)calloc(rel->ncols, sizeof(bool));
-                    if (!view->col_shared) {
-                        /* Fallback: deep copy on alloc failure */
-                        rc = col_rel_append_all(view, rel, NULL);
-                        if (rc != 0) {
-                            col_rel_destroy(view);
-                            break;
-                        }
-                    } else {
-                        for (uint32_t c = 0; c < rel->ncols; c++) {
-                            free(view->columns[c]);
-                            view->columns[c] = rel->columns[c];
-                            view->col_shared[c] = true;
-                        }
-                        view->nrows = rel->nrows;
-                        view->capacity = rel->capacity;
-                        view->sorted_nrows = rel->sorted_nrows;
+                if (rel->ncols > 0) {
+                    rc = col_rel_install_shared_view(view, rel);
+                } else {
+                    rc = 0;
+                }
+                if (rc != 0) {
+                    /* Preserve the pre-existing deep-copy fallback when
+                     * the shared-view bookkeeping allocation is rejected. */
+                    rc = col_rel_append_all(view, rel, NULL);
+                    if (rc != 0) {
+                        col_rel_destroy(view);
+                        break;
                     }
                 }
                 /* Init hash-set dedup for empty IDB workers so
@@ -2768,6 +2771,7 @@ tdd_broadcast_deltas(const wl_plan_stratum_t *sp,
         if (slot0 && slot0->ncols == ncols) {
             /* Reuse pre-installed $d$ on worker 0 as union buffer */
             slot0->nrows = 0;
+            wl_columnar_relation_touch_view(slot0);
             union_d = slot0;
             union_from_session = true;
         } else {
@@ -2830,6 +2834,7 @@ tdd_broadcast_deltas(const wl_plan_stratum_t *sp,
                 if (rc != 0) {
                     /* Fallback: deep copy on shared-view alloc failure */
                     worker_d->nrows = 0;
+                    wl_columnar_relation_touch_view(worker_d);
                     rc = col_rel_append_all(worker_d, union_d, NULL);
                     if (rc != 0)
                         return rc;
@@ -3163,6 +3168,7 @@ bdx_hash_diff(col_rel_t *delta, const col_rel_t *base)
 
     free(slots);
     delta->nrows = wr;
+    wl_columnar_relation_touch_view(delta);
     return 0;
 }
 
@@ -3190,6 +3196,7 @@ tdd_hashset_diff(col_rel_t *delta, const col_rel_t *base)
         wr++;
     }
     delta->nrows = wr;
+    wl_columnar_relation_touch_view(delta);
     return 0;
 }
 
@@ -3275,6 +3282,7 @@ tdd_restore_coord_idb(const wl_plan_stratum_t *sp, wl_col_session_t *coord,
         memset(r->run_ends, 0, sizeof(r->run_ends));
         free(r->timestamps);
         r->timestamps = NULL;
+        wl_columnar_relation_touch_replacement(r);
         tdd_clear_relation_dedup_set(r);
         if (saved[ri] && saved[ri]->ncols > 0) {
             if (r->ncols == 0) {
@@ -3421,8 +3429,12 @@ tdd_bdx_exchange_deltas(const wl_plan_stratum_t *sp,
         for (uint32_t w = 0; w < W; w++) {
             col_rel_t *widb = session_find_rel(
                 &coord->tdd_workers[w], rel_name);
-            if (widb)
+            if (widb){
+                uint32_t old_nrows = widb->nrows;
                 widb->nrows = snap[(size_t)w * nrels + ri];
+                if (widb->nrows != old_nrows)
+                    wl_columnar_relation_touch_view(widb);
+            }
         }
         coord->tdd_exchange_coordinator_ns += now_ns() - prepare_t0;
 
@@ -3992,6 +4004,7 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
             col_rel_t *r = session_find_rel(coord, sp->relations[ri].name);
             if (r && r->nrows > 0) {
                 r->nrows = 0;
+                wl_columnar_relation_touch_view(r);
                 col_session_invalidate_arrangements(&coord->base,
                     sp->relations[ri].name);
             }
@@ -4273,8 +4286,10 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
         for (uint32_t ri = 0; ri < nrels; ri++) {
             col_rel_t *cidb = session_find_rel(coord,
                     sp->relations[ri].name);
-            if (cidb)
+            if (cidb) {
                 cidb->nrows = 0;
+                wl_columnar_relation_touch_view(cidb);
+            }
             for (uint32_t w = 0; w < W; w++) {
                 col_rel_t *widb = session_find_rel(
                     &coord->tdd_workers[w], sp->relations[ri].name);
@@ -4314,6 +4329,7 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
             col_rel_t *d0 = session_find_rel(&coord->tdd_workers[0], dname);
             if (d0 && d0->ncols == ncols) {
                 d0->nrows = 0;
+                wl_columnar_relation_touch_view(d0);
                 rc = col_rel_append_all(d0, cidb, NULL);
             } else {
                 d0 = col_rel_new_auto(dname, ncols);
@@ -4337,6 +4353,7 @@ col_eval_stratum_tdd_recursive(const wl_plan_stratum_t *sp,
                     rc = col_rel_install_shared_view(dw, d0);
                     if (rc != 0) {
                         dw->nrows = 0;
+                        wl_columnar_relation_touch_view(dw);
                         rc = col_rel_append_all(dw, d0, NULL);
                     }
                 } else {

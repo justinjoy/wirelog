@@ -14,6 +14,7 @@
  */
 
 #include "../wirelog/columnar/columnar_nanoarrow.h"
+#include "../wirelog/columnar/internal.h"
 #include "../wirelog/exec_plan_gen.h"
 #include "../wirelog/passes/fusion.h"
 #include "../wirelog/passes/jpp.h"
@@ -152,6 +153,15 @@ test_simple_nonrecursive(void)
         return 1;
     }
     int count_after_step1 = deltas.count;
+    col_rel_t *derived = session_find_rel(COL_SESSION(session), "r");
+    if (!derived) {
+        FAIL("derived relation not registered");
+        wl_session_destroy(session);
+        wl_plan_free(ffi);
+        return 1;
+    }
+    uint64_t step1_view_generation = derived->view_generation;
+    uint64_t step1_storage_generation = derived->storage_generation;
 
     /* Remove a(1) */
     int64_t remove_data[] = { 1 };
@@ -168,6 +178,19 @@ test_simple_nonrecursive(void)
     rc = wl_session_step(session);
     if (rc != 0) {
         FAIL("step 2 failed");
+        wl_session_destroy(session);
+        wl_plan_free(ffi);
+        return 1;
+    }
+
+    /* The public retraction/re-evaluation path uses the same relation
+     * pointer-swap and restoration machinery as the internal rollback path.
+     * Its successful publication must not reuse the pre-step snapshot pair. */
+    derived = session_find_rel(COL_SESSION(session), "r");
+    if (!derived
+        || (derived->view_generation == step1_view_generation
+        && derived->storage_generation == step1_storage_generation)) {
+        FAIL("retraction publication reused the old generation pair");
         wl_session_destroy(session);
         wl_plan_free(ffi);
         return 1;

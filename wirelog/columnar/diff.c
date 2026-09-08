@@ -115,7 +115,7 @@ col_op_consolidate_diff(eval_stack_t *stack, wl_col_session_t *sess)
         uint32_t d_unique = 1;
         for (uint32_t i = 1; i < delta_count; i++) {
             if (col_rel_row_cmp(work, sn + i - 1, sn + i) != 0) {
-                col_rel_row_move(work, sn + d_unique, sn + i);
+                col_rel_row_move_raw(work, sn + d_unique, sn + i);
                 d_unique++;
             }
         }
@@ -195,6 +195,7 @@ col_op_consolidate_diff(eval_stack_t *stack, wl_col_session_t *sess)
             work->capacity = work->merge_buf_cap;
             work->merge_columns = old_cols;
             work->merge_buf_cap = old_cap;
+            wl_columnar_relation_touch_storage(work);
         }
         work->nrows = out_idx;
         work->sorted_nrows = out_idx;
@@ -208,7 +209,10 @@ col_op_consolidate_diff(eval_stack_t *stack, wl_col_session_t *sess)
                 tight = COL_REL_INIT_CAP;
             if (col_columns_realloc(work->columns, nc, tight) == 0)
                 work->capacity = tight;
+            if (work->capacity == tight)
+                wl_columnar_relation_touch_storage(work);
         }
+        wl_columnar_relation_touch_view(work);
 
         return eval_stack_push(stack, work, work_owned);
     }
@@ -219,11 +223,12 @@ col_op_consolidate_diff(eval_stack_t *stack, wl_col_session_t *sess)
     uint32_t out_r = 1;
     for (uint32_t r = 1; r < nr; r++) {
         if (col_rel_row_cmp(work, r - 1, r) != 0) {
-            col_rel_row_move(work, out_r, r);
+            col_rel_row_move_raw(work, out_r, r);
             out_r++;
         }
     }
     work->nrows = out_r;
+    wl_columnar_relation_touch_view(work);
     work->sorted_nrows = out_r;
     work->run_count = 1;
     work->run_ends[0] = out_r;

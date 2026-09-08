@@ -692,34 +692,51 @@ col_op_reduce_weighted(const col_rel_t *src, col_rel_t *dst)
         total = (int64_t)src->nrows;
     }
 
-    /* Allocate timestamp tracking on dst if not already present. */
-    if (!dst->timestamps) {
-        dst->timestamps
-            = (col_delta_timestamp_t *)calloc(1, sizeof(col_delta_timestamp_t));
-        if (!dst->timestamps)
-            return ENOMEM;
-        dst->capacity = (dst->capacity == 0) ? 1 : dst->capacity;
+    /* Prepare the complete replacement off to the side.  In particular,
+     * never install timestamps before the column allocation has succeeded:
+     * callers rely on a failed reduce leaving dst byte-for-byte usable. */
+    uint32_t ncols = dst->ncols ? dst->ncols : 1;
+    if (ncols == 0)
+        return EINVAL;
+    int64_t **new_columns = col_columns_alloc(ncols, 1);
+    if (!new_columns)
+        return ENOMEM;
+    col_delta_timestamp_t *new_timestamps
+        = (col_delta_timestamp_t *)calloc(1, sizeof(*new_timestamps));
+    if (!new_timestamps) {
+        col_columns_free(new_columns, ncols);
+        return ENOMEM;
     }
+    for (uint32_t c = 0; c < ncols; c++)
+        new_columns[c][0] = 0;
+    new_columns[0][0] = total;
+    new_timestamps[0].multiplicity = total;
 
-    /* Allocate column buffers for one output row if not already present. */
-    if (!dst->columns) {
-        uint32_t ncols = dst->ncols ? dst->ncols : 1;
-        dst->columns = col_columns_alloc(ncols, 1);
-        if (!dst->columns)
-            return ENOMEM;
-        /* Zero-initialize the single row */
-        for (uint32_t c = 0; c < ncols; c++)
-            dst->columns[c][0] = 0;
-        dst->capacity = 1;
+    uint64_t ledger_before = col_rel_owned_ledger_bytes(dst);
+    if (dst->columns) {
+        if (dst->col_shared) {
+            for (uint32_t c = 0; c < dst->ncols; c++)
+                if (!dst->col_shared[c])
+                    free(dst->columns[c]);
+            free((void *)dst->columns);
+        } else if (!dst->arena_owned) {
+            col_columns_free(dst->columns, dst->ncols);
+        } else {
+            free((void *)dst->columns);
+        }
     }
-
-    /* Write the single aggregate row. */
-    col_rel_set(dst, 0, 0, total);
+    free(dst->col_shared);
+    free(dst->timestamps);
+    dst->columns = new_columns;
+    dst->col_shared = NULL;
+    dst->timestamps = new_timestamps;
+    dst->arena_owned = false;
+    dst->ncols = ncols;
+    dst->capacity = 1;
     dst->nrows = 1;
-
-    /* Set output row multiplicity. */
-    memset(&dst->timestamps[0], 0, sizeof(col_delta_timestamp_t));
-    dst->timestamps[0].multiplicity = total;
+    col_rel_ledger_reconcile(dst, ledger_before);
+    wl_columnar_relation_touch_storage(dst);
+    wl_columnar_relation_touch_view(dst);
 
     return 0;
 }

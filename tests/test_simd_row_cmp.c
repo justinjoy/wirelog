@@ -81,7 +81,48 @@ typedef struct {
     bool pool_owned;
     bool arena_owned;
     void *mem_ledger;
+    /* Issue #1430 retained-EDB admission: memory_governor is an opaque
+     * pointer; retained_reservation mirrors wl_columnar_memory_reservation_t
+     * (memory_governor.h) field for field, with the two wl_atomic_u64
+     * members represented as plain uint64_t of identical size/alignment. */
+    void *memory_governor;
+    struct {
+        void *governor;
+        uint64_t bytes;
+        uint64_t owner_bits;
+        uint64_t state;
+        const void *identity;
+    } retained_reservation;
+    uint64_t retained_reserved_bytes;
+    /* Issue #1380: bytes charged to TIMESTAMP for timestamps[]. */
+    uint64_t ledger_ts_bytes;
     int64_t *row_scratch;
+    /* Keep the suffix in lockstep with col_rel_t.  The first six fields are
+     * the legacy mirror contract above; these fields are needed because the
+     * implementation now publishes generations at the end of the relation.
+     * Do not move anything in the legacy prefix to make this mirror fit. */
+    int64_t **retract_backup_columns;
+    uint32_t retract_backup_nrows;
+    uint32_t retract_backup_capacity;
+    uint32_t retract_backup_sorted_nrows;
+    bool *col_shared;
+    uint32_t run_count;
+    uint32_t run_ends[8];
+    uint32_t retract_backup_run_count;
+    uint32_t retract_backup_run_ends[8];
+    uint64_t *dedup_slots;
+    uint32_t dedup_cap;
+    uint32_t dedup_count;
+    bool has_graph_column;
+    uint32_t graph_col_idx;
+    wirelog_compound_kind_t compound_kind;
+    uint32_t compound_count;
+    uint32_t *compound_arity_map;
+    uint32_t inline_physical_offset;
+    uint32_t declared_ncols;
+    uint64_t relation_identity;
+    uint64_t view_generation;
+    uint64_t storage_generation;
 } col_rel_t;
 
 /* Column-major helpers (inline, matching internal.h) */
