@@ -179,9 +179,69 @@ test_admission_release(void)
     return clean ? 0 : 1;
 }
 
+static int
+test_retained_intern_admission(void)
+{
+    char path[512];
+    if (write_fixture(path, sizeof(path), "wirelog_csv_streaming_retained.csv",
+        "1,alpha\n2,beta\n2,alpha\n") != 0)
+        return 1;
+
+    wirelog_column_type_t types[] = {
+        WIRELOG_TYPE_INT64, WIRELOG_TYPE_STRING,
+    };
+    wl_intern_t *intern = wl_intern_create();
+    wl_columnar_memory_resolution_t resolution = {
+        .budget_bytes = UINT64_C(64) * 1024 * 1024,
+        .headroom_bytes = 0,
+        .usable_bytes = UINT64_C(64) * 1024 * 1024,
+        .mode = WL_COLUMNAR_MEMORY_MODE_ENFORCING,
+        .source = WL_COLUMNAR_MEMORY_SOURCE_ENV,
+        .status = WL_COLUMNAR_MEMORY_OK,
+    };
+    wl_columnar_memory_governor_ref_t *ref =
+        wl_columnar_memory_governor_ref_create(&resolution);
+    int rc = ref && intern
+        ? wl_intern_attach_memory_governor(intern, ref)
+        : ENOMEM;
+    uint64_t before = ref
+        ? wl_columnar_memory_reserved(
+        wl_columnar_memory_governor_ref_get(ref)) : 0;
+    stream_observer_t obs = {0};
+    if (rc == 0) {
+        rc = wl_csv_read_file_via_ctx_stream_admitted(path, ',', types, 2, 2,
+                observe_rows, &obs, intern_cb, intern,
+                wl_columnar_memory_governor_ref_get(ref));
+    }
+    uint64_t after_csv = ref
+        ? wl_columnar_memory_reserved(
+        wl_columnar_memory_governor_ref_get(ref)) : 0;
+    int64_t duplicate = rc == 0 ? wl_intern_put(intern, "alpha") : -1;
+    uint64_t after_duplicate = ref
+        ? wl_columnar_memory_reserved(
+        wl_columnar_memory_governor_ref_get(ref)) : 0;
+    int64_t unique = rc == 0 ? wl_intern_put(intern, "gamma") : -1;
+    uint64_t after_unique = ref
+        ? wl_columnar_memory_reserved(
+        wl_columnar_memory_governor_ref_get(ref)) : 0;
+    int clean = rc == 0 && obs.rows == 3 && duplicate >= 0 && unique >= 0
+        && after_csv > before && after_duplicate == after_csv
+        && after_unique > after_duplicate;
+    remove(path);
+    if (intern)
+        wl_intern_free(intern);
+    int released = ref
+        && wl_columnar_memory_reserved(
+        wl_columnar_memory_governor_ref_get(ref)) == 0;
+    if (ref)
+        wl_columnar_memory_governor_ref_release(ref);
+    return clean && released ? 0 : 1;
+}
+
 int
 main(void)
 {
     return test_batches_and_strings() || test_callback_failure()
-           || test_admission_denial() || test_admission_release();
+           || test_admission_denial() || test_admission_release()
+           || test_retained_intern_admission();
 }
