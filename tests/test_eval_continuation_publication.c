@@ -10,7 +10,9 @@ typedef struct {
     int destroy_calls;
     bool stale;
     bool empty_temporary;
+    bool completion_only;
     bool unsupported;
+    bool return_done;
     int cancel_calls;
     unsigned char payload[2];
 } fake_producer_t;
@@ -23,6 +25,7 @@ typedef struct {
     int commits;
     int aborts;
     int commit_mode; /* 0 success, 1 pre-commit failure, 2 post-commit */
+    uint64_t reserved_before;
 } fake_sink_t;
 
 static int failures;
@@ -43,6 +46,18 @@ produce(void *context, const wl_columnar_continuation_cursor_t *cursor,
     producer->produce_calls++;
     if (producer->unsupported)
         return WL_COLUMNAR_CONTINUATION_UNSUPPORTED;
+    if (producer->return_done)
+        return WL_COLUMNAR_CONTINUATION_DONE;
+    if (producer->completion_only) {
+        batch->payload = NULL;
+        batch->bytes = 0;
+        batch->rows = 0;
+        batch->complete = true;
+        batch->next_cursor = *cursor;
+        batch->next_cursor.position = UINT64_C(999);
+        batch->next_cursor.sequence = UINT64_C(999);
+        return WL_COLUMNAR_CONTINUATION_OK;
+    }
     if (producer->empty_temporary) {
         batch->payload = producer->payload;
         batch->bytes = 1;
@@ -91,6 +106,7 @@ sink_begin(void *context, const wl_columnar_continuation_batch_t *batch)
     fake_sink_t *sink = context;
     (void)batch;
     sink->begins++;
+    sink->reserved_before = sink->reserved;
     return WL_COLUMNAR_CONTINUATION_OK;
 }
 
@@ -137,6 +153,7 @@ sink_abort(void *context)
 {
     fake_sink_t *sink = context;
     sink->aborts++;
+    sink->reserved = sink->reserved_before;
 }
 
 static wl_columnar_continuation_t *
@@ -176,6 +193,7 @@ test_retry_and_commit_boundary(void)
     position = wl_columnar_continuation_cursor(continuation)->position;
     CHECK(position == 0, "pre-commit failure leaves cursor unchanged");
     CHECK(sink.aborts == 1, "pre-commit failure aborts sink");
+    CHECK(sink.reserved == 0, "pre-commit abort restores reservation");
 
     sink.commit_mode = 0;
     CHECK(wl_columnar_continuation_publish(continuation, &sink_spec)
@@ -189,13 +207,17 @@ test_retry_and_commit_boundary(void)
     CHECK(wl_columnar_continuation_publish(continuation, &sink_spec)
         == WL_COLUMNAR_CONTINUATION_COMMIT_FAILURE,
         "post-commit failure is reported");
-    CHECK(wl_columnar_continuation_cursor(continuation)->position == 2,
-        "post-commit failure advances the cursor");
-    CHECK(wl_columnar_continuation_is_done(continuation),
-        "committed final batch marks continuation done");
+    CHECK(wl_columnar_continuation_cursor(continuation)->position == 1,
+        "post-commit failure leaves the cursor unchanged");
+    CHECK(!wl_columnar_continuation_is_done(continuation),
+        "ambiguous commit does not mark continuation done");
+    CHECK(sink.reserved == UINT64_C(24),
+        "ambiguous commit does not falsely release reservation");
     CHECK(wl_columnar_continuation_publish(continuation, &sink_spec)
-        == WL_COLUMNAR_CONTINUATION_DONE,
-        "retry after commit does not replay the batch");
+        == WL_COLUMNAR_CONTINUATION_OK,
+        "retry commits the still-current batch");
+    CHECK(wl_columnar_continuation_is_done(continuation),
+        "successful final retry marks continuation done");
     wl_columnar_continuation_destroy(continuation);
     CHECK(producer.destroy_calls == 1, "continuation owns producer lifetime");
 }
@@ -217,6 +239,18 @@ test_stale_and_empty_batches(void)
     wl_columnar_continuation_destroy(continuation);
 
     memset(&producer, 0, sizeof(producer));
+    producer.return_done = true;
+    continuation = make_continuation(&producer);
+    CHECK(wl_columnar_continuation_publish(continuation, &sink_spec)
+        == WL_COLUMNAR_CONTINUATION_DONE,
+        "producer DONE becomes persistent terminal state");
+    CHECK(wl_columnar_continuation_publish(continuation, &sink_spec)
+        == WL_COLUMNAR_CONTINUATION_DONE,
+        "persistent DONE avoids another producer call");
+    CHECK(producer.produce_calls == 1, "DONE producer is called only once");
+    wl_columnar_continuation_destroy(continuation);
+
+    memset(&producer, 0, sizeof(producer));
     producer.empty_temporary = true;
     continuation = make_continuation(&producer);
     CHECK(wl_columnar_continuation_publish(continuation, &sink_spec)
@@ -224,6 +258,17 @@ test_stale_and_empty_batches(void)
         "empty temporary batch is not completion");
     CHECK(wl_columnar_continuation_cursor(continuation)->position == 0,
         "invalid empty batch leaves cursor unchanged");
+    wl_columnar_continuation_destroy(continuation);
+
+    memset(&producer, 0, sizeof(producer));
+    producer.completion_only = true;
+    continuation = make_continuation(&producer);
+    CHECK(wl_columnar_continuation_publish(continuation, &sink_spec)
+        == WL_COLUMNAR_CONTINUATION_DONE,
+        "completion-only empty batch completes without publication");
+    CHECK(wl_columnar_continuation_cursor(continuation)->position == 0,
+        "completion-only batch cannot overwrite the cursor");
+    CHECK(sink.begins == 0, "completion-only batch skips sink begin");
     wl_columnar_continuation_destroy(continuation);
 
     memset(&producer, 0, sizeof(producer));
@@ -258,16 +303,35 @@ test_reservation_and_stack_ownership(void)
         "reservation denial leaves cursor unchanged");
     wl_columnar_continuation_destroy(continuation);
 
+    memset(&producer, 0, sizeof(producer));
+    sink = (fake_sink_t){ UINT64_C(8), 0, 0, 0, 0, 0, 1, 0 };
+    sink_spec = make_sink(&sink);
+    continuation = make_continuation(&producer);
+    CHECK(wl_columnar_continuation_publish(continuation, &sink_spec)
+        == WL_COLUMNAR_CONTINUATION_COMMIT_FAILURE,
+        "exact-fit pre-commit failure is retryable");
+    CHECK(sink.reserved == 0, "abort restores exact-fit reservation");
+    sink.commit_mode = 0;
+    CHECK(wl_columnar_continuation_publish(continuation, &sink_spec)
+        == WL_COLUMNAR_CONTINUATION_OK,
+        "exact-fit retry succeeds after reservation rollback");
+    CHECK(sink.reserved == UINT64_C(8),
+        "successful exact-fit retry retains its reservation");
+    wl_columnar_continuation_destroy(continuation);
+
     eval_stack_init(&stack);
     relation = col_rel_new_auto("complete", 1);
     CHECK(relation != NULL, "complete relation can still be pushed");
     CHECK(eval_stack_push(&stack, relation, true) == 0,
         "complete relation push remains available");
+    memset(&producer, 0, sizeof(producer));
     continuation = make_continuation(&producer);
-    CHECK(eval_stack_push_continuation(&stack, continuation) == 0,
-        "continuation entry is accepted by the internal stack");
+    CHECK(eval_stack_push_continuation(&stack, continuation) == ENOTSUP,
+        "unsupported continuation stack insertion is rejected");
+    CHECK(producer.destroy_calls == 1,
+        "rejected continuation is destroyed by the stack helper");
     eval_stack_drain(&stack);
-    CHECK(stack.top == 0, "mixed stack drains all owners");
+    CHECK(stack.top == 0, "complete relation stack still drains its owner");
 }
 
 int

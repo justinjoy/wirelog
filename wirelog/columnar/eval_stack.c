@@ -34,17 +34,14 @@ int
 eval_stack_push_continuation(eval_stack_t *s,
     wl_columnar_continuation_t *continuation)
 {
-    if (!s || !continuation || s->top >= COL_STACK_MAX)
+    /* Existing evaluator consumers only understand complete relations.  Do
+     * not put an owned continuation where a consumer could pop it as a NULL
+     * relation; this function takes ownership even on rejection. */
+    (void)s;
+    if (!continuation)
         return ENOBUFS;
-    s->items[s->top].rel = NULL;
-    s->items[s->top].owned = false;
-    s->items[s->top].is_delta = false;
-    s->items[s->top].seg_boundaries = NULL;
-    s->items[s->top].seg_count = 0;
-    s->items[s->top].kind = WL_COLUMNAR_EVAL_ENTRY_CONTINUATION;
-    s->items[s->top].continuation = continuation;
-    s->top++;
-    return 0;
+    wl_columnar_continuation_destroy(continuation);
+    return ENOTSUP;
 }
 
 /* Push with explicit delta flag (used by VARIABLE and JOIN to tag delta results). */

@@ -78,12 +78,21 @@ wl_columnar_continuation_publish(
     memset(&batch, 0, sizeof(batch));
     status = continuation->producer.produce(continuation->producer.context,
             &continuation->cursor, &batch);
+    if (status == WL_COLUMNAR_CONTINUATION_DONE) {
+        continuation->done = true;
+        return status;
+    }
     if (status != WL_COLUMNAR_CONTINUATION_OK)
         return status;
-    /* A producer may finish without another batch, but an empty temporary
-     * batch is never a completion signal. */
-    if (batch.rows == 0 && !batch.complete)
-        return WL_COLUMNAR_CONTINUATION_INVALID;
+    /* A completion-only result is terminal without publication.  Its cursor
+     * is deliberately ignored: completion must not overwrite the last
+     * committed cursor or invoke an empty append. */
+    if (batch.rows == 0) {
+        if (!batch.complete || batch.bytes != 0 || batch.payload != NULL)
+            return WL_COLUMNAR_CONTINUATION_INVALID;
+        continuation->done = true;
+        return WL_COLUMNAR_CONTINUATION_DONE;
+    }
     status = sink->begin(sink->context, &batch);
     if (status != WL_COLUMNAR_CONTINUATION_OK)
         return WL_COLUMNAR_CONTINUATION_SINK_FAILURE;
@@ -100,14 +109,16 @@ wl_columnar_continuation_publish(
         return WL_COLUMNAR_CONTINUATION_SINK_FAILURE;
     }
     status = sink->commit(sink->context, &committed);
-    if (status != WL_COLUMNAR_CONTINUATION_OK && !committed) {
-        if (begun)
+    if (status != WL_COLUMNAR_CONTINUATION_OK || !committed) {
+        /* A sink that has not committed must release its reservation.  Once
+         * it reports a committed side effect, abort is no longer safe, but
+         * the cursor still remains unchanged because the commit was not
+         * unambiguously successful. */
+        if (begun && !committed)
             sink->abort(sink->context);
         return WL_COLUMNAR_CONTINUATION_COMMIT_FAILURE;
     }
-    /* Only this point changes the producer cursor.  A commit callback that
-     * reports durable side effects also advances it, even if it returned an
-     * error describing an ambiguous post-commit condition. */
+    /* Only an unambiguously successful commit changes the producer cursor. */
     continuation->cursor = batch.next_cursor;
     continuation->done = batch.complete;
     return status == WL_COLUMNAR_CONTINUATION_OK
