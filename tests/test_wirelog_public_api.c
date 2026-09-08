@@ -323,6 +323,44 @@ test_executor_result_api(void)
     return 0;
 }
 
+static int
+test_result_outlives_executor(void)
+{
+    const char *src =
+        ".decl edge(x:int32,y:int32)\n"
+        ".decl path(x:int32,y:int32)\n"
+        "edge(7,8).\n"
+        "path(X,Y) :- edge(X,Y).\n";
+    wirelog_error_t err = WIRELOG_ERR_UNKNOWN;
+    wirelog_program_t *program = wirelog_parse_string(src, &err);
+    wirelog_executor_t *executor;
+    wirelog_result_t *result;
+
+    if (!program || err != WIRELOG_OK)
+        return 1;
+    executor = wirelog_executor_create(program, &err);
+    if (!executor || err != WIRELOG_OK) {
+        wirelog_program_free(program);
+        return 1;
+    }
+    result = wirelog_evaluate(executor, &err);
+    if (!result || err != WIRELOG_OK) {
+        wirelog_result_free(result);
+        wirelog_executor_free(executor);
+        wirelog_program_free(program);
+        return 1;
+    }
+    wirelog_executor_free(executor);
+    if (wirelog_result_relation_cardinality(result, "path") != 1) {
+        wirelog_result_free(result);
+        wirelog_program_free(program);
+        return 1;
+    }
+    wirelog_result_free(result);
+    wirelog_program_free(program);
+    return 0;
+}
+
 int
 main(void)
 {
@@ -333,6 +371,7 @@ main(void)
     failures += test_optimizer_config_disable_passes();
     failures += test_bound_query_without_seed_preserves_answers();
     failures += test_executor_result_api();
+    failures += test_result_outlives_executor();
     if (failures == 0)
         printf("test_wirelog_public_api: OK\n");
     return failures == 0 ? 0 : 1;

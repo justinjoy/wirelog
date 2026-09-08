@@ -74,7 +74,9 @@ typedef struct wirelog_program wirelog_program_t;
 /**
  * wirelog_result_t:
  *
- * Opaque handle to evaluation results.
+ * Opaque handle to evaluation results. Result-owned relation storage is
+ * subject to the session memory governor; parser, IR, and plan allocations
+ * remain outside that result lifetime budget.
  */
 typedef struct wirelog_result wirelog_result_t;
 

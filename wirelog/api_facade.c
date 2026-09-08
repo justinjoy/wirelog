@@ -8,6 +8,7 @@
 #include "wirelog/wirelog.h"
 
 #include "backend.h"
+#include "columnar/columnar_nanoarrow.h"
 #include "exec_plan_gen.h"
 #include "io/csv_reader.h"
 #include "ir/program.h"
@@ -48,6 +49,9 @@ struct wirelog_result {
     wl_result_relation_t *relations;
     uint32_t count;
     uint32_t capacity;
+    wl_columnar_memory_governor_ref_t *memory_governor;
+    wl_columnar_memory_reservation_t reservation;
+    uint64_t charged_bytes;
 };
 
 static void
@@ -67,6 +71,67 @@ wl_strdup(const char *s)
     if (copy)
         memcpy(copy, s, len);
     return copy;
+}
+
+static bool
+checked_add_size(uint64_t a, uint64_t b, uint64_t *out)
+{
+    if (b > UINT64_MAX - a)
+        return false;
+    *out = a + b;
+    return true;
+}
+
+static bool
+checked_mul_size(uint64_t a, uint64_t b, uint64_t *out)
+{
+    if (a != 0 && b > UINT64_MAX / a)
+        return false;
+    *out = a * b;
+    return true;
+}
+
+static bool
+result_admit(wirelog_result_t *result, uint64_t target,
+    wl_columnar_memory_reservation_t *pending)
+{
+    wl_columnar_memory_governor_t *governor;
+
+    if (!result || !pending)
+        return false;
+    wl_columnar_memory_reservation_init(pending);
+    if (target <= result->charged_bytes)
+        return true;
+    governor = wl_columnar_memory_governor_ref_get(result->memory_governor);
+    if (!wl_columnar_memory_reserve(governor, target, pending)
+        || !wl_columnar_memory_commit(pending, result)) {
+        (void)wl_columnar_memory_release(pending);
+        return false;
+    }
+    return true;
+}
+
+static bool
+result_publish_admission(wirelog_result_t *result,
+    wl_columnar_memory_reservation_t *pending, uint64_t target)
+{
+    wl_columnar_memory_reservation_t previous;
+
+    if (target == result->charged_bytes)
+        return true;
+    wl_columnar_memory_reservation_init(&previous);
+    if (!wl_columnar_memory_reservation_move(&previous,
+        &result->reservation))
+        return false;
+    if (!wl_columnar_memory_reservation_move(&result->reservation, pending)) {
+        (void)wl_columnar_memory_reservation_move(&result->reservation,
+            &previous);
+        (void)wl_columnar_memory_release(pending);
+        return false;
+    }
+    (void)wl_columnar_memory_release(&previous);
+    result->charged_bytes = target;
+    return true;
 }
 
 static const wl_ir_relation_info_t *
@@ -196,41 +261,119 @@ ensure_result_relation(wirelog_result_t *result, const char *relation,
     if (existing)
         return existing->cols == cols ? existing : NULL;
 
+    size_t name_len = strlen(relation) + 1;
+    if (name_len == 0)
+        return NULL;
     if (result->count == result->capacity) {
         uint32_t next = result->capacity ? result->capacity * 2 : 8;
-        wl_result_relation_t *rels = (wl_result_relation_t *)realloc(
-            result->relations, next * sizeof(wl_result_relation_t));
-        if (!rels)
+        uint64_t old_bytes, new_bytes, target;
+        if (result->capacity > UINT32_MAX / 2)
             return NULL;
+        if (next > UINT32_MAX / sizeof(wl_result_relation_t)
+            || !checked_mul_size(result->capacity,
+            sizeof(wl_result_relation_t), &old_bytes)
+            || !checked_mul_size(next, sizeof(wl_result_relation_t),
+            &new_bytes)
+            || !checked_add_size(result->charged_bytes,
+            new_bytes - old_bytes, &target)
+            || !checked_add_size(target, name_len, &target))
+            return NULL;
+        if (new_bytes > SIZE_MAX)
+            return NULL;
+        wl_columnar_memory_reservation_t pending;
+        if (!result_admit(result, target, &pending)) {
+            return NULL;
+        }
+        wl_result_relation_t *rels
+            = (wl_result_relation_t *)malloc((size_t)new_bytes);
+        char *name = wl_strdup(relation);
+        if (!rels || !name) {
+            free(rels);
+            free(name);
+            (void)wl_columnar_memory_release(&pending);
+            return NULL;
+        }
+        if (result->relations)
+            memcpy(rels, result->relations, (size_t)old_bytes);
         memset(rels + result->capacity, 0,
             (next - result->capacity) * sizeof(wl_result_relation_t));
+        rels[result->count].name = name;
+        rels[result->count].cols = cols;
+        if (!result_publish_admission(result, &pending, target)) {
+            free(name);
+            free(rels);
+            return NULL;
+        }
+        free(result->relations);
         result->relations = rels;
         result->capacity = next;
+    } else {
+        uint64_t target;
+        if (!checked_add_size(result->charged_bytes, name_len, &target))
+            return NULL;
+        wl_columnar_memory_reservation_t pending;
+        if (!result_admit(result, target, &pending))
+            return NULL;
+        char *name = wl_strdup(relation);
+        if (!name) {
+            (void)wl_columnar_memory_release(&pending);
+            return NULL;
+        }
+        result->relations[result->count].name = name;
+        result->relations[result->count].cols = cols;
+        if (!result_publish_admission(result, &pending, target)) {
+            free(name);
+            return NULL;
+        }
     }
 
-    wl_result_relation_t *rel = &result->relations[result->count++];
-    rel->name = wl_strdup(relation);
-    if (!rel->name)
-        return NULL;
-    rel->cols = cols;
-    return rel;
+    return &result->relations[result->count++];
 }
 
 static bool
-append_result_row(wl_result_relation_t *rel, const int64_t *row)
+append_result_row(wirelog_result_t *result, wl_result_relation_t *rel,
+    const int64_t *row)
 {
     if (rel->rows == rel->capacity_rows) {
+        if (rel->capacity_rows > UINT64_MAX / 2)
+            return false;
         uint64_t next = rel->capacity_rows ? rel->capacity_rows * 2 : 16;
-        if (rel->cols != 0 && next > UINT64_MAX / rel->cols)
+        uint64_t old_bytes, new_bytes, target;
+        if (!checked_mul_size(rel->capacity_rows, rel->cols, &old_bytes)
+            || !checked_mul_size(next, rel->cols, &new_bytes)
+            || !checked_mul_size(old_bytes, sizeof(int64_t), &old_bytes)
+            || !checked_mul_size(new_bytes, sizeof(int64_t), &new_bytes)
+            || new_bytes < old_bytes
+            || !checked_add_size(result->charged_bytes,
+            new_bytes - old_bytes, &target))
             return false;
-        int64_t *data = (int64_t *)realloc(
-            rel->data, next * rel->cols * sizeof(int64_t));
-        if (!data)
+        if (new_bytes > SIZE_MAX)
             return false;
+        wl_columnar_memory_reservation_t pending;
+        if (!result_admit(result, target, &pending))
+            return false;
+        int64_t *data = (int64_t *)malloc((size_t)new_bytes);
+        if (!data) {
+            (void)wl_columnar_memory_release(&pending);
+            return false;
+        }
+        if (rel->data && old_bytes > 0)
+            memcpy(data, rel->data, (size_t)old_bytes);
+        if (!result_publish_admission(result, &pending, target)) {
+            free(data);
+            return false;
+        }
+        free(rel->data);
         rel->data = data;
         rel->capacity_rows = next;
     }
-    memcpy(rel->data + rel->rows * rel->cols, row, rel->cols * sizeof(int64_t));
+    uint64_t row_offset;
+    uint64_t row_bytes;
+    if (!checked_mul_size(rel->rows, rel->cols, &row_offset)
+        || !checked_mul_size(rel->cols, sizeof(int64_t), &row_bytes)
+        || row_offset > SIZE_MAX / sizeof(int64_t))
+        return false;
+    memcpy(rel->data + row_offset, row, (size_t)row_bytes);
     rel->rows++;
     return true;
 }
@@ -242,12 +385,23 @@ result_set_types_from_program(wirelog_result_t *result,
     for (uint32_t i = 0; i < result->count; i++) {
         wl_result_relation_t *out = &result->relations[i];
         const wl_ir_relation_info_t *decl = find_relation(program, out->name);
-        if (!decl || out->cols == 0)
+        if (!decl || out->cols == 0 || out->types)
             continue;
-        wirelog_column_type_t *types = (wirelog_column_type_t *)malloc(
-            (size_t)out->cols * sizeof(*types));
-        if (!types)
+        uint64_t type_bytes, target;
+        if (!checked_mul_size(out->cols, sizeof(*out->types), &type_bytes)
+            || !checked_add_size(result->charged_bytes, type_bytes, &target))
             return false;
+        if (type_bytes > SIZE_MAX)
+            return false;
+        wl_columnar_memory_reservation_t pending;
+        if (!result_admit(result, target, &pending))
+            return false;
+        wirelog_column_type_t *types
+            = (wirelog_column_type_t *)malloc((size_t)type_bytes);
+        if (!types) {
+            (void)wl_columnar_memory_release(&pending);
+            return false;
+        }
         uint32_t k = 0;
         for (uint32_t c = 0; c < decl->column_count && k < out->cols; c++) {
             wirelog_column_t *col = &decl->columns[c];
@@ -258,6 +412,10 @@ result_set_types_from_program(wirelog_result_t *result,
         }
         while (k < out->cols)
             types[k++] = WIRELOG_TYPE_INT64;
+        if (!result_publish_admission(result, &pending, target)) {
+            free(types);
+            return false;
+        }
         out->types = types;
     }
     return true;
@@ -277,7 +435,7 @@ collect_tuple(const char *relation, const int64_t *row, uint32_t ncols,
         return;
     wl_result_relation_t *rel = ensure_result_relation(ctx->result, relation,
             ncols);
-    if (!rel || !append_result_row(rel, row))
+    if (!rel || !append_result_row(ctx->result, rel, row))
         ctx->failed = true;
 }
 
@@ -606,6 +764,24 @@ wirelog_evaluate(wirelog_executor_t *executor, wirelog_error_t *error)
         return NULL;
     }
 
+    result->memory_governor
+        = col_session_memory_governor_ref(executor->session);
+    if (!result->memory_governor) {
+        free(result);
+        set_error(error, WIRELOG_ERR_MEMORY);
+        return NULL;
+    }
+    wl_columnar_memory_governor_ref_retain(result->memory_governor);
+    wl_columnar_memory_reservation_init(&result->reservation);
+    if (!result_admit(result, sizeof(*result), &result->reservation)) {
+        (void)wl_columnar_memory_release(&result->reservation);
+        wl_columnar_memory_governor_ref_release(result->memory_governor);
+        free(result);
+        set_error(error, WIRELOG_ERR_MEMORY);
+        return NULL;
+    }
+    result->charged_bytes = sizeof(*result);
+
     wl_collect_ctx_t ctx = {
         .result = result,
         .failed = false,
@@ -692,6 +868,8 @@ wirelog_result_free(wirelog_result_t *result)
     for (uint32_t i = 0; i < result->count; i++)
         free_result_relation(&result->relations[i]);
     free(result->relations);
+    (void)wl_columnar_memory_release(&result->reservation);
+    wl_columnar_memory_governor_ref_release(result->memory_governor);
     free(result);
 }
 

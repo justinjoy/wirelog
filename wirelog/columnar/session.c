@@ -1643,6 +1643,17 @@ col_session_destroy(wl_session_t *session)
     free(sess);
 }
 
+wl_columnar_memory_governor_ref_t *
+col_session_memory_governor_ref(wl_session_t *session)
+{
+    wl_col_session_t *sess;
+
+    if (!session)
+        return NULL;
+    sess = COL_SESSION(session);
+    return sess->memory_governor;
+}
+
 /* ======================================================================== */
 /* Per-Worker Session State (Issue #315)                                    */
 /* ======================================================================== */

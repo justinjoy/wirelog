@@ -5403,6 +5403,21 @@ test_wirelog_public_api_exe = executable(
 
 test('wirelog_public_api', test_wirelog_public_api_exe)
 
+if host_machine.system() == 'linux'
+  test_wirelog_result_oom_exe = executable(
+    'test_wirelog_result_oom',
+    files('test_wirelog_result_oom.c'),
+    include_directories: [wirelog_inc, wirelog_src_inc],
+    link_with: wirelog_static_lib,
+    dependencies: [threads_dep, zlib_dep, nanoarrow_dep, xxhash_dep,
+                    mbedtls_dep, math_dep],
+    link_args: ['-Wl,--wrap=malloc', '-Wl,--wrap=calloc',
+                '-Wl,--wrap=realloc'],
+    override_options: ['b_lto=false'],
+  )
+  test('wirelog_result_oom', test_wirelog_result_oom_exe, suite: 'unit')
+endif
+
 # ============================================================================
 # Baseline .input Fixture Snapshot Tests (Issue #448)
 # ============================================================================
