@@ -23,6 +23,7 @@
 
 #include "../wirelog-internal.h"
 
+#include <assert.h>
 #include <errno.h>
 #include <inttypes.h>
 #include <stdint.h>
@@ -980,7 +981,9 @@ cleanup_wq:
          * entries were created by this worker — free from index 0.  The
          * worker cache has no ledger (Issue #1380), so this is a plain
          * destroy of every entry. */
+        assert(worker_sess[d].mat_cache.active_pins == 0);
         col_mat_cache_clear(&worker_sess[d].mat_cache);
+        assert(worker_sess[d].mat_cache.active_pins == 0);
         /* Issue #216: merge worker lru_clocks back into coordinator so
          * arrangements accessed by any worker are counted as recently used.
          * Worker entries were cloned in the same order as coordinator entries,

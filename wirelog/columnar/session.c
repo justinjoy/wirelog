@@ -14,6 +14,7 @@
 
 #include "../wirelog-internal.h"
 
+#include <assert.h>
 #include <errno.h>
 #include <inttypes.h>
 #include <math.h>
@@ -112,7 +113,9 @@ static void
 session_invalidate_relation_caches(wl_col_session_t *sess, const char *name)
 {
     col_session_invalidate_arrangements(&sess->base, name);
+    assert(sess->mat_cache.active_pins == 0);
     col_mat_cache_clear(&sess->mat_cache);
+    assert(sess->mat_cache.active_pins == 0);
 
     uint32_t out = 0;
     for (uint32_t i = 0; i < sess->filt_cache_count; i++) {
@@ -1572,7 +1575,9 @@ col_session_destroy(wl_session_t *session)
     free((void *)sess->rels);
     /* Free relation name hash table (Issue #281) */
     session_rel_free_hash(sess);
+    assert(sess->mat_cache.active_pins == 0);
     col_mat_cache_clear(&sess->mat_cache);
+    assert(sess->mat_cache.active_pins == 0);
     wl_workqueue_destroy(sess->wq);
     wl_kfusion_adaptive_destroy(sess->kfusion_adaptive);
     /* Free arrangement registry (Phase 3C) */
@@ -1913,7 +1918,9 @@ col_worker_session_destroy(wl_col_session_t *worker)
     }
 
     /* Free mat_cache entries (all worker-owned since zeroed at create) */
+    assert(worker->mat_cache.active_pins == 0);
     col_mat_cache_clear(&worker->mat_cache);
+    assert(worker->mat_cache.active_pins == 0);
 
     /* Free arrangement registries */
     for (uint32_t i = 0; i < worker->arr_count; i++) {
@@ -2635,7 +2642,9 @@ col_session_clear_idb_rows(const wl_plan_t *plan, wl_col_session_t *sess)
             col_session_invalidate_arrangements(&sess->base, r->name);
         }
     }
+    assert(sess->mat_cache.active_pins == 0);
     col_mat_cache_clear(&sess->mat_cache);
+    assert(sess->mat_cache.active_pins == 0);
 }
 
 static void

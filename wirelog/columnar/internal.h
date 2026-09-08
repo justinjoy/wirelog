@@ -932,9 +932,22 @@ typedef struct {
      * Capacity-based (col_rel_owned_ledger_bytes + timestamps), unlike
      * mem_bytes which is nrows-based and drives the eviction limit. */
     uint64_t ledger_bytes;
+    /* Stable identity and borrowed-result lifetime.  Entries are compacted
+     * with memmove, so handles must resolve by identity rather than address. */
+    uint64_t identity;
+    uint32_t pin_count;
+    bool eviction_deferred;
 } col_mat_entry_t;
 
 typedef struct {
+    /* The cache object must outlive this handle.  Production pins are
+     * synchronous; callers release them before session/worker teardown. */
+    struct col_mat_cache *cache;
+    uint64_t identity;
+    bool active;
+} col_mat_cache_pin_t;
+
+typedef struct col_mat_cache {
     col_mat_entry_t entries[COL_MAT_CACHE_MAX];
     uint32_t count;
     size_t total_bytes;
@@ -944,6 +957,10 @@ typedef struct {
     /* Ledger that cached results are re-parented to on insert (Issue #1380).
      * NULL disables accounting (K-fusion branch sessions). */
     wl_mem_ledger_t *ledger;
+    uint64_t next_identity;
+    /* Every lookup_pin/insert_pin handle must be released before its owning
+     * session, worker, or cache is destroyed. */
+    uint32_t active_pins;
 } col_mat_cache_t;
 
 /* ======================================================================== */
@@ -1887,13 +1904,30 @@ col_mat_cache_evict_until(col_mat_cache_t *cache, size_t target_bytes);
 col_rel_t *
 col_mat_cache_lookup(col_mat_cache_t *cache, const col_rel_t *left,
     const col_rel_t *right);
-void
+/* Legacy diagnostic lookup.  The returned relation is an unpinned borrowed
+ * pointer and must not outlive the immediate cache operation.  Production
+ * callers that need a stable result must use lookup_pin(), deep-copy while
+ * pinned, and release the pin before retaining the copy. */
+int
 col_mat_cache_insert(col_mat_cache_t *cache, const col_rel_t *left,
     const col_rel_t *right, col_rel_t *result);
+/* Insert takes ownership of result only on success.  On failure, the caller
+ * retains ownership and must destroy result or push it as owned. */
+int
+col_mat_cache_insert_pin(col_mat_cache_t *cache, const col_rel_t *left,
+    const col_rel_t *right, col_rel_t *result, col_mat_cache_pin_t *pin);
+col_rel_t *
+col_mat_cache_lookup_pin(col_mat_cache_t *cache, const col_rel_t *left,
+    const col_rel_t *right, col_mat_cache_pin_t *pin);
+void
+col_mat_cache_pin_release(col_mat_cache_pin_t *pin);
 /*
- * col_mat_cache_truncate: destroy entries [keep_count, count) and shrink the
- * cache back to keep_count entries, keeping total_bytes and the ledger in
- * step.  Used to roll back branch-added entries after serial K-fusion.
+ * col_mat_cache_truncate: keep_count is the visible-prefix target.  Destroy
+ * entries [keep_count, count) when they are unpinned and keep total_bytes and
+ * the ledger in step.  Pinned suffix entries may keep the physical count above
+ * keep_count; they are deferred, remain charged and hidden from lookup, and
+ * are removed only when their final pin is released.  Used to roll back
+ * branch-added entries after serial K-fusion.
  */
 void
 col_mat_cache_truncate(col_mat_cache_t *cache, uint32_t keep_count);

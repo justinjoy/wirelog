@@ -11,6 +11,7 @@
 
 #include "columnar/internal.h"
 
+#include <assert.h>
 #include <errno.h>
 #ifndef _MSC_VER
 #include <stdatomic.h>
@@ -156,46 +157,85 @@ mat_cache_entry_destroy(col_mat_cache_t *cache, col_mat_entry_t *e)
     e->ledger_bytes = 0;
     col_rel_destroy(e->result);
     e->result = NULL;
+    e->mem_bytes = 0;
+    e->eviction_deferred = false;
+}
+
+static void
+mat_cache_remove_at(col_mat_cache_t *cache, uint32_t index)
+{
+    col_mat_entry_t *entry = &cache->entries[index];
+    assert(entry->pin_count == 0);
+    cache->total_bytes -= entry->mem_bytes;
+    mat_cache_entry_destroy(cache, entry);
+    memmove(entry, entry + 1,
+        (cache->count - index - 1) * sizeof(col_mat_entry_t));
+    cache->count--;
 }
 
 /*
  * mat_cache_evict_lru: drop the least recently used entry.  Caller
- * guarantees cache->count > 0.
+ * guarantees cache->count > 0.  Pinned entries stay physically present and
+ * charged to total_bytes/ledger_bytes.  Pinned entries are skipped by LRU;
+ * when every entry is pinned, admission returns ENOSPC without changing
+ * ownership.  Clear and truncate defer destruction of pinned entries (and
+ * hide them from lookup); the final pin release removes them and their
+ * charge.
  */
-static void
+static bool
 mat_cache_evict_lru(col_mat_cache_t *cache)
 {
-    uint32_t lru = 0;
-    for (uint32_t i = 1; i < cache->count; i++) {
-        if (cache->entries[i].lru_clock < cache->entries[lru].lru_clock)
+    uint32_t lru = UINT32_MAX;
+    for (uint32_t i = 0; i < cache->count; i++) {
+        if (!cache->entries[i].result || cache->entries[i].eviction_deferred)
+            continue;
+        if (cache->entries[i].pin_count > 0)
+            continue;
+        if (lru == UINT32_MAX
+            || cache->entries[i].lru_clock < cache->entries[lru].lru_clock)
             lru = i;
     }
-    cache->total_bytes -= cache->entries[lru].mem_bytes;
-    mat_cache_entry_destroy(cache, &cache->entries[lru]);
-    memmove(&cache->entries[lru], &cache->entries[lru + 1],
-        (cache->count - lru - 1) * sizeof(col_mat_entry_t));
-    cache->count--;
+    if (lru != UINT32_MAX) {
+        mat_cache_remove_at(cache, lru);
+        return true;
+    }
+
+    /* All live entries are pinned.  Admission must fail without changing
+     * ownership or evicting a still-borrowed result. */
+    return false;
 }
 
 void
 col_mat_cache_clear(col_mat_cache_t *cache)
 {
-    for (uint32_t i = 0; i < cache->count; i++)
-        mat_cache_entry_destroy(cache, &cache->entries[i]);
-    cache->count = 0;
-    cache->total_bytes = 0;
+    if (!cache)
+        return;
+    for (uint32_t i = 0; i < cache->count;) {
+        if (cache->entries[i].pin_count > 0) {
+            cache->entries[i].eviction_deferred = true;
+            i++;
+        } else {
+            mat_cache_remove_at(cache, i);
+        }
+    }
 }
 
 void
 col_mat_cache_truncate(col_mat_cache_t *cache, uint32_t keep_count)
 {
+    /* keep_count is a visible-prefix target.  Pinned suffix entries may keep
+     * the physical count above it until their final borrowed reference ends,
+     * but are deferred and cannot be looked up or replaced. */
     if (!cache || keep_count >= cache->count)
         return;
-    for (uint32_t i = keep_count; i < cache->count; i++) {
-        cache->total_bytes -= cache->entries[i].mem_bytes;
-        mat_cache_entry_destroy(cache, &cache->entries[i]);
+    for (uint32_t i = keep_count; i < cache->count;) {
+        if (cache->entries[i].pin_count > 0) {
+            cache->entries[i].eviction_deferred = true;
+            i++;
+        } else {
+            mat_cache_remove_at(cache, i);
+        }
     }
-    cache->count = keep_count;
 }
 
 /**
@@ -213,8 +253,10 @@ col_mat_cache_truncate(col_mat_cache_t *cache, uint32_t keep_count)
 void
 col_mat_cache_evict_until(col_mat_cache_t *cache, size_t target_bytes)
 {
-    while (cache->count > 0 && cache->total_bytes >= target_bytes)
-        mat_cache_evict_lru(cache);
+    while (cache->count > 0 && cache->total_bytes >= target_bytes) {
+        if (!mat_cache_evict_lru(cache))
+            break;
+    }
 }
 
 col_rel_t *
@@ -225,7 +267,9 @@ col_mat_cache_lookup(col_mat_cache_t *cache, const col_rel_t *left,
     uint64_t rh = col_mat_cache_key_content(right);
     for (uint32_t i = 0; i < cache->count; i++) {
         if (cache->entries[i].left_hash == lh
-            && cache->entries[i].right_hash == rh) {
+            && cache->entries[i].right_hash == rh
+            && cache->entries[i].result != NULL
+            && !cache->entries[i].eviction_deferred) {
             cache->entries[i].lru_clock = ++cache->clock;
             cache->hits++;
             return cache->entries[i].result;
@@ -235,10 +279,74 @@ col_mat_cache_lookup(col_mat_cache_t *cache, const col_rel_t *left,
     return NULL;
 }
 
-void
-col_mat_cache_insert(col_mat_cache_t *cache, const col_rel_t *left,
-    const col_rel_t *right, col_rel_t *result)
+col_rel_t *
+col_mat_cache_lookup_pin(col_mat_cache_t *cache, const col_rel_t *left,
+    const col_rel_t *right, col_mat_cache_pin_t *pin)
 {
+    if (!cache || !left || !right || !pin)
+        return NULL;
+    memset(pin, 0, sizeof(*pin));
+    uint64_t lh = col_mat_cache_key_content(left);
+    uint64_t rh = col_mat_cache_key_content(right);
+    for (uint32_t i = 0; i < cache->count; i++) {
+        col_mat_entry_t *entry = &cache->entries[i];
+        if (entry->left_hash == lh && entry->right_hash == rh
+            && entry->result != NULL && !entry->eviction_deferred) {
+            entry->lru_clock = ++cache->clock;
+            cache->hits++;
+            entry->pin_count++;
+            assert(cache->active_pins < UINT32_MAX);
+            cache->active_pins++;
+            if (pin) {
+                pin->cache = cache;
+                pin->identity = entry->identity;
+                pin->active = true;
+            }
+            return entry->result;
+        }
+    }
+    cache->misses++;
+    return NULL;
+}
+
+void
+col_mat_cache_pin_release(col_mat_cache_pin_t *pin)
+{
+    if (!pin || !pin->active || !pin->cache)
+        return;
+    col_mat_cache_t *cache = pin->cache;
+    uint32_t index = UINT32_MAX;
+    for (uint32_t i = 0; i < cache->count; i++) {
+        if (cache->entries[i].identity == pin->identity) {
+            index = i;
+            break;
+        }
+    }
+    assert(index != UINT32_MAX);
+    if (index != UINT32_MAX) {
+        col_mat_entry_t *entry = &cache->entries[index];
+        assert(entry->pin_count > 0);
+        if (entry->pin_count > 0)
+            entry->pin_count--;
+        if (entry->pin_count == 0 && entry->eviction_deferred)
+            mat_cache_remove_at(cache, index);
+    }
+    assert(cache->active_pins > 0);
+    if (cache->active_pins > 0)
+        cache->active_pins--;
+    pin->cache = NULL;
+    pin->identity = 0;
+    pin->active = false;
+}
+
+int
+col_mat_cache_insert_pin(col_mat_cache_t *cache, const col_rel_t *left,
+    const col_rel_t *right, col_rel_t *result, col_mat_cache_pin_t *pin)
+{
+    if (!cache || !left || !right || !result)
+        return EINVAL;
+    if (pin)
+        memset(pin, 0, sizeof(*pin));
     size_t result_bytes
         = (result->nrows > 0 && result->ncols > 0)
               ? (size_t)result->nrows * result->ncols * sizeof(int64_t)
@@ -246,12 +354,16 @@ col_mat_cache_insert(col_mat_cache_t *cache, const col_rel_t *left,
 
     /* Evict LRU entries until within memory limit */
     while (cache->count > 0
-        && cache->total_bytes + result_bytes > COL_MAT_CACHE_LIMIT_BYTES)
-        mat_cache_evict_lru(cache);
+        && cache->total_bytes + result_bytes > COL_MAT_CACHE_LIMIT_BYTES) {
+        if (!mat_cache_evict_lru(cache))
+            return ENOSPC;
+    }
 
     /* Evict oldest entry if array is full */
-    if (cache->count >= COL_MAT_CACHE_MAX)
-        mat_cache_evict_lru(cache);
+    while (cache->count >= COL_MAT_CACHE_MAX) {
+        if (!mat_cache_evict_lru(cache))
+            return ENOSPC;
+    }
 
     col_mat_entry_t *e = &cache->entries[cache->count++];
     e->left_hash = col_mat_cache_key_content(left);
@@ -260,6 +372,11 @@ col_mat_cache_insert(col_mat_cache_t *cache, const col_rel_t *left,
     e->mem_bytes = result_bytes;
     e->lru_clock = ++cache->clock;
     e->ledger_bytes = 0;
+    e->identity = ++cache->next_identity;
+    if (e->identity == 0)
+        e->identity = ++cache->next_identity;
+    e->pin_count = 0;
+    e->eviction_deferred = false;
     cache->total_bytes += result_bytes;
 
     /* Issue #1380: the cache now owns result, so its bytes move from
@@ -276,4 +393,20 @@ col_mat_cache_insert(col_mat_cache_t *cache, const col_rel_t *left,
             wl_mem_ledger_alloc(cache->ledger, WL_MEM_SUBSYS_CACHE, bytes);
         e->ledger_bytes = bytes;
     }
+    if (pin) {
+        e->pin_count = 1;
+        assert(cache->active_pins < UINT32_MAX);
+        cache->active_pins++;
+        pin->cache = cache;
+        pin->identity = e->identity;
+        pin->active = true;
+    }
+    return 0;
+}
+
+int
+col_mat_cache_insert(col_mat_cache_t *cache, const col_rel_t *left,
+    const col_rel_t *right, col_rel_t *result)
+{
+    return col_mat_cache_insert_pin(cache, left, right, result, NULL);
 }

@@ -1574,7 +1574,9 @@ tdd_worker_subpass_fn(void *arg)
     delta_pool_reset(sess->delta_pool);
     sess->rotation_ops->rotate_eval_arena(sess);
     if (sess->cache_evict_threshold == 0) {
+        assert(sess->mat_cache.active_pins == 0);
         col_mat_cache_clear(&sess->mat_cache);
+        assert(sess->mat_cache.active_pins == 0);
     } else {
         col_mat_cache_evict_until(&sess->mat_cache,
             sess->cache_evict_threshold);
