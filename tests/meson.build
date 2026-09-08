@@ -5404,11 +5404,21 @@ test_wirelog_public_api_exe = executable(
 test('wirelog_public_api', test_wirelog_public_api_exe)
 
 if host_machine.system() == 'linux'
+  # Compile the library sources into the test itself instead of linking
+  # libwirelog_static.a.  Under the project default b_lto=true that archive
+  # holds LLVM bitcode when the compiler is clang, and this target is
+  # b_lto=false (the portable guarantee that --wrap interposition is applied,
+  # see test_jpp above), so a plain non-LTO clang link cannot read it:
+  # "libwirelog_static.a: error adding symbols: file format not recognized".
+  # gcc only survived because its driver always loads the LTO plugin.  Same
+  # pattern as test_program_oom / test_plan_gen_oom.
   test_wirelog_result_oom_exe = executable(
     'test_wirelog_result_oom',
     files('test_wirelog_result_oom.c'),
+    wirelog_sources,
+    config_h_file,
     include_directories: [wirelog_inc, wirelog_src_inc],
-    link_with: wirelog_static_lib,
+    c_args: ['-DWIRELOG_BUILDING'],
     dependencies: [threads_dep, zlib_dep, nanoarrow_dep, xxhash_dep,
                     mbedtls_dep, math_dep],
     link_args: ['-Wl,--wrap=malloc', '-Wl,--wrap=calloc',
