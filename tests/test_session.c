@@ -311,6 +311,10 @@ has_tuple(const tuple_collector_t *c, const char *relation,
 /* Helper: Build plan from Datalog source                                   */
 /* ======================================================================== */
 
+#define TEST_MAX_HELD_PROGRAMS 32
+static wirelog_program_t *held_programs[TEST_MAX_HELD_PROGRAMS];
+static size_t held_program_count;
+
 static wl_plan_t *
 build_plan(const char *src)
 {
@@ -325,10 +329,24 @@ build_plan(const char *src)
 
     wl_plan_t *plan = NULL;
     int rc = wl_plan_from_program(prog, &plan);
-    wirelog_program_free(prog);
-    if (rc != 0)
+    if (rc != 0 || !plan || held_program_count == TEST_MAX_HELD_PROGRAMS) {
+        wirelog_program_free(prog);
+        if (plan)
+            wl_plan_free(plan);
         return NULL;
+    }
+    /* wl_plan_t and the session borrow the program's intern table.  Keep the
+     * parsed program alive until every test session and plan has been freed;
+     * this is the lifetime promised by wirelog_session_create(). */
+    held_programs[held_program_count++] = prog;
     return plan;
+}
+
+static void
+release_held_programs(void)
+{
+    while (held_program_count > 0)
+        wirelog_program_free(held_programs[--held_program_count]);
 }
 
 /* ======================================================================== */
@@ -1121,5 +1139,6 @@ main(void)
 
     printf("\n  %d tests: %d passed, %d failed\n", tests_run, tests_passed,
         tests_failed);
+    release_held_programs();
     return tests_failed > 0 ? 1 : 0;
 }
