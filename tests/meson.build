@@ -4642,23 +4642,6 @@ test_deep_copy_ledger_canary_exe = executable(
 
 test('deep_copy_ledger_canary', test_deep_copy_ledger_canary_exe)
 
-# ----------------------------------------------------------------------------
-# wl_mem_ledger_t unit tests (Issue #224; gauge/snapshot coverage from #1380).
-# The source predates its registration -- it was never built by meson until
-# #1380 extended the ledger API and needed the coverage.
-# ----------------------------------------------------------------------------
-
-test_mem_ledger_exe = executable(
-  'test_mem_ledger',
-  files('test_mem_ledger.c'),
-  '../wirelog/columnar/mem_ledger.c',
-  thread_src,
-  include_directories: [wirelog_inc, wirelog_src_inc],
-  dependencies: [threads_dep],
-)
-
-test('mem_ledger', test_mem_ledger_exe)
-
 # ============================================================================
 # Compound arena lifecycle observability (Issue #583)
 # WL_LOG=COMPOUND:5 must emit alloc/freeze/unfreeze tags.

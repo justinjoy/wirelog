@@ -527,6 +527,13 @@ test_overflow_boundaries(void)
         percentage_sum += wl_mem_subsys_pct[i];
     if (percentage_sum != 100) {
         FAIL("subsystem percentages do not sum to 100");
+        return 1;
+    }
+
+    PASS();
+    return 0;
+}
+
 /* Test 9: set_gauge (Issue #1380)                                          */
 /* ======================================================================== */
 
