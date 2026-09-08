@@ -34,6 +34,16 @@ environment has precedence over automatic resolution:
 versioned API option > WIRELOG_MEMORY_BUDGET > automatic resolution
 ```
 
+The reusable `scripts/ci/run-memory-pressure.sh` helper records external-limit
+evidence for a command: source and binary identity, command arguments,
+effective ceiling, enforcement mechanism, exit/timeout classification, output
+hashes, and Linux cgroup memory events when available. It prefers a writable
+cgroup v2 and otherwise records a kernel-enforced `RLIMIT_AS` ceiling as a
+different enforcement class. A bare `SIGKILL`/exit 137 is not treated as OOM;
+resource-error mode requires supporting cgroup evidence. This runner is
+qualification infrastructure only: its evidence does not prove that Wirelog
+allocation classes, JOINs, TDD transport, or DOOP are bounded.
+
 Values are decimal bytes (not MiB or a human-readable suffix). The following
 table is part of the interface contract:
 

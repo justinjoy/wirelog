@@ -843,6 +843,14 @@ endif
 # outcomes from a fixture repository, including the mismatch it exists to catch
 # -- which, because the gate enforces nowhere in CI today, had never run.
 if sh.found()
+  # Issue #1374: reusable external-limit evidence infrastructure.  This
+  # contract test does not claim that any workload or allocation class is
+  # bounded.
+  test('memory_pressure_contract', sh,
+       args: [meson.project_source_root() /
+              'scripts/ci/test-run-memory-pressure.sh'],
+       suite: 'abi')
+
   test('release_template_selftest', sh,
        args: [meson.project_source_root() /
               'scripts/ci/test-check-release-template.sh'],
