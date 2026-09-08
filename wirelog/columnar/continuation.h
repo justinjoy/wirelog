@@ -22,6 +22,10 @@ typedef enum {
     WL_COLUMNAR_CONTINUATION_RESERVATION_DENIED,
     WL_COLUMNAR_CONTINUATION_SINK_FAILURE,
     WL_COLUMNAR_CONTINUATION_COMMIT_FAILURE,
+    /* The sink reports that its side effect is durable, but cannot report an
+     * unambiguous successful return to its caller.  The cursor has already
+     * advanced; retrying the batch would duplicate the side effect. */
+    WL_COLUMNAR_CONTINUATION_COMMIT_AMBIGUOUS,
 } wl_columnar_continuation_status_t;
 
 /* The identity and generation are opaque to this contract, but are copied
@@ -68,8 +72,9 @@ typedef struct {
  * made by the current begin/reserve transaction.  reserve must account for
  * all bytes that become visible at append time (payload, metadata and sink scratch).
  * commit reports whether its side effects became durable even when it returns
- * COMMIT_FAILURE; the continuation still requires an unambiguous OK commit
- * before advancing its cursor. */
+ * COMMIT_FAILURE.  A committed side effect advances the cursor and is
+ * reported as COMMIT_AMBIGUOUS when the return status is not OK; callers must
+ * not retry that batch. */
 typedef wl_columnar_continuation_status_t
 (*wl_columnar_continuation_sink_begin_fn)(
     void *context, const wl_columnar_continuation_batch_t *batch);

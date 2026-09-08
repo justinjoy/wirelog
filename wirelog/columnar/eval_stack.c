@@ -34,14 +34,19 @@ int
 eval_stack_push_continuation(eval_stack_t *s,
     wl_columnar_continuation_t *continuation)
 {
-    /* Existing evaluator consumers only understand complete relations.  Do
-     * not put an owned continuation where a consumer could pop it as a NULL
-     * relation; this function takes ownership even on rejection. */
-    (void)s;
-    if (!continuation)
+    if (!s || !continuation)
+        return EINVAL;
+    if (s->top >= COL_STACK_MAX)
         return ENOBUFS;
-    wl_columnar_continuation_destroy(continuation);
-    return ENOTSUP;
+    s->items[s->top].rel = NULL;
+    s->items[s->top].owned = true;
+    s->items[s->top].is_delta = false;
+    s->items[s->top].seg_boundaries = NULL;
+    s->items[s->top].seg_count = 0;
+    s->items[s->top].kind = WL_COLUMNAR_EVAL_ENTRY_CONTINUATION;
+    s->items[s->top].continuation = continuation;
+    s->top++;
+    return 0;
 }
 
 /* Push with explicit delta flag (used by VARIABLE and JOIN to tag delta results). */
@@ -58,8 +63,18 @@ eval_entry_t
 eval_stack_pop(eval_stack_t *s)
 {
     eval_entry_t e = { 0 };
-    if (s->top > 0)
+    if (s && s->top > 0) {
         e = s->items[--s->top];
+        /* The legacy evaluator API returns a relation entry.  Consume and
+        * destroy continuation ownership at this boundary so existing
+        * consumers that reject NULL relations cannot leak or double-own a
+        * continuation.  eval_stack_drain() handles entries not popped. */
+        if (e.kind == WL_COLUMNAR_EVAL_ENTRY_CONTINUATION) {
+            wl_columnar_continuation_destroy(e.continuation);
+            e.continuation = NULL;
+            e.owned = false;
+        }
+    }
     return e;
 }
 

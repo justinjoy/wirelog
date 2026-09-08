@@ -109,21 +109,21 @@ wl_columnar_continuation_publish(
         return WL_COLUMNAR_CONTINUATION_SINK_FAILURE;
     }
     status = sink->commit(sink->context, &committed);
-    if (status != WL_COLUMNAR_CONTINUATION_OK || !committed) {
-        /* A sink that has not committed must release its reservation.  Once
-         * it reports a committed side effect, abort is no longer safe, but
-         * the cursor still remains unchanged because the commit was not
-         * unambiguously successful. */
-        if (begun && !committed)
+    if (!committed) {
+        /* A sink that has not committed must release its reservation. */
+        if (begun)
             sink->abort(sink->context);
         return WL_COLUMNAR_CONTINUATION_COMMIT_FAILURE;
     }
-    /* Only an unambiguously successful commit changes the producer cursor. */
+
+    /* Once the sink reports a durable side effect, abort is no longer safe
+     * and replaying this cursor would duplicate the batch.  This remains true
+     * when the sink could not return an unambiguous success status. */
     continuation->cursor = batch.next_cursor;
     continuation->done = batch.complete;
     return status == WL_COLUMNAR_CONTINUATION_OK
         ? WL_COLUMNAR_CONTINUATION_OK
-        : WL_COLUMNAR_CONTINUATION_COMMIT_FAILURE;
+        : WL_COLUMNAR_CONTINUATION_COMMIT_AMBIGUOUS;
 }
 
 const wl_columnar_continuation_cursor_t *
