@@ -207,9 +207,9 @@ reporting share so the aggregate threshold does not multiply by the worker
 count. The removed `tdd_budget_per_party` value is no longer a second governor
 admission domain.
 Explicit invalid budgets fail session creation with the existing public
-execution error mapping and leave output handles null. Compound-arena
-admission remains a separate follow-up unit in #1417; parser/plan/result
-allocations remain tracked by #1418. The parent #1369
+execution error mapping and leave output handles null. Compound-arena fixed
+object, generation-table, and lazy-growth admission are now covered by #1417;
+parser/plan/result allocations remain tracked by #1418. The parent #1369
 contract is therefore only partially implemented until those units land.
 # wirelog Memory Instrumentation
 
@@ -264,7 +264,7 @@ every stratum that ran under TDD.
 | Subsystem | Style | What is counted | Where |
 |---|---|---|---|
 | `RELATION` | event | Column buffers of operator output relations whose `col_rel_t.mem_ledger` is attached; today that is every join output (`col_join_attach_ledger`). Capacity-based (`capacity × owned columns × 8`). | `relation.c` growth, compaction and free paths |
-| `ARENA` | event | Fixed capacity of the session's delta pool (slot slab + data arena) and eval arena. Both fixed backing footprints are admitted by the shared governor before allocation and released at destruction; the ledger remains attribution-only. `delta_pool_reset()`/`wl_arena_reset()` do not change it: the buffers are retained. K-fusion branch sessions charge their per-branch pool/arena to the parent. | `session.c`, `kfusion.c`, `arena.c`, `delta_pool.c` |
+| `ARENA` | event | Fixed capacity of the session's delta pool (slot slab + data arena) and eval arena, plus the compound arena object, generation table, payload buffers, and entry metadata. Each retained capacity is admitted before allocation with old/new peak overlap and released at destruction; the ledger remains attribution-only. `delta_pool_reset()`/`wl_arena_reset()` and compound epoch GC do not return retained capacity. K-fusion branch sessions charge their per-branch pool/arena to the parent. | `session.c`, `kfusion.c`, `arena.c`, `delta_pool.c`, `compound_arena.c` |
 | `CACHE` | event | Materialization-cache entries. On insert the cached result is re-parented: its RELATION (and TIMESTAMP) charge is credited and the same bytes are charged to CACHE, so a cached join is counted once. Credited on eviction, truncation and clear. | `cache.c` |
 | `ARRANGEMENT` | event | Hash arrangements (`ht_head` + `ht_next`), delta and filtered arrangements, sorted copies for LFTJ (`nrows × ncols × 8`, a full duplicate of the relation) and differential arrangements (struct + keys + buckets + chain). Worker clones are charged to the worker ledger. | `arrangement.c`, `diff_arrangement.c` |
 | `TIMESTAMP` | event | `timestamps[]` arrays (24 bytes per row of capacity) of ledger-attached relations. Reconciled together with RELATION. | `relation.c` |
@@ -393,8 +393,8 @@ and host Job Object limits; when no finite source exists, the resolver is
 advisory/unbounded. Explicit `0`, malformed values, overflow, and values below
 256 MiB are invalid. This resolver does not use physical RAM as an enforcing
 fallback. The legacy ledger worker-share hint remains separate from governor
-admission; fixed eval-arena and delta-pool backing storage are now admitted,
-while compound, join, and other allocation classes remain follow-up work.
+admission; fixed eval-arena, delta-pool, and compound-arena backing storage
+are now admitted. Joins and other allocation classes remain follow-up work.
 
 The only consumer is the join operator: when RELATION reaches 80% of its
 share (`wl_mem_ledger_should_backpressure(RELATION, 80)`), a worker session

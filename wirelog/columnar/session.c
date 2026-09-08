@@ -1335,8 +1335,9 @@ col_session_create(const wl_plan_t *plan, uint32_t num_workers,
      * tests/test_compound_arena.c; max_epochs=0 selects the library
      * default (WL_COMPOUND_EPOCH_MAX + 1). */
     uint32_t compound_max_epochs = session_compound_max_epochs_from_env();
-    sess->compound_arena = wl_compound_arena_create(0x53455353u, 4096u,
-            compound_max_epochs);
+    sess->compound_arena = wl_compound_arena_create_managed(0x53455353u,
+            4096u, compound_max_epochs,
+            wl_columnar_memory_governor_ref_get(sess->memory_governor));
     if (!sess->compound_arena)
         goto oom;
     WL_LOG(WL_LOG_SEC_SESSION, WL_LOG_INFO,

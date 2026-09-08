@@ -542,10 +542,20 @@ sub-pass and reclaims the previous epoch's storage.
 
 ### 8.1 Coordinator-only invariant
 
-Worker sessions **borrow** the coordinator's compound arena.
-Workers are forbidden to advance the arena's epoch counter or to
-free its memory; only the coordinator may do so. The live invariant
+Worker sessions **borrow** the coordinator's compound arena and its
+fixed-and-growth admission reservations. Workers are forbidden to advance the
+arena's epoch counter or to free its memory; only the coordinator may do so.
+The coordinator destroys the arena before releasing its shared
+memory-governor reference, so the reservation callback always observes a
+live governor. The arena's callback context must not be copied or released
+by a worker. The live invariant
 that enforces this is the `sess->coordinator == NULL` predicate:
+
+Compound payload and entry-array growth must occur in the coordinator's
+single-mutator window, before workers borrow the arena or after all workers
+have been destroyed. A worker-held lookup pointer must not span a coordinator
+growth replacement. Enforcement and deterministic fault-injection coverage
+for this window are tracked separately in #1423.
 
 - `wirelog/columnar/kfusion.c:561-569` (K-fusion path):
   ```c

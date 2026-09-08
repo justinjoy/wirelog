@@ -64,6 +64,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "columnar/memory_governor.h"
+
 /* ======================================================================== */
 /* Handle encoding                                                          */
 /* ======================================================================== */
@@ -74,6 +76,9 @@
 /** Maximum epoch value (12 bits). Arena refuses new allocations when the
  *  current epoch exceeds this cap. */
 #define WL_COMPOUND_EPOCH_MAX ((uint32_t)0xFFF)
+
+/** Default generation table length when create() receives max_epochs == 0. */
+#define WL_COMPOUND_DEFAULT_MAX_EPOCHS (WL_COMPOUND_EPOCH_MAX + 1u)
 
 /** Maximum per-generation offset (32 bits). */
 #define WL_COMPOUND_OFFSET_MAX ((uint32_t)0xFFFFFFFFu)
@@ -131,7 +136,20 @@ typedef struct {
     int64_t *multiplicity;   /* Z-set multiplicity counter per handle (signed) */
     uint32_t entry_count;    /* number of handles allocated in this generation */
     uint32_t entry_cap;      /* capacity of entry_offsets[] / multiplicity[] */
+    wl_columnar_memory_reservation_t *payload_admission;
+    wl_columnar_memory_reservation_t *entries_admission;
 } wl_compound_gen_t;
+
+typedef int (*wl_compound_admission_prepare_fn)(void *context,
+    uint64_t old_bytes, uint64_t new_bytes,
+    wl_columnar_memory_reservation_t *reservation);
+typedef int (*wl_compound_admission_publish_fn)(void *context,
+    wl_columnar_memory_reservation_t *old_reservation,
+    wl_columnar_memory_reservation_t *new_reservation, const void *owner);
+typedef void (*wl_compound_admission_abort_fn)(void *context,
+    wl_columnar_memory_reservation_t *reservation);
+typedef int (*wl_compound_admission_release_fn)(void *context,
+    wl_columnar_memory_reservation_t *reservation);
 
 /**
  * wl_compound_arena_t:
@@ -145,8 +163,8 @@ typedef struct {
  * @current_epoch: Generation currently accepting new allocations.
  * @gens:         Array of generations, length == max_epochs.
  * @max_epochs:   Allocated length of gens[]; bounded by WL_COMPOUND_EPOCH_MAX + 1.
- * @default_gen_cap: Initial capacity per generation (bytes).  Generations
- *                   lazy-grow via realloc on overflow.
+ * @default_gen_cap: Initial capacity per generation (bytes). Generations
+ *                   grow transactionally on overflow when managed.
  * @frozen:       True while K-Fusion is executing; arena_alloc returns 0.
  * @live_handles: Total live handles (multiplicity > 0) across all epochs,
  *                maintained by arena_alloc/inc/dec/gc for test introspection.
@@ -159,6 +177,13 @@ typedef struct {
     uint32_t default_gen_cap;
     bool frozen;
     uint64_t live_handles;
+    /* Optional owner for fixed arena/generation-table admission. */
+    void *admission_context;
+    void (*admission_release)(void *context);
+    wl_compound_admission_prepare_fn admission_prepare;
+    wl_compound_admission_publish_fn admission_publish;
+    wl_compound_admission_abort_fn admission_abort;
+    wl_compound_admission_release_fn admission_release_reservation;
 } wl_compound_arena_t;
 
 /* ======================================================================== */
@@ -181,6 +206,22 @@ typedef struct {
 wl_compound_arena_t *
 wl_compound_arena_create(uint32_t session_seed, uint32_t default_gen_cap,
     uint32_t max_epochs);
+
+/** Create an arena with admission for fixed metadata and retained growth. */
+wl_compound_arena_t *
+wl_compound_arena_create_managed(uint32_t session_seed,
+    uint32_t default_gen_cap, uint32_t max_epochs,
+    wl_columnar_memory_governor_t *governor);
+
+/* Internal callback form used by the governor glue translation unit. */
+wl_compound_arena_t *
+wl_compound_arena_create_with_admission(uint32_t session_seed,
+    uint32_t default_gen_cap, uint32_t max_epochs, void *context,
+    void (*release)(void *context),
+    wl_compound_admission_prepare_fn prepare,
+    wl_compound_admission_publish_fn publish,
+    wl_compound_admission_abort_fn abort,
+    wl_compound_admission_release_fn release_reservation);
 
 /**
  * wl_compound_arena_free:

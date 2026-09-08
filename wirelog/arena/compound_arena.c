@@ -26,9 +26,6 @@
 #define WL_COMPOUND_ALIGN_UP(n) \
         (((n) + (WL_COMPOUND_ALIGN - 1)) & ~(uint32_t)(WL_COMPOUND_ALIGN - 1))
 
-/* Default max_epochs when the caller passes 0. */
-#define WL_COMPOUND_DEFAULT_MAX_EPOCHS (WL_COMPOUND_EPOCH_MAX + 1u)
-
 /* Initial entry-index capacity per generation.  Small (16) because we
  * lazy-grow; most epochs with a handful of compounds pay only this much. */
 #define WL_COMPOUND_DEFAULT_ENTRY_CAP 16u
@@ -38,49 +35,200 @@
 /* ======================================================================== */
 
 static int
-gen_reserve_entries(wl_compound_gen_t *gen)
+compound_admission_prepare(wl_compound_arena_t *arena, uint64_t old_bytes,
+    uint64_t new_bytes, wl_columnar_memory_reservation_t *reservation)
 {
-    if (gen->entry_count < gen->entry_cap)
+    if (!arena->admission_prepare)
         return 0;
-    uint32_t new_cap = gen->entry_cap > 0
-        ? gen->entry_cap * 2u
-        : WL_COMPOUND_DEFAULT_ENTRY_CAP;
-    if (new_cap <= gen->entry_cap) /* overflow guard */
-        return -1;
-    uint32_t *no = (uint32_t *)realloc(gen->entry_offsets,
-            (size_t)new_cap * sizeof(uint32_t));
-    if (!no)
-        return -1;
-    gen->entry_offsets = no;
-    int64_t *nm = (int64_t *)realloc(gen->multiplicity,
-            (size_t)new_cap * sizeof(int64_t));
-    if (!nm)
-        return -1; /* entry_offsets was upgraded; left as-is (safe; only cap */
-                   /* mismatch is a temporary state reverted on next retry). */
-    gen->multiplicity = nm;
-    gen->entry_cap = new_cap;
+    return arena->admission_prepare(arena->admission_context, old_bytes,
+               new_bytes, reservation);
+}
+
+static void
+compound_admission_abort(wl_compound_arena_t *arena,
+    wl_columnar_memory_reservation_t *reservation)
+{
+    if (arena->admission_abort)
+        arena->admission_abort(arena->admission_context, reservation);
+}
+
+static int
+compound_admission_publish(wl_compound_arena_t *arena,
+    wl_columnar_memory_reservation_t *old_reservation,
+    wl_columnar_memory_reservation_t *new_reservation, const void *owner)
+{
+    if (!arena->admission_publish)
+        return 0;
+    return arena->admission_publish(arena->admission_context, old_reservation,
+               new_reservation, owner);
+}
+
+static int
+compound_admission_release(wl_compound_arena_t *arena,
+    wl_columnar_memory_reservation_t *reservation)
+{
+    if (arena->admission_release_reservation)
+        return arena->admission_release_reservation(arena->admission_context,
+                   reservation);
     return 0;
 }
 
 static int
-gen_reserve_bytes(wl_compound_gen_t *gen, uint32_t need, uint32_t default_cap)
+compound_grow_capacity(uint32_t current, uint32_t used, uint32_t need,
+    uint32_t default_cap, uint32_t *out)
 {
-    uint32_t avail = gen->capacity - gen->used;
-    if (need <= avail)
-        return 0;
-    uint32_t new_cap = gen->capacity > 0 ? gen->capacity : default_cap;
-    while (new_cap - gen->used < need) {
-        uint32_t doubled = new_cap * 2u;
-        if (doubled <= new_cap) /* overflow */
-            return -1;
-        new_cap = doubled;
-    }
-    uint8_t *nb = (uint8_t *)realloc(gen->base, new_cap);
-    if (!nb)
+    uint32_t capacity = current > 0 ? current : default_cap;
+
+    if (capacity < used)
         return -1;
-    gen->base = nb;
-    gen->capacity = new_cap;
+    while ((uint64_t)capacity - used < need) {
+        if (capacity > UINT32_MAX / 2u)
+            return -1;
+        capacity *= 2u;
+    }
+    *out = capacity;
     return 0;
+}
+
+/* Stage payload and both entry arrays together.  The old buffers and
+ * reservations remain live until every new allocation is ready, so a denial
+ * or allocator failure leaves the generation unchanged. */
+static int
+gen_reserve(wl_compound_arena_t *arena, wl_compound_gen_t *gen,
+    uint32_t need, uint32_t default_cap)
+{
+    uint32_t new_payload_cap = gen->capacity;
+    uint32_t new_entry_cap = gen->entry_cap;
+    bool grow_payload = need > gen->capacity - gen->used;
+    bool grow_entries = gen->entry_count >= gen->entry_cap;
+    uint8_t *new_base = NULL;
+    uint32_t *new_offsets = NULL;
+    int64_t *new_multiplicity = NULL;
+    wl_columnar_memory_reservation_t *payload_reservation = NULL;
+    wl_columnar_memory_reservation_t *entries_reservation = NULL;
+    bool payload_published = false;
+    bool entries_published = false;
+
+    if (!grow_payload && !grow_entries)
+        return 0;
+    if (grow_payload
+        && compound_grow_capacity(gen->capacity, gen->used, need,
+        default_cap, &new_payload_cap) != 0)
+        return -1;
+    if (grow_entries) {
+        new_entry_cap = gen->entry_cap > 0
+            ? gen->entry_cap * 2u : WL_COMPOUND_DEFAULT_ENTRY_CAP;
+        if (new_entry_cap <= gen->entry_cap
+            || (uint64_t)new_entry_cap * sizeof(uint32_t) > SIZE_MAX
+            || (uint64_t)new_entry_cap * sizeof(int64_t) > SIZE_MAX)
+            return -1;
+    }
+    if (grow_payload && arena->admission_prepare) {
+        payload_reservation = malloc(sizeof(*payload_reservation));
+        if (!payload_reservation)
+            return -1;
+        if (compound_admission_prepare(arena, gen->capacity,
+            new_payload_cap, payload_reservation) != 0) {
+            free(payload_reservation);
+            return -1;
+        }
+    }
+    if (grow_entries && arena->admission_prepare) {
+        entries_reservation = malloc(sizeof(*entries_reservation));
+        if (!entries_reservation)
+            goto fail;
+    }
+    if (grow_entries
+        && compound_admission_prepare(arena,
+        (uint64_t)gen->entry_cap * (sizeof(uint32_t) + sizeof(int64_t)),
+        (uint64_t)new_entry_cap
+        * (sizeof(uint32_t) + sizeof(int64_t)),
+        entries_reservation) != 0) {
+        if (payload_reservation)
+            compound_admission_abort(arena, payload_reservation);
+        free(payload_reservation);
+        free(entries_reservation);
+        return -1;
+    }
+    if (grow_payload) {
+        new_base = (uint8_t *)malloc(new_payload_cap);
+        if (!new_base)
+            goto fail;
+        if (gen->used > 0)
+            memcpy(new_base, gen->base, gen->used);
+    }
+    if (grow_entries) {
+        new_offsets = (uint32_t *)malloc(
+            (size_t)new_entry_cap * sizeof(uint32_t));
+        new_multiplicity = (int64_t *)malloc(
+            (size_t)new_entry_cap * sizeof(int64_t));
+        if (!new_offsets || !new_multiplicity)
+            goto fail;
+        if (gen->entry_count > 0) {
+            memcpy(new_offsets, gen->entry_offsets,
+                (size_t)gen->entry_count * sizeof(uint32_t));
+            memcpy(new_multiplicity, gen->multiplicity,
+                (size_t)gen->entry_count * sizeof(int64_t));
+        }
+    }
+    /* A reservation returned by prepare is valid until this publish.  The
+     * governor commit cannot fail for such a token; keep both publishes
+     * adjacent so the ownership swap below is one logical transaction. */
+    if (grow_payload) {
+        if (compound_admission_publish(arena, gen->payload_admission,
+            payload_reservation, gen) != 0)
+            goto fail;
+        payload_published = true;
+    }
+    if (grow_entries) {
+        if (compound_admission_publish(arena, gen->entries_admission,
+            entries_reservation, gen) != 0)
+            goto fail;
+        entries_published = true;
+    }
+    if (grow_payload && gen->payload_admission
+        && compound_admission_release(arena, gen->payload_admission) != 0)
+        goto fail;
+    if (grow_entries && gen->entries_admission
+        && compound_admission_release(arena, gen->entries_admission) != 0)
+        goto fail;
+    if (grow_payload) {
+        free(gen->base);
+        gen->base = new_base;
+        gen->capacity = new_payload_cap;
+        free(gen->payload_admission);
+        gen->payload_admission = payload_reservation;
+    }
+    if (grow_entries) {
+        free(gen->entry_offsets);
+        free(gen->multiplicity);
+        gen->entry_offsets = new_offsets;
+        gen->multiplicity = new_multiplicity;
+        gen->entry_cap = new_entry_cap;
+        free(gen->entries_admission);
+        gen->entries_admission = entries_reservation;
+    }
+    return 0;
+
+fail:
+    free(new_base);
+    free(new_offsets);
+    free(new_multiplicity);
+    if (payload_reservation) {
+        if (payload_published)
+            (void)compound_admission_release(arena, payload_reservation);
+        else
+            compound_admission_abort(arena, payload_reservation);
+        free(payload_reservation);
+    }
+    if (entries_reservation) {
+        if (entries_published)
+            (void)compound_admission_release(arena, entries_reservation);
+        else
+            compound_admission_abort(arena, entries_reservation);
+        free(entries_reservation);
+    }
+    return -1;
 }
 
 static void
@@ -92,13 +240,31 @@ gen_free(wl_compound_gen_t *gen)
     memset(gen, 0, sizeof(*gen));
 }
 
+static void
+gen_release_admission(wl_compound_arena_t *arena, wl_compound_gen_t *gen)
+{
+    if (gen->payload_admission) {
+        (void)compound_admission_release(arena, gen->payload_admission);
+        free(gen->payload_admission);
+    }
+    if (gen->entries_admission) {
+        (void)compound_admission_release(arena, gen->entries_admission);
+        free(gen->entries_admission);
+    }
+}
+
 /* ======================================================================== */
 /* Public API                                                               */
 /* ======================================================================== */
 
-wl_compound_arena_t *
-wl_compound_arena_create(uint32_t session_seed, uint32_t default_gen_cap,
-    uint32_t max_epochs)
+static wl_compound_arena_t *
+compound_arena_create_impl(uint32_t session_seed, uint32_t default_gen_cap,
+    uint32_t max_epochs, void *admission_context,
+    void (*admission_release)(void *context),
+    wl_compound_admission_prepare_fn admission_prepare_fn,
+    wl_compound_admission_publish_fn admission_publish_fn,
+    wl_compound_admission_abort_fn admission_abort_fn,
+    wl_compound_admission_release_fn admission_release_reservation_fn)
 {
     if (default_gen_cap == 0)
         return NULL;
@@ -125,7 +291,36 @@ wl_compound_arena_create(uint32_t session_seed, uint32_t default_gen_cap,
     arena->default_gen_cap = default_gen_cap;
     arena->frozen = false;
     arena->live_handles = 0;
+    arena->admission_context = admission_context;
+    arena->admission_release = admission_release;
+    arena->admission_prepare = admission_prepare_fn;
+    arena->admission_publish = admission_publish_fn;
+    arena->admission_abort = admission_abort_fn;
+    arena->admission_release_reservation
+        = admission_release_reservation_fn;
     return arena;
+}
+
+wl_compound_arena_t *
+wl_compound_arena_create(uint32_t session_seed, uint32_t default_gen_cap,
+    uint32_t max_epochs)
+{
+    return compound_arena_create_impl(session_seed, default_gen_cap,
+               max_epochs, NULL, NULL, NULL, NULL, NULL, NULL);
+}
+
+wl_compound_arena_t *
+wl_compound_arena_create_with_admission(uint32_t session_seed,
+    uint32_t default_gen_cap, uint32_t max_epochs, void *context,
+    void (*release)(void *context),
+    wl_compound_admission_prepare_fn prepare,
+    wl_compound_admission_publish_fn publish,
+    wl_compound_admission_abort_fn abort,
+    wl_compound_admission_release_fn release_reservation)
+{
+    return compound_arena_create_impl(session_seed, default_gen_cap,
+               max_epochs, context, release, prepare, publish, abort,
+               release_reservation);
 }
 
 void
@@ -135,9 +330,13 @@ wl_compound_arena_free(wl_compound_arena_t *arena)
         return;
     if (arena->gens) {
         for (uint32_t e = 0; e < arena->max_epochs; e++)
+            gen_release_admission(arena, &arena->gens[e]);
+        for (uint32_t e = 0; e < arena->max_epochs; e++)
             gen_free(&arena->gens[e]);
         free(arena->gens);
     }
+    if (arena->admission_release)
+        arena->admission_release(arena->admission_context);
     free(arena);
 }
 
@@ -149,16 +348,22 @@ wl_compound_arena_alloc(wl_compound_arena_t *arena, uint32_t size)
     if (arena->current_epoch >= arena->max_epochs)
         return WL_COMPOUND_HANDLE_NULL;
 
-    uint32_t aligned = WL_COMPOUND_ALIGN_UP(size);
-    if (aligned < size) /* overflow */
+    if (size > UINT32_MAX - (WL_COMPOUND_ALIGN - 1u))
         return WL_COMPOUND_HANDLE_NULL;
+    uint32_t aligned = WL_COMPOUND_ALIGN_UP(size);
 
     wl_compound_gen_t *gen = &arena->gens[arena->current_epoch];
+    uint32_t reserve_need = aligned;
+    bool avoid_null_handle = arena->session_seed == 0
+        && arena->current_epoch == 0 && gen->used == 0;
+    if (avoid_null_handle) {
+        if (aligned > UINT32_MAX - WL_COMPOUND_ALIGN)
+            return WL_COMPOUND_HANDLE_NULL;
+        reserve_need = aligned + WL_COMPOUND_ALIGN;
+    }
 
-    /* Grow payload buffer if needed. */
-    if (gen_reserve_bytes(gen, aligned, arena->default_gen_cap) != 0)
-        return WL_COMPOUND_HANDLE_NULL;
-    if (gen_reserve_entries(gen) != 0)
+    /* Stage payload and metadata growth together. */
+    if (gen_reserve(arena, gen, reserve_need, arena->default_gen_cap) != 0)
         return WL_COMPOUND_HANDLE_NULL;
 
     uint32_t offset = gen->used;
@@ -166,10 +371,7 @@ wl_compound_arena_alloc(wl_compound_arena_t *arena, uint32_t size)
      * generation 0 so the very first allocation yields a non-zero handle.
      * (A zero session_seed + zero epoch + zero offset would collide with
      * WL_COMPOUND_HANDLE_NULL.) */
-    if (arena->session_seed == 0 && arena->current_epoch == 0 && offset == 0) {
-        if (gen_reserve_bytes(gen, aligned + WL_COMPOUND_ALIGN,
-            arena->default_gen_cap) != 0)
-            return WL_COMPOUND_HANDLE_NULL;
+    if (avoid_null_handle) {
         offset = WL_COMPOUND_ALIGN;
         gen->used = WL_COMPOUND_ALIGN;
     }
