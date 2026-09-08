@@ -123,7 +123,8 @@ This document describes the **invariant architectural principles** that must be 
 **Principle**: Compute backends are swappable via a clean vtable abstraction. The core engine (parser, optimizer, plan generation) is backend-agnostic.
 
 **What this means**:
-- `wl_compute_backend_t` vtable in `wirelog/backend.h:85-107` defines 7 operations: `session_create`, `session_destroy`, `session_insert`, `session_remove`, `session_step`, `session_set_delta_cb`, `session_snapshot`
+- `wl_compute_backend_t` vtable in `wirelog/backend.h` defines the core session operations plus an optional internal `session_create_with_options` slot. The latter carries versioned host options without changing the legacy creation callback or installed API.
+- `wirelog/session_options.h` is internal and non-installed. Its Windows Job Object field is a borrowed opaque handle used only during synchronous creation; the session stores only the resolved memory limit and never closes the host handle.
 - Each backend provides an implementation of this interface
 - `wl_session_t` contains only a pointer to the backend vtable; all dispatch is polymorphic
 - Future backends (FPGA, GPU, distributed) can be added without modifying core engine

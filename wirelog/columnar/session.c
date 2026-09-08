@@ -1018,16 +1018,23 @@ col_compute_worker_cap(uint64_t ram_bytes)
  * @see wl_col_session_t memory layout documentation above
  */
 static int
-col_session_create(const wl_plan_t *plan, uint32_t num_workers,
-    wl_session_t **out)
+col_session_create_internal(const wl_plan_t *plan, uint32_t num_workers,
+    const wl_session_options_t *options, wl_session_t **out)
 {
     wl_columnar_memory_resolution_t memory_resolution;
+    wl_columnar_memory_sources_t memory_sources;
     wl_columnar_memory_governor_ref_t *memory_governor;
     const char *memory_budget = getenv("WIRELOG_MEMORY_BUDGET");
 
     if (!plan || !out)
         return EINVAL;
-    if (wl_columnar_memory_resolve(memory_budget, NULL, &memory_resolution)
+    if (wl_columnar_memory_probe_sources(&memory_sources) != 0)
+        return EINVAL;
+    if (options && options->windows_job_handle)
+        (void)wl_columnar_memory_probe_windows_job(
+            options->windows_job_handle, &memory_sources);
+    if (wl_columnar_memory_resolve(memory_budget, &memory_sources,
+        &memory_resolution)
         != WL_COLUMNAR_MEMORY_OK)
         return EINVAL;
     memory_governor = wl_columnar_memory_governor_ref_create(
@@ -2019,6 +2026,20 @@ col_session_insert(wl_session_t *session, const char *relation,
     sess->pending_full_input_eval = true;
 
     return 0;
+}
+
+static int
+col_session_create(const wl_plan_t *plan, uint32_t num_workers,
+    wl_session_t **out)
+{
+    return col_session_create_internal(plan, num_workers, NULL, out);
+}
+
+static int
+col_session_create_with_options(const wl_plan_t *plan, uint32_t num_workers,
+    const wl_session_options_t *options, wl_session_t **out)
+{
+    return col_session_create_internal(plan, num_workers, options, out);
 }
 
 static bool
@@ -3132,6 +3153,7 @@ static const wl_compute_backend_t col_backend = {
     .session_set_delta_cb = col_session_set_delta_cb,
     .session_snapshot = col_session_snapshot,
     .session_memory_governor = col_session_memory_governor,
+    .session_create_with_options = col_session_create_with_options,
 };
 
 const wl_compute_backend_t *

@@ -122,7 +122,8 @@ Wirelog는 **순수 C11**로 구현된 **Timely-Differential 개념** 기반의 
 **원칙**: Compute backend는 깔끔한 vtable 추상화를 통해 교체 가능합니다. 핵심 엔진 (파서, 옵티마이저, 계획 생성)은 backend에 독립적입니다.
 
 **의미**:
-- `wirelog/backend.h:85-107`의 `wl_compute_backend_t` vtable은 7개의 연산을 정의합니다: `session_create`, `session_destroy`, `session_insert`, `session_remove`, `session_step`, `session_set_delta_cb`, `session_snapshot`
+- `wirelog/backend.h`의 `wl_compute_backend_t` vtable은 기본 세션 연산과 선택적인 내부 `session_create_with_options` 슬롯을 정의합니다. 이 슬롯은 기존 생성 콜백이나 설치되는 API를 변경하지 않고 버전이 지정된 호스트 옵션을 전달합니다.
+- `wirelog/session_options.h`는 내부 전용이며 설치되지 않습니다. Windows Job Object 필드는 동기 생성 중에만 사용하는 opaque borrowed handle이고, 세션은 호스트 handle을 저장하거나 닫지 않고 해석된 메모리 제한만 저장합니다.
 - 각 backend는 이 인터페이스의 구현을 제공합니다.
 - `wl_session_t`는 backend vtable에 대한 포인터만 포함하며; 모든 디스패치는 다형적입니다.
 - 미래 backend (FPGA, GPU, 분산)는 핵심 엔진 수정 없이 추가할 수 있습니다.

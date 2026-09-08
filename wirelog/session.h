@@ -87,6 +87,18 @@ wl_session_create_with_snapshot(const wl_compute_backend_t *backend,
     const wl_plan_t *plan, uint32_t num_workers,
     wirelog_extension_snapshot_t *snapshot, wl_session_t **out);
 
+/* Internal host path.  @options is borrowed for the duration of creation. */
+int
+wl_session_create_with_options(const wl_compute_backend_t *backend,
+    const wl_plan_t *plan, uint32_t num_workers,
+    const wl_session_options_t *options, wl_session_t **out);
+
+int
+wl_session_create_with_snapshot_options(const wl_compute_backend_t *backend,
+    const wl_plan_t *plan, uint32_t num_workers,
+    wirelog_extension_snapshot_t *snapshot,
+    const wl_session_options_t *options, wl_session_t **out);
+
 /**
  * wl_session_destroy:
  * @session:  The session to destroy (NULL-safe).

@@ -45,7 +45,7 @@ stable for downstream code.
 | IR, programs, stratification, interning | `wirelog/ir/*`, `wirelog/intern.*` | Public IR wrappers, internal program representation, stratification, and string interning. |
 | Optimizer passes | `wirelog/passes/*` | Fusion, join plan placement, magic sets, sideways information passing, and subsumption passes. |
 | Execution plan generation | `wirelog/exec_plan*` | Backend-neutral execution-plan types and lowering from IR/program state. |
-| Session and backend abstraction | `wirelog/session.*`, `wirelog/session_facts.*`, `wirelog/backend.h` | Internal session lifecycle, inline fact seeding, and backend vtable boundary. |
+| Session and backend abstraction | `wirelog/session.*`, `wirelog/session_options.h`, `wirelog/session_facts.*`, `wirelog/backend.h` | Internal session lifecycle, versioned host options, inline fact seeding, and backend vtable boundary. |
 | Columnar backend | `wirelog/columnar/*` | Relations, arrangements, frontier/progress tracking, expression evaluation, diff traces, delta pools, partitioning, and columnar session execution. |
 | Arenas and compound storage | `wirelog/arena/*`, `wirelog/columnar/compound_side.*`, `wirelog/columnar/handle_remap*` | Arena allocation, compound arena handles, side relations, and handle remapping support. |
 | I/O adapters | `wirelog/io/*` | Public adapter ABI implementation, CSV reader/adapter code, and adapter context internals. |

@@ -97,6 +97,12 @@ test_automatic_sources(void)
     memset(&sources, 0, sizeof(sources));
     sources.windows_job_available = true;
     sources.windows_job_limit = UINT64_C(512) * 1024 * 1024;
+    if (wl_columnar_memory_resolve(NULL, &sources, &result) != 0
+        || result.mode != WL_COLUMNAR_MEMORY_MODE_ENFORCING
+        || result.source != WL_COLUMNAR_MEMORY_SOURCE_WINDOWS_JOB) {
+        FAIL("Windows Job source was not selected from an injected limit");
+        return 1;
+    }
     if (wl_columnar_memory_probe_windows_job(NULL, &sources)
         != WL_COLUMNAR_MEMORY_UNAVAILABLE
         || sources.windows_job_available || sources.windows_job_limit != 0) {

@@ -66,6 +66,14 @@ read:
 4. supported Windows Job Object process-memory limits;
 5. no physical-RAM-only fallback for an enforcing guarantee.
 
+The internal `wl_session_create_with_options()` entry point accepts a
+versioned, non-installed options object. Its `windows_job_handle` is a
+borrowed opaque handle used only during synchronous creation; Wirelog stores
+the resolved byte limit and provenance in the governor, and never duplicates
+or closes the host handle. Missing, unsupported, or invalid handles clear the
+provider and leave automatic resolution advisory unless another finite source
+is available. `WIRELOG_MEMORY_BUDGET` remains higher precedence.
+
 An unlimited cgroup value, an absent optional source, and an unsupported
 platform are different observations. The resolver records which source was
 selected and whether the result is enforcing or advisory. Tests use injected

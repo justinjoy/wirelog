@@ -5570,6 +5570,20 @@ test_session_extension_snapshot_exe = executable(
 )
 test('session_extension_snapshot', test_session_extension_snapshot_exe)
 
+# Internal session creation options remain outside the installed API.  The
+# fake backend verifies options dispatch without requiring a Windows host.
+test_session_options_exe = executable(
+  'test_session_options',
+  files('test_session_options.c', '../wirelog/session.c',
+        '../wirelog/extension_registry.c'),
+  thread_src,
+  include_directories: [wirelog_inc, wirelog_src_inc],
+  c_args: ['-DWIRELOG_BUILDING'],
+  dependencies: [threads_dep],
+  install: false,
+)
+test('session_options', test_session_options_exe)
+
 test_extension_filter_exe = executable(
   'test_extension_filter',
   files('test_extension_filter.c'),
