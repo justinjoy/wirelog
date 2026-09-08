@@ -1520,19 +1520,14 @@ tdd_worker_subpass_fn(void *arg)
             }
 
             /* Enable target timestamps */
-            if (!r->timestamps && r->capacity > 0) {
-                r->timestamps = (col_delta_timestamp_t *)calloc(
-                    r->capacity, sizeof(col_delta_timestamp_t));
-                if (!r->timestamps) {
-                    free(delta->timestamps);
-                    col_rel_destroy(delta);
-                    ctx->rc = ENOMEM;
-                    free(snap);
-                    sess->tdd_subpass_active = saved_tdd_subpass;
-                    sess->tdd_outbound_only_active = saved_outbound_only;
-                    sess->diff_operators_active = saved_diff;
-                    TDD_WORKER_RETURN();
-                }
+            if (col_rel_enable_timestamps(r) != 0) {
+                col_rel_destroy(delta);
+                ctx->rc = ENOMEM;
+                free(snap);
+                sess->tdd_subpass_active = saved_tdd_subpass;
+                sess->tdd_outbound_only_active = saved_outbound_only;
+                sess->diff_operators_active = saved_diff;
+                TDD_WORKER_RETURN();
             }
 
             /* Issue #410, Commit 5: Queue-only transport.

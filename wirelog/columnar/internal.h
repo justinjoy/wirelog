@@ -346,6 +346,12 @@ typedef struct {
      * WL_MEM_SUBSYS_RELATION.  Set by operators that produce output
      * relations (e.g. col_op_join).  NULL for EDB and pool temporaries. */
     wl_mem_ledger_t *mem_ledger;
+    /* Retained EDB admission.  This is deliberately separate from the
+     * accounting ledger: the token represents the relation's live heap
+     * footprint and is only attached to session-owned input relations. */
+    wl_columnar_memory_governor_ref_t *memory_governor;
+    wl_columnar_memory_reservation_t retained_reservation;
+    uint64_t retained_reserved_bytes;
     /* Bytes currently charged to WL_MEM_SUBSYS_TIMESTAMP for this relation's
      * timestamps[] array (Issue #1380).  Maintained by
      * col_rel_ledger_reconcile()/col_rel_ledger_release(); always 0 when
@@ -1617,6 +1623,11 @@ void
 col_arrangement_pin_release(col_arrangement_pin_t *pin);
 int
 col_rel_alloc(col_rel_t **out, const char *name);
+int
+col_rel_attach_memory_governor(col_rel_t *rel,
+    wl_columnar_memory_governor_ref_t *memory_governor);
+int
+col_rel_enable_timestamps(col_rel_t *rel);
 
 /* ------------------------------------------------------------------------ */
 /* Compound-column layout (Issue #532 Task 2).                              */
