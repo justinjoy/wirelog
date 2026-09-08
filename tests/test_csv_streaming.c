@@ -210,8 +210,10 @@ test_admission_exact_fit(void)
     uint64_t admitted_bytes;
     if (write_fixture(path, sizeof(path), "wirelog_csv_streaming_exact.csv",
         "1,2\n") != 0
-        || csv_stream_admitted_bytes(2, 2, &admitted_bytes) != 0)
+        || csv_stream_admitted_bytes(2, 2, &admitted_bytes) != 0) {
+        remove(path);
         return 1;
+    }
 
     wirelog_column_type_t types[] = {
         WIRELOG_TYPE_INT64, WIRELOG_TYPE_INT64,

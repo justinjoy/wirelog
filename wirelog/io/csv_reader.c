@@ -424,15 +424,22 @@ csv_scratch_dispose(csv_scratch_t *s)
 static int
 csv_scratch_reserve(csv_scratch_t *s, size_t need)
 {
+    const size_t max_cap = WL_CSV_MAX_LINE + 1;
     if (need <= s->cap)
         return WL_CSV_OK;
+    if (need > max_cap)
+        return WL_CSV_ERR_LINE_TOO_LONG;
 
     size_t cap = s->cap ? s->cap : 256;
     while (cap < need) {
-        if (cap > (size_t)-1 / 2)
-            return WL_CSV_ERR_MEMORY;
+        if (cap > max_cap / 2) {
+            cap = max_cap;
+            break;
+        }
         cap *= 2;
     }
+    if (cap < need)
+        return WL_CSV_ERR_LINE_TOO_LONG;
 
     char *tmp = (char *)realloc(s->buf, cap);
     if (!tmp)
