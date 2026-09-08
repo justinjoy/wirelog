@@ -73,62 +73,9 @@ wl_columnar_relation_radix_bench_enabled(void)
 
 /* ---- COW helpers --------------------------------------------------------- */
 
-/*
- * col_rel_cow_unshare:
- * Copy-on-write: for each column where col_shared[c] is true, allocate a
- * private heap buffer (capacity new_cap rows), copy the existing nrows of
- * data, and clear col_shared[c].  Must be called before any in-place
- * mutation of the column buffers (append, sort, compact).
- *
- * If new_cap == 0 the existing capacity is reused.
- * Returns 0 on success, ENOMEM on allocation failure (relation unchanged).
- */
-static int
-col_rel_cow_unshare(col_rel_t *r, uint32_t new_cap)
-{
-    if (!r->col_shared)
-        return 0;
-    if (new_cap == 0)
-        new_cap = r->capacity ? r->capacity : COL_REL_INIT_CAP;
-    /* Allocate all private columns before changing ownership.  This keeps
-     * an allocation failure from leaving a partially privatized relation. */
-    int64_t **private_cols = (int64_t **)calloc(r->ncols,
-            sizeof(int64_t *));
-    if (!private_cols)
-        return ENOMEM;
-    for (uint32_t c = 0; c < r->ncols; c++) {
-        if (!r->col_shared[c])
-            continue;
-        private_cols[c] = (int64_t *)malloc((size_t)new_cap
-                * sizeof(int64_t));
-        if (!private_cols[c]) {
-            for (uint32_t i = 0; i < r->ncols; i++)
-                free(private_cols[i]);
-            free((void *)private_cols);
-            return ENOMEM;
-        }
-        memcpy(private_cols[c], r->columns[c],
-            (size_t)r->nrows * sizeof(int64_t));
-    }
-    for (uint32_t c = 0; c < r->ncols; c++) {
-        if (!private_cols[c])
-            continue;
-        r->columns[c] = private_cols[c];
-        r->col_shared[c] = false;
-    }
-    free((void *)private_cols);
-    /* If all columns are now owned, free the shared-flags array */
-    bool any_shared = false;
-    for (uint32_t c = 0; c < r->ncols; c++)
-        if (r->col_shared[c]) {
-            any_shared = true; break;
-        }
-    if (!any_shared) {
-        free(r->col_shared);
-        r->col_shared = NULL;
-    }
-    return 0;
-}
+static int col_rel_cow_unshare(col_rel_t *r, uint32_t new_cap);
+int col_rel_promote_arena_admitted(col_rel_t *r);
+static int col_rel_grow_owned_transition(col_rel_t *r, uint32_t new_cap);
 
 uint64_t
 col_rel_owned_ledger_bytes(const col_rel_t *r)
@@ -273,6 +220,187 @@ col_rel_publish_retained_reservation(col_rel_t *r,
         (void)wl_columnar_memory_release(&previous);
     r->retained_reserved_bytes = bytes;
     return 0;
+}
+
+/* Reserve the complete private shape of an ownership transition.  The
+ * ordinary retained path deliberately rejects shared and arena-backed
+ * relations because those buffers are not yet heap-owned; transition paths
+ * use this helper instead and charge the replacement only once. */
+static int
+col_rel_reserve_transition(const col_rel_t *r, uint32_t capacity,
+    wl_columnar_memory_reservation_t *pending, uint64_t *bytes_out)
+{
+    uint64_t bytes;
+    wl_columnar_memory_admission_status_t status;
+
+    if (!r || !pending || !bytes_out)
+        return -1;
+    wl_columnar_memory_reservation_init(pending);
+    if (!col_rel_retained_bytes(r->ncols, capacity,
+        r->timestamps != NULL, &bytes))
+        return -1;
+    *bytes_out = bytes;
+    if (!r->memory_governor || bytes == 0 ||
+        bytes <= r->retained_reserved_bytes)
+        return 0;
+    status = wl_columnar_memory_reserve_growth(
+        wl_columnar_memory_governor_ref_get(r->memory_governor),
+        r->retained_reserved_bytes, bytes, pending);
+    if (status != WL_COLUMNAR_MEMORY_ADMISSION_OK
+        && status != WL_COLUMNAR_MEMORY_ADMISSION_ADVISORY)
+        return -1;
+    return 1;
+}
+
+/* Migrate an arena relation, or grow a relation while it still contains
+ * borrowed/arena storage.  Every replacement buffer and timestamp array is
+ * prepared before the relation is changed, so admission or allocation
+ * failure leaves the old ownership and reservation untouched. */
+static int
+col_rel_grow_owned_transition(col_rel_t *r, uint32_t new_cap)
+{
+    wl_columnar_memory_reservation_t pending;
+    int pending_rc;
+    uint64_t new_bytes;
+    int64_t **new_columns = NULL;
+    col_delta_timestamp_t *new_timestamps = NULL;
+    int64_t **old_columns;
+    col_delta_timestamp_t *old_timestamps;
+    bool *old_shared_flags;
+    bool old_arena;
+    uint64_t ledger_before;
+
+    if (!r || !r->columns || r->ncols == 0 || new_cap < r->nrows)
+        return EINVAL;
+    pending_rc = col_rel_reserve_transition(r, new_cap, &pending,
+            &new_bytes);
+    if (pending_rc < 0)
+        return ENOMEM;
+    new_columns = col_columns_alloc(r->ncols, new_cap);
+    if (!new_columns)
+        goto fail;
+    for (uint32_t c = 0; c < r->ncols; c++)
+        memcpy(new_columns[c], r->columns[c],
+            (size_t)r->nrows * sizeof(int64_t));
+    if (r->timestamps) {
+        new_timestamps = (col_delta_timestamp_t *)malloc(
+            (size_t)new_cap * sizeof(*new_timestamps));
+        if (!new_timestamps)
+            goto fail;
+        memcpy(new_timestamps, r->timestamps,
+            (size_t)r->nrows * sizeof(*new_timestamps));
+    }
+    if (pending_rc > 0
+        && col_rel_publish_retained_reservation(r, &pending, new_bytes) != 0)
+        goto fail;
+
+    old_columns = r->columns;
+    old_timestamps = r->timestamps;
+    old_shared_flags = r->col_shared;
+    old_arena = r->arena_owned;
+    ledger_before = col_rel_owned_ledger_bytes(r);
+    r->columns = new_columns;
+    r->timestamps = new_timestamps;
+    r->capacity = new_cap;
+    r->arena_owned = false;
+    r->col_shared = NULL;
+    if (old_arena) {
+        free((void *)old_columns);
+    } else {
+        for (uint32_t c = 0; c < r->ncols; c++)
+            if (!old_shared_flags || !old_shared_flags[c])
+                free(old_columns[c]);
+        free((void *)old_columns);
+    }
+    free(old_shared_flags);
+    free(old_timestamps);
+    col_rel_ledger_reconcile(r, ledger_before);
+    return 0;
+
+fail:
+    col_rel_reservation_rollback(&pending);
+    col_columns_free(new_columns, r->ncols);
+    free(new_timestamps);
+    return ENOMEM;
+}
+
+int
+col_rel_promote_arena_admitted(col_rel_t *r)
+{
+    if (!r || !r->arena_owned)
+        return 0;
+    return col_rel_grow_owned_transition(r, r->capacity);
+}
+
+/* Copy-on-write at the current capacity.  Shared buffers are never freed;
+ * owned columns remain in place, and the reservation is published only once
+ * every private replacement has been copied successfully. */
+static int
+col_rel_cow_unshare(col_rel_t *r, uint32_t new_cap)
+{
+    wl_columnar_memory_reservation_t pending;
+    int pending_rc;
+    uint64_t new_bytes;
+    int64_t **private_cols = NULL;
+    uint32_t capacity;
+    uint64_t ledger_before;
+
+    if (!r || !r->col_shared)
+        return 0;
+    capacity = new_cap ? new_cap : (r->capacity ? r->capacity
+                                                    : COL_REL_INIT_CAP);
+    if (capacity > r->capacity)
+        return col_rel_grow_owned_transition(r, capacity);
+    pending_rc = col_rel_reserve_transition(r, capacity, &pending,
+            &new_bytes);
+    if (pending_rc < 0)
+        return ENOMEM;
+    private_cols = (int64_t **)calloc(r->ncols, sizeof(*private_cols));
+    if (!private_cols)
+        goto fail;
+    for (uint32_t c = 0; c < r->ncols; c++) {
+        if (!r->col_shared[c])
+            continue;
+        private_cols[c] = (int64_t *)malloc((size_t)capacity
+                * sizeof(int64_t));
+        if (!private_cols[c])
+            goto fail;
+        memcpy(private_cols[c], r->columns[c],
+            (size_t)r->nrows * sizeof(int64_t));
+    }
+    if (pending_rc > 0
+        && col_rel_publish_retained_reservation(r, &pending, new_bytes) != 0)
+        goto fail;
+    ledger_before = col_rel_owned_ledger_bytes(r);
+    for (uint32_t c = 0; c < r->ncols; c++) {
+        if (!private_cols[c])
+            continue;
+        r->columns[c] = private_cols[c];
+        r->col_shared[c] = false;
+        private_cols[c] = NULL;
+    }
+    free(private_cols);
+    private_cols = NULL;
+    {
+        bool any_shared = false;
+        for (uint32_t c = 0; c < r->ncols; c++)
+            any_shared = any_shared || r->col_shared[c];
+        if (!any_shared) {
+            free(r->col_shared);
+            r->col_shared = NULL;
+        }
+    }
+    col_rel_ledger_reconcile(r, ledger_before);
+    return 0;
+
+fail:
+    col_rel_reservation_rollback(&pending);
+    if (private_cols) {
+        for (uint32_t c = 0; c < r->ncols; c++)
+            free(private_cols[c]);
+        free(private_cols);
+    }
+    return ENOMEM;
 }
 
 int
@@ -935,16 +1063,15 @@ col_rel_append_row(col_rel_t *r, const int64_t *row)
         uint32_t new_cap = r->capacity ? r->capacity * 2 : COL_REL_INIT_CAP;
         if (new_cap <= r->capacity) /* overflow guard */
             return ENOMEM;
-        if (r->memory_governor && !r->arena_owned && !r->col_shared) {
+        if (r->col_shared || r->arena_owned) {
+            /* Ownership transitions stage columns and timestamps together;
+             * admission happens before any source buffer is copied. */
+            if (col_rel_grow_owned_transition(r, new_cap) != 0)
+                return ENOMEM;
+        } else if (r->memory_governor) {
             if (col_rel_grow_heap_admitted(r, new_cap) != 0)
                 return ENOMEM;
         } else {
-            /* COW: unshare shared columns before in-place growth (Issue #396) */
-            if (r->col_shared) {
-                int cow_rc = col_rel_cow_unshare(r, 0);
-                if (cow_rc != 0)
-                    return cow_rc;
-            }
             /* Grow timestamps first (if tracking) so we can roll back cleanly
              * on a subsequent data realloc failure. */
             if (r->timestamps) {
@@ -957,21 +1084,7 @@ col_rel_append_row(col_rel_t *r, const int64_t *row)
                 }
                 r->timestamps = new_ts;
             }
-            if (r->arena_owned) {
-                /* Arena data cannot be realloc'd; migrate to heap */
-                int64_t **new_cols = col_columns_alloc(r->ncols, new_cap);
-                if (!new_cols) {
-                    col_rel_ledger_reconcile(r, ledger_before);
-                    return ENOMEM;
-                }
-                for (uint32_t c = 0; c < r->ncols; c++)
-                    memcpy(new_cols[c], r->columns[c],
-                        sizeof(int64_t) * r->nrows);
-                /* Don't free arena columns; just free the columns array */
-                free((void *)r->columns);
-                r->columns = new_cols;
-                r->arena_owned = false;
-            } else if (r->columns) {
+            if (r->columns) {
                 if (col_columns_realloc_atomic(r->columns, r->ncols,
                     r->capacity,
                     new_cap) != 0) {
@@ -989,6 +1102,10 @@ col_rel_append_row(col_rel_t *r, const int64_t *row)
             col_rel_ledger_reconcile(r, ledger_before);
         }
     }
+    /* A shared view can still have spare capacity.  Privatize it before the
+     * in-place row write even when no capacity growth is needed. */
+    if (r->col_shared && col_rel_cow_unshare(r, 0) != 0)
+        return ENOMEM;
     if (r->timestamps)
         memset(&r->timestamps[r->nrows], 0, sizeof(col_delta_timestamp_t));
     if (col_rel_row_copy_in(r, r->nrows, row) != 0)
@@ -1068,6 +1185,7 @@ col_rel_append_all(col_rel_t *dst, const col_rel_t *src, wl_arena_t *arena)
     /* Ensure dst has sufficient capacity */
     if (new_nrows > dst->capacity) {
         uint64_t ledger_before = col_rel_owned_ledger_bytes(dst);
+        bool transitioned = false;
         uint32_t new_cap = dst->capacity ? dst->capacity * 2 : COL_REL_INIT_CAP;
         while (new_cap < new_nrows) {
             uint32_t next_cap = new_cap * 2;
@@ -1076,84 +1194,95 @@ col_rel_append_all(col_rel_t *dst, const col_rel_t *src, wl_arena_t *arena)
             new_cap = next_cap;
         }
 
-        /* COW: unshare shared columns before in-place growth (Issue #396) */
-        if (dst->col_shared) {
-            int cow_rc = col_rel_cow_unshare(dst, 0);
-            if (cow_rc != 0)
-                return cow_rc;
-        }
-
-        /* Grow timestamps first (if tracking) */
-        if (dst->timestamps) {
-            col_delta_timestamp_t *new_ts = (col_delta_timestamp_t *)realloc(
-                dst->timestamps, new_cap * sizeof(col_delta_timestamp_t));
-            if (!new_ts) {
-                col_rel_ledger_reconcile(dst, ledger_before);
+        if (dst->arena_owned && !dst->col_shared && !dst->memory_governor
+            && arena) {
+            /* An unmanaged arena relation still belongs to its caller's
+             * arena.  Grow its columns in that arena and retain the ownership
+             * flag; admission-based heap promotion is only for retained
+             * relations (or for the legacy no-arena fallback below). */
+            int64_t **new_columns = (int64_t **)calloc(dst->ncols,
+                    sizeof(*new_columns));
+            col_delta_timestamp_t *new_timestamps = NULL;
+            if (!new_columns)
                 return ENOMEM;
+            for (uint32_t c = 0; c < dst->ncols; c++) {
+                new_columns[c] = (int64_t *)wl_arena_alloc(arena,
+                        (size_t)new_cap * sizeof(int64_t));
+                if (!new_columns[c]) {
+                    free((void *)new_columns);
+                    return ENOMEM;
+                }
+                memcpy(new_columns[c], dst->columns[c],
+                    (size_t)dst->nrows * sizeof(int64_t));
             }
-            dst->timestamps = new_ts;
-        }
-
-        if (dst->arena_owned) {
-            /* Arena data: allocate from same arena, preserve arena_owned flag */
-            if (arena) {
-                int64_t **new_cols
-                    = (int64_t **)calloc(dst->ncols, sizeof(int64_t *));
-                if (!new_cols) {
-                    col_rel_ledger_reconcile(dst, ledger_before);
+            if (dst->timestamps) {
+                new_timestamps = (col_delta_timestamp_t *)malloc(
+                    (size_t)new_cap * sizeof(*new_timestamps));
+                if (!new_timestamps) {
+                    free((void *)new_columns);
                     return ENOMEM;
                 }
-                bool ok = true;
-                for (uint32_t c = 0; c < dst->ncols; c++) {
-                    new_cols[c] = (int64_t *)wl_arena_alloc(arena,
-                            (size_t)new_cap * sizeof(int64_t));
-                    if (!new_cols[c]) {
-                        ok = false;
-                        break;
-                    }
-                    memcpy(new_cols[c], dst->columns[c],
-                        sizeof(int64_t) * dst->nrows);
-                }
-                if (!ok) {
-                    /* Arena alloc failed; don't free arena columns */
-                    free((void *)new_cols);
-                    col_rel_ledger_reconcile(dst, ledger_before);
-                    return ENOMEM;
-                }
-                free((void *)dst->columns); /* free old columns array only */
-                dst->columns = new_cols;
-            } else {
-                /* Fallback to heap if arena unavailable */
-                int64_t **new_cols
-                    = col_columns_alloc(dst->ncols, new_cap);
-                if (!new_cols) {
-                    col_rel_ledger_reconcile(dst, ledger_before);
-                    return ENOMEM;
-                }
-                for (uint32_t c = 0; c < dst->ncols; c++)
-                    memcpy(new_cols[c], dst->columns[c],
-                        sizeof(int64_t) * dst->nrows);
-                free((void *)dst->columns);
-                dst->columns = new_cols;
-                dst->arena_owned = false;
+                memcpy(new_timestamps, dst->timestamps,
+                    (size_t)dst->nrows * sizeof(*new_timestamps));
             }
+            free((void *)dst->columns);
+            free(dst->timestamps);
+            dst->columns = new_columns;
+            dst->timestamps = new_timestamps;
+            dst->capacity = new_cap;
+            /* Arena columns are not charged to RELATION, but timestamps are
+             * heap-backed and may have grown.  Keep the attached ledger in
+             * sync even though this ownership-preserving path is marked as a
+             * transition below. */
+            col_rel_ledger_reconcile(dst, ledger_before);
+            transitioned = true;
+        } else if (dst->col_shared || dst->arena_owned) {
+            if (col_rel_grow_owned_transition(dst, new_cap) != 0)
+                return ENOMEM;
+            transitioned = true;
+        } else if (dst->memory_governor) {
+            if (col_rel_grow_heap_admitted(dst, new_cap) != 0)
+                return ENOMEM;
         } else if (dst->columns) {
+            /* Grow timestamps only after all ownership transitions have been
+             * ruled out; the transition helper stages them transactionally. */
+            if (dst->timestamps) {
+                col_delta_timestamp_t *new_ts =
+                    (col_delta_timestamp_t *)realloc(dst->timestamps,
+                        new_cap * sizeof(col_delta_timestamp_t));
+                if (!new_ts)
+                    return ENOMEM;
+                dst->timestamps = new_ts;
+            }
             if (col_columns_realloc_atomic(dst->columns, dst->ncols,
                 dst->capacity,
                 new_cap) != 0) {
-                col_rel_ledger_reconcile(dst, ledger_before);
                 return ENOMEM;
             }
         } else {
+            if (dst->timestamps) {
+                col_delta_timestamp_t *new_ts =
+                    (col_delta_timestamp_t *)realloc(dst->timestamps,
+                        new_cap * sizeof(col_delta_timestamp_t));
+                if (!new_ts)
+                    return ENOMEM;
+                dst->timestamps = new_ts;
+            }
             dst->columns = col_columns_alloc(dst->ncols, new_cap);
             if (!dst->columns) {
-                col_rel_ledger_reconcile(dst, ledger_before);
                 return ENOMEM;
             }
         }
-        dst->capacity = new_cap;
-        col_rel_ledger_reconcile(dst, ledger_before);
+        if (!transitioned) {
+            dst->capacity = new_cap;
+            col_rel_ledger_reconcile(dst, ledger_before);
+        }
     }
+
+    /* Bulk append also mutates spare capacity, so a shared view must be
+     * privatized even when the destination does not grow. */
+    if (dst->col_shared && col_rel_cow_unshare(dst, 0) != 0)
+        return ENOMEM;
 
     /* Install source metadata only after all potentially failing destination
      * growth has completed.  A rejected append therefore cannot change an
