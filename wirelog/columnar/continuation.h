@@ -64,11 +64,12 @@ typedef struct {
     wl_columnar_continuation_cancel_fn cancel;
 } wl_columnar_continuation_producer_t;
 
-/* begin/append/abort are synchronous.  reserve must account for all bytes
- * that become visible at append time (payload, metadata and sink scratch).
+/* begin/append/abort are synchronous.  abort must release the reservation
+ * made by the current begin/reserve transaction.  reserve must account for
+ * all bytes that become visible at append time (payload, metadata and sink scratch).
  * commit reports whether its side effects became durable even when it returns
- * COMMIT_FAILURE, allowing the continuation to avoid replaying a committed
- * batch. */
+ * COMMIT_FAILURE; the continuation still requires an unambiguous OK commit
+ * before advancing its cursor. */
 typedef wl_columnar_continuation_status_t
 (*wl_columnar_continuation_sink_begin_fn)(
     void *context, const wl_columnar_continuation_batch_t *batch);
