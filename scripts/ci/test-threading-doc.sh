@@ -22,6 +22,11 @@ run_checker() {
         WIRELOG_THREADING_EXPECTED_ROWS=3 "$BASH" "$checker"
 }
 
+run_checker_rows() {
+    WIRELOG_THREADING_DOC_ROOT="$fixture" \
+        WIRELOG_THREADING_EXPECTED_ROWS="$1" "$BASH" "$checker"
+}
+
 expect_failure() {
     local label=$1
     shift
@@ -99,6 +104,48 @@ cat >"$fixture/docs/THREADING.md" <<'EOF'
 EOF
 WIRELOG_THREADING_EXPECTED_ROWS=1 WIRELOG_THREADING_DOC_ROOT="$fixture" \
     "$BASH" "$checker" >/dev/null
+
+# The order of the four per-row checks is load-bearing, and until #1462 nothing
+# pinned it: the duplicate fixture above passes the uniqueness and operation
+# checks wherever the duplicate check sits, so a reordered implementation still
+# satisfied it.  Each row below is a duplicate that ALSO fails an earlier check,
+# so the earlier diagnostic is reported only if the order is right.
+make_fixture
+printf '%s\n' \
+    'int one(void) {' \
+    '    atomic_load_explicit(&value, memory_order_relaxed);' \
+    '}' >"$fixture/wirelog/foo.c"
+cat >"$fixture/docs/THREADING.md" <<'EOF'
+| Anchor (`file:function[#N]`) | Field | Op | Order | Justification |
+|---|---|---|---|---|
+| `foo.c:one` | value | `atomic_load_explicit` | relaxed | test |
+| `foo.c:one` | value | `not_atomic` | relaxed | test |
+EOF
+expect_failure 'has invalid operation' run_checker_rows 2
+
+sed 's/`not_atomic`/`atomic_store_explicit`/' "$fixture/docs/THREADING.md" \
+    >"$fixture/docs/THREADING.md.tmp" && mv "$fixture/docs/THREADING.md.tmp" "$fixture/docs/THREADING.md"
+expect_failure 'resolves to atomic_load_explicit, documented atomic_store_explicit' \
+    run_checker_rows 2
+
+# A documented subset must not pass merely because every documented row
+# resolves.  This is the failure mode the suite never exercised, and it is the
+# one that depends on how the audit set is accumulated.
+make_fixture
+printf '%s\n' \
+    'int one(void) {' \
+    '    atomic_load_explicit(&value, memory_order_relaxed);' \
+    '}' \
+    'int two(void) {' \
+    '    atomic_load_explicit(&value, memory_order_relaxed);' \
+    '}' >"$fixture/wirelog/foo.c"
+cat >"$fixture/docs/THREADING.md" <<'EOF'
+| Anchor (`file:function[#N]`) | Field | Op | Order | Justification |
+|---|---|---|---|---|
+| `foo.c:one` | value | `atomic_load_explicit` | relaxed | test |
+EOF
+expect_failure 'audit citations do not cover the exact atomic-site inventory' \
+    run_checker_rows 1
 
 # #1320: a prose citation naming a file that does not exist must be REPORTED,
 # not abort the checker. On bash 3.2 -- which the macOS CI runners ship, and

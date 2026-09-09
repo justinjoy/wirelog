@@ -26,33 +26,64 @@ expected_rows="${WIRELOG_THREADING_EXPECTED_ROWS:-91}"
 }
 
 audit="$tmp_dir/audit"
-: >"$tmp_dir/keys"
-: >"$audit"
-while IFS=$'\t' read -r anchor operation; do
-    [[ "$operation" =~ ^atomic_[A-Za-z0-9_]+$ ]] || {
-        echo "check-threading-doc: FAIL: $anchor has invalid operation '$operation'" >&2
+# One awk pass replaces a per-row shell loop that ran awk, sed, wc, cut and grep
+# for every audit row -- nine processes per row counting the command
+# substitutions' own subshells, about 820 in all for the 91 rows.  Process
+# creation is cheap on Linux and expensive on Windows, so that loop was ~85% of
+# this gate's runtime and it grew with the audit inventory: the gate timed out
+# at 30.09s against meson's 30s default on the Windows msvc runner (#1462).
+# awk brings its own associative arrays, so the anchor and duplicate maps need
+# no bash 4 `declare -A` and the bash 3.2 floor this script targets is
+# unaffected.  The four checks below are emitted in the same order as the loop
+# they replace and stop at the first offending row, so the diagnostic text and
+# the exit behaviour are unchanged.  The order decides which diagnostic a row
+# failing more than one check reports, not whether it fails; the duplicate
+# check's position is pinned by scripts/ci/test-threading-doc.sh with two
+# duplicate rows, one that is also invalid and one that is merely documented
+# wrong.
+#
+# `FILENAME == ARGV[1]` rather than `NR == FNR`: an empty inventory would make
+# the first row line look like an inventory line.  Comparing against ARGV[1]
+# rather than a -v variable also avoids awk's escape processing on the assigned
+# value, which would mangle a $TMPDIR containing backslashes.
+#
+# Diagnostics go to /dev/stderr.  gawk, mawk and BWK awk all special-case that
+# path and write to the inherited fd 2 rather than opening the file, so the
+# regular-file stderr redirection the selftest uses is appended to, not
+# truncated.
+awk -F '\t' '
+FILENAME == ARGV[1] {
+    count[$5]++
+    resolved[$5] = $4
+    site[$5] = $0
+    next
+}
+{
+    anchor = $1
+    operation = $2
+    if (operation !~ /^atomic_[A-Za-z0-9_]+$/) {
+        printf("check-threading-doc: FAIL: %s has invalid operation \047%s\047\n",
+            anchor, operation) > "/dev/stderr"
         exit 1
     }
-    matches=$(awk -F '\t' -v anchor="$anchor" '$5 == anchor' \
-        "$tmp_dir/inventory")
-    count=$(printf '%s\n' "$matches" | sed '/^$/d' | wc -l)
-    [ "$count" -eq 1 ] || {
-        echo "check-threading-doc: FAIL: $anchor does not resolve uniquely to $operation" >&2
+    if (count[anchor] != 1) {
+        printf("check-threading-doc: FAIL: %s does not resolve uniquely to %s\n",
+            anchor, operation) > "/dev/stderr"
         exit 1
     }
-    resolved_operation=$(printf '%s\n' "$matches" | cut -f4)
-    [ "$resolved_operation" = "$operation" ] || {
-        echo "check-threading-doc: FAIL: $anchor resolves to $resolved_operation, documented $operation" >&2
+    if (resolved[anchor] != operation) {
+        printf("check-threading-doc: FAIL: %s resolves to %s, documented %s\n",
+            anchor, resolved[anchor], operation) > "/dev/stderr"
         exit 1
     }
-    key="$anchor"
-    if grep -Fqx "$key" "$tmp_dir/keys"; then
-        echo "check-threading-doc: FAIL: duplicate audit anchor $key" >&2
+    if (anchor in seen) {
+        printf("check-threading-doc: FAIL: duplicate audit anchor %s\n",
+            anchor) > "/dev/stderr"
         exit 1
-    fi
-    printf '%s\n' "$key" >>"$tmp_dir/keys"
-    printf '%s\n' "$matches" >>"$audit"
-done <"$rows"
+    }
+    seen[anchor] = 1
+    print site[anchor]
+}' "$tmp_dir/inventory" "$rows" >"$audit" || exit 1
 
 cut -f1,2,4 "$tmp_dir/inventory" | sort >"$tmp_dir/source-sites"
 cut -f1,2,4 "$audit" | sort >"$tmp_dir/audit-sites"
