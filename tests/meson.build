@@ -663,10 +663,12 @@ if not is_windows
   # neither covered nor explicitly exempted with a reason.
   test('gate_skip_exit_codes',
        find_program(meson.project_source_root() / 'scripts/ci/test-gate-skip-exit-codes.sh'),
-       suite: 'abi')
+       suite: 'abi',
+       timeout: 120)
   test('log_abi_header_not_public',
        find_program(meson.project_source_root() / 'scripts/check_log_header_not_public.sh'),
-       suite: 'abi')
+       suite: 'abi',
+       timeout: 120)
 
   # Issue #1302: the two claims are registered separately.  A provenance skip
   # (stripped or non-debug build, or a BSD nm with no --line-numbers) must not
@@ -675,27 +677,32 @@ if not is_windows
   test('log_abi_no_testhook_in_libwirelog',
        find_program(meson.project_source_root() / 'scripts/ci/check-no-testhook-in-libwirelog.sh'),
        args: ['--check=leak', meson.project_build_root()],
-       suite: 'abi')
+       suite: 'abi',
+       timeout: 120)
   test('log_abi_testhook_provenance',
        find_program(meson.project_source_root() / 'scripts/ci/check-no-testhook-in-libwirelog.sh'),
        args: ['--check=provenance', meson.project_build_root()],
-       suite: 'abi')
+       suite: 'abi',
+       timeout: 120)
   # Its awk predicate was unsatisfiable, so the provenance claim above had never
   # once been evaluated; this drives both checks from stubbed nm output.
   test('testhook_gate_selftest',
        find_program(meson.project_source_root() / 'scripts/ci/test-check-no-testhook.sh'),
        args: [meson.project_build_root()],
-       suite: 'abi')
+       suite: 'abi',
+       timeout: 120)
   test('wirelog_easy_abi_opts_symbol',
        find_program(meson.project_source_root() / 'scripts/ci/check-wl-easy-opts-symbol.sh'),
        args: [meson.project_build_root()],
-       suite: 'abi')
+       suite: 'abi',
+       timeout: 120)
   # Issue #717 / #703: wirelog/wirelog-advanced.h must not leak any
   # internal header (session.h, backend.h, exec_plan*.h, intern.h,
   # session_facts.h, wirelog-internal.h) into the installed surface.
   test('advanced_abi_header',
        find_program(meson.project_source_root() / 'scripts/ci/check-advanced-header.sh'),
-       suite: 'abi')
+       suite: 'abi',
+       timeout: 120)
 endif
 
 # Issue #688 / #704: meson.build version, the generated wirelog-version.h,
@@ -784,6 +791,25 @@ test('changelog_format', py3,
 # the same handle so platforms without bash (e.g. some Windows
 # runners) silently skip both gates instead of failing
 # inconsistently.
+#
+# Issue #1462: every shell-script gate in suite 'abi' carries an explicit
+# timeout, here and in the `if not is_windows` block above.  Without one they
+# inherit meson's 30s default, which had become an unowned performance budget
+# rather than a hang detector: these gates are process-spawn bound, Windows
+# process creation costs far more than Linux, and threading_doc timed out at
+# 30.09s on the Windows msvc runner while downstream_matrix_contract sat at
+# 27.24s in the same job.  A timeout is a hang detector, so these are set well
+# clear of the worst measured runtime and are deliberately useless for
+# detecting performance drift.  Nothing measures shell-gate wall time today;
+# that gap is tracked in #1462 and is not what this kwarg is for.
+#
+# Every shell gate in the suite carries a timeout, but not all carry the same
+# one: log_abi_compile_erasure keeps 180 because it rebuilds libwirelog, and
+# doop_validation keeps the 90 chosen under #1410.  The rule is that the value
+# is explicit and justified, not that it is uniform.  Gates that never run on
+# Windows are included anyway, so a reviewer checks the rule once instead of
+# re-deriving per-gate platform exposure -- which is how the 30s default
+# became invisible in the first place.
 sh = find_program('bash', required: false)
 
 # Issue #772: release-template gate.  Asserts that the GitHub Releases
@@ -807,7 +833,8 @@ if sh.found()
 
   test('release_template', sh,
        args: [meson.project_source_root() / 'scripts/ci/check-release-template.sh'],
-       suite: 'abi')
+       suite: 'abi',
+       timeout: 120)
 endif
 
 # Issue #1288: the gate above exited 0 on all four of its skip paths, so meson
@@ -819,7 +846,8 @@ if sh.found()
   test('release_template_selftest', sh,
        args: [meson.project_source_root() /
               'scripts/ci/test-check-release-template.sh'],
-       suite: 'abi')
+       suite: 'abi',
+       timeout: 120)
 endif
 
 # Issue #1312: make-tarball.sh read the project version through a pipe whose
@@ -830,7 +858,8 @@ endif
 if sh.found()
   test('version_extraction', sh,
        args: [meson.project_source_root() / 'scripts/ci/test-version-extraction.sh'],
-       suite: 'abi')
+       suite: 'abi',
+       timeout: 120)
 endif
 
 # Issue #1290: the release job attested the archive and downloaded the bundle
@@ -842,7 +871,8 @@ endif
 if sh.found()
   test('attestation_download', sh,
        args: [meson.project_source_root() / 'scripts/ci/test-attestation-download.sh'],
-       suite: 'abi')
+       suite: 'abi',
+       timeout: 120)
 endif
 
 # Issue #1287: cosign matches --certificate-identity-regexp unanchored, and the
@@ -854,7 +884,8 @@ endif
 if sh.found()
   test('identity_pattern', sh,
        args: [meson.project_source_root() / 'scripts/ci/test-identity-pattern.sh'],
-       suite: 'abi')
+       suite: 'abi',
+       timeout: 120)
 endif
 
 # Issue #747 B18: RC changelog selftest for changelog-freeze checker.
@@ -863,7 +894,8 @@ endif
 if sh.found()
   test('changelog_rc_selftest', sh,
        args: [meson.project_source_root() / 'scripts/ci/test-check-changelog-rc.sh'],
-       suite: 'abi')
+       suite: 'abi',
+       timeout: 120)
 endif
 
 # Issue #1295: make-tarball.sh and verify-release.sh had no coverage at all.
@@ -880,7 +912,8 @@ endif
 if sh.found()
   test('release_roundtrip', sh,
        args: [meson.project_source_root() / 'scripts/ci/test-release-roundtrip.sh'],
-       suite: 'abi')
+       suite: 'abi',
+       timeout: 120)
 endif
 
 # Issue #734/#1173: docs/THREADING.md atomics audit rows must resolve to
@@ -889,10 +922,12 @@ endif
 if sh.found()
   test('threading_doc', sh,
        args: [meson.project_source_root() / 'scripts/ci/check-threading-doc.sh'],
-       suite: 'abi')
+       suite: 'abi',
+       timeout: 120)
   test('threading_doc_selftest', sh,
        args: [meson.project_source_root() / 'scripts/ci/test-threading-doc.sh'],
-       suite: 'abi')
+       suite: 'abi',
+       timeout: 120)
 endif
 
 # Issue #715: release dependency wraps must be reproducible.  Git wraps
@@ -901,7 +936,8 @@ endif
 if sh.found()
   test('wrap_revisions', sh,
        args: [meson.project_source_root() / 'scripts/ci/check-wrap-revisions.sh'],
-       suite: 'abi')
+       suite: 'abi',
+       timeout: 120)
 endif
 
 # Issue #1343: the two wrap-reading gates must agree on what a section header
@@ -913,7 +949,8 @@ if sh.found()
   test('wrap_section_syntax', sh,
        args: [meson.project_source_root() / 'scripts/ci/test-wrap-section-syntax.sh',
               meson.project_source_root()],
-       suite: 'abi')
+       suite: 'abi',
+       timeout: 120)
 endif
 
 # Issue #737: forbid new unanchored "Phase NX" labels in wirelog/ source.
@@ -924,7 +961,8 @@ endif
 if sh.found()
   test('phase_labels', sh,
        args: [meson.project_source_root() / 'scripts/ci/check-phase-labels.sh'],
-       suite: 'abi')
+       suite: 'abi',
+       timeout: 120)
 endif
 
 # Issue #742: every `Status: Future` entry in docs/SEMANTICS.md must
@@ -934,7 +972,8 @@ endif
 if sh.found()
   test('semantics_future', sh,
        args: [meson.project_source_root() / 'scripts/ci/check-semantics-future.sh'],
-       suite: 'abi')
+       suite: 'abi',
+       timeout: 120)
 endif
 
 # Issue #952 (follow-up to #950): the DOOP .facts catalogue is written down
@@ -947,7 +986,8 @@ if sh.found()
   test('doop_catalogue', sh,
        args: [meson.project_source_root() / 'scripts/ci/check-doop-catalogue.sh',
               meson.project_source_root()],
-       suite: 'abi')
+       suite: 'abi',
+       timeout: 120)
 endif
 
 # Issue #1163: the GA downstream matrix must contain exactly six pinned
@@ -956,7 +996,8 @@ if sh.found()
   test('downstream_matrix_contract', sh,
        args: [meson.project_source_root() / 'scripts/ci/test-downstream-matrix.sh',
               meson.project_source_root()],
-       suite: 'abi')
+       suite: 'abi',
+       timeout: 120)
 endif
 
 # Issue #1303: the WIRELOG_*_REQUIRED escalation. Half of this asserts gate
@@ -968,7 +1009,8 @@ if sh.found()
   test('required_gates', sh,
        args: [meson.project_source_root() / 'scripts/ci/test-required-gates.sh',
               meson.project_source_root()],
-       suite: 'abi')
+       suite: 'abi',
+       timeout: 120)
 endif
 
 # Issue #750: the release workflow's signing and publication steps and the
@@ -980,7 +1022,8 @@ if sh.found()
   test('release_signing_contract', sh,
        args: [meson.project_source_root() / 'scripts/ci/test-release-signing.sh',
               meson.project_source_root()],
-       suite: 'abi')
+       suite: 'abi',
+       timeout: 120)
 endif
 
 # Issue #913: keep the weighted/semiring design proposal explicit about its
@@ -1011,13 +1054,15 @@ if sh.found()
   test('abi_symbols', sh,
        args: [meson.project_source_root() / 'scripts/ci/check-abi-symbols.sh',
               meson.project_build_root()],
-       suite: 'abi')
+       suite: 'abi',
+       timeout: 120)
 endif
 
 if host_machine.system() == 'linux' and sh.found()
   test('abi_symbols_locale', sh,
        args: [meson.project_source_root() / 'scripts/ci/check-abi-symbols-locale.sh'],
-       suite: 'abi')
+       suite: 'abi',
+       timeout: 120)
 endif
 
 # Issue #1291: sbom/snapshot.txt is a committed artifact, so its order must not
@@ -1077,7 +1122,8 @@ if sh.found()
   test('abi_manifest', sh,
        args: [meson.project_source_root() / 'scripts/ci/check-abi-manifest.sh',
               meson.project_build_root()],
-       suite: 'abi')
+       suite: 'abi',
+       timeout: 120)
 endif
 
 # Issue #744: SBOM snapshot gate.  Diffs the detected dependency list
@@ -1121,7 +1167,8 @@ endif
 if host_machine.system() == 'linux' and sh.found()
   test('doop_manifest', sh,
        args: [meson.project_source_root() / 'scripts/ci/test-doop-manifest.sh'],
-       suite: 'abi')
+       suite: 'abi',
+       timeout: 120)
 endif
 
 # Issue #1161: the W=8 perf gate consumes the schema 2 downstream DOOP row
@@ -1132,7 +1179,8 @@ if host_machine.system() == 'linux' and sh.found()
   test('doop_perf_gate_oracle', sh,
        args: [meson.project_source_root() / 'scripts/ci/test-doop-perf-gate-oracle.sh',
               meson.project_source_root()],
-       suite: 'abi')
+       suite: 'abi',
+       timeout: 120)
 endif
 
 # Issue #1410: calibration repetition progress, bounded process-group cleanup,
@@ -1151,7 +1199,8 @@ endif
 if host_machine.system() == 'linux' and sh.found()
   test('manifest_collation', sh,
        args: [meson.project_source_root() / 'scripts/ci/check-manifest-collation.sh'],
-       suite: 'abi')
+       suite: 'abi',
+       timeout: 120)
 endif
 
 # Issue #1100: clang-tidy ratchet (suite 'tidy').  No CI job has run
@@ -1964,7 +2013,8 @@ test('crdt_correctness_full', test_crdt_perf_gate_exe,
 if host_machine.system() == 'linux' and sh.found()
   test('check_perf_gate_execution', sh,
        args: [meson.project_source_root() / 'scripts/ci/test-check-perf-gate-execution.sh'],
-       suite: 'abi')
+       suite: 'abi',
+       timeout: 120)
 endif
 
 test('perf_nightly_doop_contract', py3,
