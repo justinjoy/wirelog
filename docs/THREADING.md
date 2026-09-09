@@ -283,9 +283,9 @@ throughput by 2-10x.
 |---|---|---|---|---|
 | `io_adapter.c:init_mutex` | `s_mutex_init_ok` | `atomic_store` | `seq_cst` (default) | One-shot mutex-init publish; the bare API used here gives sequential consistency which is the strongest order and safe for an init publisher |
 | `io_adapter.c:ensure_builtins` | `s_mutex_init_ok` | `atomic_load` | `seq_cst` (default) | Pairs with the init publish; gates all later mutex operations |
-| `relation.c:col_rel_new_identity` | `wl_next_relation_identity` | `atomic_load` | `seq_cst` (default) | Read the candidate identity before the non-wrapping CAS reservation loop |
-| `relation.c:col_rel_new_identity#2` | `wl_next_relation_identity` | `atomic_compare_exchange_weak` | `seq_cst/seq_cst` (default) | Reserve a unique relation identity and retry with the observed value after a lost race |
-| `relation.c:col_rel_test_set_next_identity` | `wl_next_relation_identity` | `atomic_store` | `seq_cst` (default) | Test-only seam for selecting the terminal allocator state; production allocation is not concurrent with this reset |
+| `relation.c:col_rel_new_identity` | `wl_next_relation_identity` | `atomic_load_explicit` | `relaxed` | Read the candidate identity before the non-wrapping CAS reservation loop; the counter only has to hand out distinct values, no other memory is published through it |
+| `relation.c:col_rel_new_identity#2` | `wl_next_relation_identity` | `atomic_compare_exchange_weak_explicit` | `relaxed`/`relaxed` | Reserve a unique relation identity and retry with the observed value after a lost race; uniqueness comes from the RMW, not from ordering |
+| `relation.c:col_rel_test_set_next_identity` | `wl_next_relation_identity` | `atomic_store_explicit` | `relaxed` | Test-only seam for selecting the terminal allocator state; production allocation is not concurrent with this reset |
 
 These are the sites in `wirelog/` that use the **non-explicit** atomic APIs
 (`atomic_load`/`atomic_store`); they default to `memory_order_seq_cst`.
