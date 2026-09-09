@@ -1775,9 +1775,9 @@ test('symbol_aggregates', test_symbol_aggregates_exe, timeout: 60)
 # by scanning the relation's operator list for a REDUCE and the rewrite had
 # moved it into the K_FUSION operator's opaque_data.  Adding a rule that
 # derives nothing changed the answer.
-test_recursive_agg_kfusion_exe = executable(
-  'test_recursive_agg_kfusion',
-  files('test_recursive_agg_kfusion.c'),
+test_recursive_agg_contract_exe = executable(
+  'test_recursive_agg_contract',
+  files('test_recursive_agg_contract.c'),
   parser_src,
   ir_src,
   optimizer_src,
@@ -1793,12 +1793,12 @@ test_recursive_agg_kfusion_exe = executable(
 # Every case runs at W = 1, 4, 8 and 16; the 16-worker recursive cases are
 # the slow ones.  The timeout also bounds the failure mode where a relation
 # reduced under a comparator that is not a total order never converges.
-test('recursive_agg_kfusion', test_recursive_agg_kfusion_exe,
+test('recursive_agg_contract', test_recursive_agg_contract_exe,
      suite: 'semantics', timeout: 120)
 
-test_recursive_agg_kfusion_nofusion_exe = executable(
-  'test_recursive_agg_kfusion_nofusion',
-  files('test_recursive_agg_kfusion.c'),
+test_recursive_agg_contract_nofusion_exe = executable(
+  'test_recursive_agg_contract_nofusion',
+  files('test_recursive_agg_contract.c'),
   parser_src,
   ir_src,
   optimizer_src,
@@ -1812,7 +1812,7 @@ test_recursive_agg_kfusion_nofusion_exe = executable(
   dependencies: [nanoarrow_dep, threads_dep, xxhash_dep, mbedtls_dep, math_dep],
 )
 
-test('recursive_agg_kfusion_nofusion', test_recursive_agg_kfusion_nofusion_exe,
+test('recursive_agg_contract_nofusion', test_recursive_agg_contract_nofusion_exe,
      suite: 'semantics', timeout: 120)
 
 # Issue #1376: the same multi-relation SCC must reach its complete fixpoint

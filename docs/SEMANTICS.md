@@ -282,7 +282,7 @@ from producing semantically correct output at workers in {1, 4, 8, 16}.
 - Issue #1021 — a recursive MIN/MAX aggregate may not share an SCC with any
   other relation.
 - `wirelog/exec_plan_gen.c` — `validate_recursive_aggregates`, both passes.
-- `tests/test_recursive_agg_kfusion.c` — the #1021 rejection and its two
+- `tests/test_recursive_agg_contract.c` — the #1021 rejection and its two
   acceptance controls.
 
 ---
@@ -315,17 +315,16 @@ rejection above cannot simply be lifted once it lands.
 
 ### Preconditions
 
-- A CI job that runs the recursive-aggregate fixtures under
-  `ENABLE_K_FUSION=0`. Every fixture a narrowing would readmit has to be
-  shown to answer the same in both build configurations, and no job does that
-  today.
+- The `recursive_agg_contract_nofusion` CI test target runs the
+  recursive-aggregate fixtures under `ENABLE_K_FUSION=0`. Every fixture a
+  narrowing would readmit has to be shown to answer the same in both build
+  configurations.
 
   The tree is not starting from nothing here. `k_fusion_memory_nofusion`
   (`tests/meson.build`) is built with `c_args: ['-DENABLE_K_FUSION=0']` and
   runs in the default `meson test`, evaluating a transitive closure at K=2
-  and K=4; `bench/meson.build` has a second such target. So the meson pattern
-  for an unfused test binary already exists and is short to copy. What is
-  missing is a target that puts *these* programs through it. (Separately,
+  and K=4; `bench/meson.build` has a second such target. The recursive
+  aggregate contract now follows that pattern. (Separately,
   `scripts/ci/check-clang-tidy-ratchet.py` scans `wirelog/exec_plan_gen.c`
   under the macro via `ALTERNATE_CONFIGS`, but that is static analysis and
   runs nothing.)

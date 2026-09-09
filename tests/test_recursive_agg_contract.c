@@ -1,6 +1,6 @@
 /*
- * tests/test_recursive_agg_kfusion.c - recursive min()/max() under K-fusion
- *                                      (#975)
+ * tests/test_recursive_agg_contract.c - recursive min()/max() contract tests
+ *                                       (#975)
  *
  * Copyright (C) CleverPlant
  * Licensed under LGPL-3.0
@@ -89,11 +89,9 @@
  *       aggregate function but defaulted the width to 1 collapses distinct
  *       groups together.
  *
- *   test_count_not_canonicalized
- *       count() is not an ordering aggregate and the canonicalisation
- *       refuses relations whose REDUCE is anything but MIN or MAX.  The
- *       recorded specification must refuse them identically -- both when the
- *       relation is fused and when it is not.
+ *   test_count_rejected / test_sum_rejected
+ *       count() and sum() are not monotone across a recursive fixpoint, so
+ *       both fused and unfused spellings are rejected before canonicalisation.
  *
  *   test_mixed_min_max_not_canonicalized
  *       Two rules of one head disagreeing on the aggregate function.  The
@@ -102,11 +100,15 @@
  *       rule win -- last-writer-wins would newly canonicalise relations that
  *       are correctly skipped today.
  *
- *   test_operand_type_last_rule_wins
- *       Records, rather than endorses, what happens when two rules of one
- *       head agree on the aggregate function and group width but disagree on
- *       the operand's domain: the last one decides.  See the comment on the
- *       case itself.
+ *   test_operand_type_is_order_independent
+ *       UNKNOWN and a known symbol domain are reconciled, so rule order no
+ *       longer decides whether min() orders symbols by intern id or
+ *       lexicographically.
+ *
+ *   test_operand_domain_conflict_is_vetoed
+ *       A real SCALAR/STRING operand-domain conflict cannot be reconciled.
+ *       The relation is therefore left un-canonicalised rather than letting
+ *       either rule's domain decide the ordering.
  *
  *   test_same_stratum_consumer_rejected
  *       Issue #1021's repro, in a fused and an unfused spelling.  A relation
@@ -133,14 +135,14 @@
  *     aggregate runs.  That is issue #1019.
  *
  *   - a -DENABLE_K_FUSION=0 build as a cross-check oracle.  This file is
- *     built once, in whatever configuration the tree is configured with, so
- *     it cannot compare the two.  It is not that the unfused build refuses
+ *     compiled into separate fused and unfused binaries, so one binary
+ *     cannot compare the two internally.  It is not that the unfused build refuses
  *     to run these programs: #1020 is closed and the whole family above runs
  *     under -DENABLE_K_FUSION=0 without aborting.  It answers some of them
  *     differently, which is exactly why a second build is worth having, and
  *     why running these fixtures under ENABLE_K_FUSION=0 is a precondition
  *     for narrowing #1021's rejection.  The matching
- *     recursive_agg_kfusion_nofusion target now provides that cross-check,
+ *     recursive_agg_contract_nofusion target now provides that cross-check,
  *     alongside the existing k_fusion_memory_nofusion pattern.
  *
  *   - a same-stratum consumer that is *accepted*.  There is no longer such a
@@ -331,27 +333,74 @@ eval_relation_at(const char *src, const char *relation, uint32_t workers,
     return result;
 }
 
-/* Return true only when plan generation rejects a valid parsed program. */
 static bool
-plan_generation_rejected(const char *src)
+diagnostic_identifies_recursive_aggregate_scc_rejection(const char *detail)
+{
+    return detail
+           && strstr(detail, "recursive aggregate") != NULL
+           && strstr(detail, "same stratum") != NULL
+           && strstr(detail, "may not share an SCC") != NULL;
+}
+
+/*
+ * Return true only when a valid parsed and optimized program reaches plan
+ * generation, plan generation rejects it, the returned plan remains NULL, and
+ * the diagnostic identifies recursive-aggregate same-SCC rejection.
+ */
+static bool
+recursive_aggregate_scc_plan_rejected(const char *src)
 {
     wirelog_error_t err = WIRELOG_OK;
     wirelog_program_t *prog = wirelog_parse_string(src, &err);
-    if (!prog)
+    if (!prog) {
+        fprintf(stderr, "  parse failed before plan rejection: %d\n",
+            (int)err);
         return false;
+    }
 
-    if (wl_fusion_apply(prog, NULL) != 0
-        || wl_jpp_apply(prog, NULL) != 0
-        || wl_sip_apply(prog, NULL) != 0) {
+    if (wl_fusion_apply(prog, NULL) != 0) {
+        fprintf(stderr, "  fusion optimization failed before plan rejection\n");
+        wirelog_program_free(prog);
+        return false;
+    }
+    if (wl_jpp_apply(prog, NULL) != 0) {
+        fprintf(stderr, "  JPP optimization failed before plan rejection\n");
+        wirelog_program_free(prog);
+        return false;
+    }
+    if (wl_sip_apply(prog, NULL) != 0) {
+        fprintf(stderr, "  SIP optimization failed before plan rejection\n");
         wirelog_program_free(prog);
         return false;
     }
 
-    wl_plan_t *plan = NULL;
+    wl_plan_t *sentinel = (wl_plan_t *)(uintptr_t)1;
+    wl_plan_t *plan = sentinel;
     int rc = wl_plan_from_program(prog, &plan);
-    wl_plan_free(plan);
+    if (rc == 0) {
+        if (plan && plan != sentinel)
+            wl_plan_free(plan);
+        fprintf(stderr, "  plan generation succeeded unexpectedly\n");
+        wirelog_program_free(prog);
+        return false;
+    }
+
+    if (plan != NULL) {
+        fprintf(stderr,
+            "  rejected plan generation returned a non-NULL plan\n");
+        wirelog_program_free(prog);
+        return false;
+    }
+
+    const char *detail = wirelog_program_get_plan_error(prog);
+    bool identifies_rejection
+        = diagnostic_identifies_recursive_aggregate_scc_rejection(detail);
+    if (!identifies_rejection)
+        fprintf(stderr, "  unexpected plan diagnostic: %s\n",
+            detail ? detail : "(null)");
+
     wirelog_program_free(prog);
-    return rc != 0;
+    return identifies_rejection;
 }
 
 /* The worker counts test_recursive_agg_conformance.c already pins. */
@@ -915,10 +964,10 @@ test_same_stratum_consumer_rejected(void)
 {
     TEST("a same-stratum consumer of a recursive min(): rejected");
 
-    ASSERT(plan_generation_rejected(REPRO_FUSED),
+    ASSERT(recursive_aggregate_scc_plan_rejected(REPRO_FUSED),
         "the fused spelling of the #1021 repro was accepted");
 
-    ASSERT(plan_generation_rejected(REPRO_UNFUSED),
+    ASSERT(recursive_aggregate_scc_plan_rejected(REPRO_UNFUSED),
         "the unfused spelling of the #1021 repro was accepted");
     PASS();
 }
@@ -980,7 +1029,7 @@ test_1135_fixtures_rejected(void)
         TEST(fixtures[i].name);
         int n = snprintf(src, sizeof(src), "%s%s", edge, fixtures[i].rules);
         ASSERT(n > 0 && (size_t)n < sizeof(src), "fixture truncated");
-        ASSERT(plan_generation_rejected(src),
+        ASSERT(recursive_aggregate_scc_plan_rejected(src),
             "expected valid parsing/optimization followed by plan rejection");
         PASS();
     }
@@ -1059,7 +1108,7 @@ test_single_relation_aggregate_control(void)
 int
 main(void)
 {
-    printf("=== Recursive aggregates under K-fusion (#975) ===\n\n");
+    printf("=== Recursive aggregate contract tests (#975) ===\n\n");
 
     test_min_redundant_rule_invariance();
     test_max_redundant_rule_invariance();
