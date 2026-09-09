@@ -1409,6 +1409,9 @@ col_rel_compact(col_rel_t *r)
         if (r->col_shared) {
             if (col_rel_cow_unshare(r, 0) != 0)
                 goto free_merge_buf; /* non-fatal on failure */
+            /* COW reconciles its private columns; use that post-COW shape as
+             * the compaction baseline to avoid charging it twice. */
+            ledger_before = col_rel_owned_ledger_bytes(r);
         }
 
         if (r->arena_owned) {
@@ -3045,10 +3048,8 @@ col_rel_radix_sort_int64(col_rel_t *r)
     /* COW: unshare shared columns before in-place sort (Issue #396).
      * If unshare fails, skip the sort to avoid mutating borrowed buffers. */
     if (r->col_shared) {
-        uint64_t ledger_before = col_rel_owned_ledger_bytes(r);
         if (col_rel_cow_unshare(r, 0) != 0)
             return;
-        col_rel_ledger_reconcile(r, ledger_before);
     }
 
     col_rel_radix_sort(r, 0, r->nrows);

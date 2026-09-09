@@ -534,6 +534,42 @@ test_cow_capacity_denial_preserves_state(void)
         wl_columnar_memory_governor_ref_release(ref);
 }
 
+static void
+test_cow_ledger_reconcile_is_exact_once(void)
+{
+    wl_mem_ledger_t ledger;
+    wl_mem_ledger_snapshot_t snapshot;
+    col_rel_t *source = col_rel_new_auto("ledger-source", 1);
+    col_rel_t *view = col_rel_new_auto("ledger-view", 1);
+    int64_t rows[] = { 9, 1 };
+    bool view_destroyed = false;
+
+    wl_mem_ledger_init(&ledger, 0);
+    CHECK(source && view, "COW ledger setup");
+    if (source && view) {
+        CHECK(col_rel_append_row(source, &rows[0]) == 0
+            && col_rel_append_row(source, &rows[1]) == 0
+            && col_rel_install_shared_view(view, source) == 0,
+            "COW ledger shared view");
+        view->mem_ledger = &ledger;
+        col_rel_ledger_reconcile(view, 0);
+        col_rel_radix_sort_int64(view);
+        wl_mem_ledger_snapshot(&ledger, &snapshot);
+        CHECK(snapshot.subsys_bytes[WL_MEM_SUBSYS_RELATION]
+            == (uint64_t)view->capacity * sizeof(int64_t),
+            "COW radix sort double-charged private columns");
+        col_rel_destroy(view);
+        wl_mem_ledger_snapshot(&ledger, &snapshot);
+        CHECK(snapshot.current_bytes == 0,
+            "COW radix sort left stale ledger bytes");
+        view_destroyed = true;
+    }
+    if (!view_destroyed)
+        col_rel_destroy(view);
+    if (source)
+        col_rel_destroy(source);
+}
+
 int
 main(void)
 {
@@ -545,6 +581,7 @@ main(void)
     test_unmanaged_arena_append_all_reconciles_timestamps();
     test_arena_append_all_admission_boundary();
     test_cow_capacity_denial_preserves_state();
+    test_cow_ledger_reconcile_is_exact_once();
     if (failures != 0)
         return 1;
     puts("memory admission relation: PASS");
