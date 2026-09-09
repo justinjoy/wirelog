@@ -478,6 +478,11 @@ typedef struct {
     uint64_t storage_generation;
 } col_rel_t;
 
+/* MSVC in its default C mode neither defines __STDC_VERSION__ >= 201112L
+ * nor accepts offsetof() inside _Static_assert (C2059); mirror the guard
+ * used by diff_trace.c so the layout contract is still checked everywhere
+ * else. */
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
 /* Preserve the legacy mirror prefix: name, ncols, columns, column_types,
  * nrows, and capacity must precede all #1441 generation state. */
 _Static_assert(offsetof(col_rel_t, name) == 0,
@@ -495,6 +500,7 @@ _Static_assert(offsetof(col_rel_t, capacity) > offsetof(col_rel_t, nrows),
 _Static_assert(offsetof(col_rel_t, relation_identity) >
     offsetof(col_rel_t, declared_ncols),
     "relation generation fields must remain outside the legacy prefix");
+#endif /* C11 _Static_assert */
 
 /* Generation counters are intentionally checked rather than wrapping.  A
  * saturated counter is invalid for cache equality; the next cache unit will
@@ -656,6 +662,27 @@ col_rel_set(col_rel_t *r, uint32_t row, uint32_t col, int64_t val)
         return ENOMEM;
     r->columns[col][row] = val;
     wl_columnar_relation_touch_view(r);
+    return 0;
+}
+
+/** Write a single cell value at (row, col) WITHOUT publishing a generation
+*  or detaching a shared view.  For parallel fill workers that own disjoint
+*  row ranges of a fresh, heap-owned, non-shared output relation: the
+*  coordinator publishes the view generation once around the fill, so the
+*  workers must not touch the shared counter concurrently (Issue #1441). */
+static inline int
+col_rel_set_raw(col_rel_t *r, uint32_t row, uint32_t col, int64_t val)
+{
+    if (!r || !r->columns || row >= r->capacity || col >= r->ncols
+        || !r->columns[col] || r->col_shared)
+        return EINVAL;
+    if (r->column_types && r->column_types[col] == WIRELOG_TYPE_FLOAT) {
+        if (!wl_columnar_float_bits_valid(val))
+            return EINVAL;
+        if (wl_columnar_float_bits_zero(val))
+            val = 0;
+    }
+    r->columns[col][row] = val;
     return 0;
 }
 
