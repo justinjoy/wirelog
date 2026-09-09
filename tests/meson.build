@@ -717,6 +717,12 @@ test('perf_nightly_windows_contract', py3,
      args: [meson.project_source_root() / 'scripts/ci/test-perf-nightly-windows.py'],
      suite: 'abi')
 
+# Keep the longer Windows/MSVC build budget platform-specific; a global
+# timeout increase would hide Linux/macOS regressions in the PR gate.
+test('ci_pr_build_timeout_contract', py3,
+     args: [meson.project_source_root() / 'scripts/ci/test-ci-pr-build-timeouts.py'],
+     suite: 'abi')
+
 test('version_sync', py3,
      args: [meson.project_source_root() / 'scripts/ci/check-version-sync.py',
             meson.project_build_root() / 'wirelog'],
