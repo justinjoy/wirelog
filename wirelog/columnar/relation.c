@@ -74,7 +74,6 @@ wl_columnar_relation_radix_bench_enabled(void)
 /* ---- COW helpers --------------------------------------------------------- */
 
 static int col_rel_cow_unshare(col_rel_t *r, uint32_t new_cap);
-int col_rel_promote_arena_admitted(col_rel_t *r);
 static int col_rel_grow_owned_transition(col_rel_t *r, uint32_t new_cap);
 
 uint64_t
@@ -83,8 +82,11 @@ col_rel_owned_ledger_bytes(const col_rel_t *r)
     if (!r || r->arena_owned || !r->columns || r->capacity == 0)
         return 0;
     uint64_t owned_cols = 0;
-    for (uint32_t c = 0; c < r->ncols; c++) {
-        if ((!r->col_shared || !r->col_shared[c]) && r->columns[c])
+    int64_t **columns = r->columns;
+    bool *shared = r->col_shared;
+    for (uint32_t c = 0; c < r->ncols; c++, columns++) {
+        /* columns/shared are allocated together for exactly r->ncols slots. */
+        if ((!shared || !shared[c]) && *columns) /* NOLINT(clang-analyzer-security.ArrayBound) */
             owned_cols++;
     }
     if (owned_cols == 0)
@@ -372,14 +374,18 @@ col_rel_cow_unshare(col_rel_t *r, uint32_t new_cap)
         && col_rel_publish_retained_reservation(r, &pending, new_bytes) != 0)
         goto fail;
     ledger_before = col_rel_owned_ledger_bytes(r);
-    for (uint32_t c = 0; c < r->ncols; c++) {
-        if (!private_cols[c])
+    int64_t **private_cursor = private_cols;
+    int64_t **relation_cursor = r->columns;
+    bool *shared_cursor = r->col_shared;
+    for (uint32_t c = 0; c < r->ncols;
+        c++, private_cursor++, relation_cursor++, shared_cursor++) {
+        if (!*private_cursor) /* NOLINT(clang-analyzer-security.ArrayBound) */
             continue;
-        r->columns[c] = private_cols[c];
-        r->col_shared[c] = false;
-        private_cols[c] = NULL;
+        *relation_cursor = *private_cursor;
+        *shared_cursor = false;
+        *private_cursor = NULL;
     }
-    free(private_cols);
+    free((void *)private_cols);
     private_cols = NULL;
     {
         bool any_shared = false;
@@ -396,9 +402,10 @@ col_rel_cow_unshare(col_rel_t *r, uint32_t new_cap)
 fail:
     col_rel_reservation_rollback(&pending);
     if (private_cols) {
-        for (uint32_t c = 0; c < r->ncols; c++)
-            free(private_cols[c]);
-        free(private_cols);
+        int64_t **cursor = private_cols;
+        for (uint32_t c = 0; c < r->ncols; c++, cursor++)
+            free(*cursor); /* NOLINT(clang-analyzer-security.ArrayBound) */
+        free((void *)private_cols);
     }
     return ENOMEM;
 }

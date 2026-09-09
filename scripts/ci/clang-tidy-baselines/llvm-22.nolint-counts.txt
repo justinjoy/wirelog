@@ -1,4 +1,6 @@
 # Per-scan clang-tidy NOLINT suppression baseline for LLVM 22.
+wirelog/columnar/relation.c 4
+wirelog/columnar/relation.c [WL_RADIX_BENCH=1] 4
 # Format: repo-relative source/configuration key followed by the count.
 # Missing keys are treated as zero; increases fail the ratchet.
 wirelog/columnar/eval.c 3

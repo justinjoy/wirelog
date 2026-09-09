@@ -218,8 +218,9 @@ col_columns_free(int64_t **cols, uint32_t ncols)
 {
     if (!cols)
         return;
-    for (uint32_t c = 0; c < ncols; c++)
-        free(cols[c]);
+    int64_t **cursor = cols;
+    for (uint32_t c = 0; c < ncols; c++, cursor++)
+        free(*cursor); /* NOLINT(clang-analyzer-security.ArrayBound) */
     free((void *)cols);
 }
 

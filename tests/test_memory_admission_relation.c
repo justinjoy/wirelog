@@ -139,6 +139,43 @@ test_cow_exact_fit_and_denial(void)
 }
 
 static void
+test_cow_multi_column_cleanup(void)
+{
+    const uint64_t private_bytes = 2u * 64u * sizeof(int64_t);
+    wl_columnar_memory_resolution_t resolution;
+    wl_columnar_memory_governor_ref_t *ref;
+    col_rel_t *source = col_rel_new_auto("multi-source", 2);
+    col_rel_t *view = col_rel_new_auto("multi-view", 2);
+    int64_t first[] = {9, 90};
+    int64_t second[] = {1, 10};
+    int64_t appended[] = {5, 50};
+
+    make_resolution(&resolution, private_bytes);
+    ref = wl_columnar_memory_governor_ref_create(&resolution);
+    CHECK(ref && source && view, "multi-column COW setup");
+    if (ref && source && view) {
+        CHECK(col_rel_append_row(source, first) == 0
+            && col_rel_append_row(source, second) == 0
+            && col_rel_attach_memory_governor(view, ref) == 0
+            && col_rel_install_shared_view(view, source) == 0,
+            "multi-column shared view setup");
+        CHECK(col_rel_append_row(view, appended) == 0,
+            "multi-column COW append");
+        CHECK(view->col_shared == NULL
+            && view->columns[0][2] == appended[0]
+            && view->columns[1][2] == appended[1],
+            "multi-column COW did not privatize every column");
+        CHECK(wl_columnar_memory_reserved(
+                wl_columnar_memory_governor_ref_get(ref)) == private_bytes,
+            "multi-column COW reservation");
+    }
+    col_rel_destroy(view);
+    col_rel_destroy(source);
+    if (ref)
+        wl_columnar_memory_governor_ref_release(ref);
+}
+
+static void
 test_arena_promotion_with_timestamps(void)
 {
     const uint32_t capacity = COL_REL_INIT_CAP;
@@ -574,6 +611,7 @@ int
 main(void)
 {
     test_cow_exact_fit_and_denial();
+    test_cow_multi_column_cleanup();
     test_append_transitions();
     test_arena_promotion_with_timestamps();
     test_arena_promotion_denial_preserves_state();
