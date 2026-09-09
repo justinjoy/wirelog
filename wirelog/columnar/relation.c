@@ -15,23 +15,27 @@
 #include "../wirelog-internal.h"
 
 #include <errno.h>
-#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-static _Atomic uint64_t wl_next_relation_identity = 1u;
+/* wl_atomic_u64 and the atomic_*_explicit shims come from mem_ledger.h
+ * (via internal.h): C11 <stdatomic.h> elsewhere, _Interlocked* on MSVC,
+ * which has no C11 atomics in its default C mode.  Relaxed ordering is
+ * sufficient: the counter only has to hand out distinct values. */
+static wl_atomic_u64 wl_next_relation_identity = 1u;
 
 static int
 col_rel_new_identity(uint64_t *out)
 {
-    uint64_t current = atomic_load(&wl_next_relation_identity);
+    uint64_t current = atomic_load_explicit(&wl_next_relation_identity,
+            memory_order_relaxed);
     for (;;) {
         if (current == 0u || current == UINT64_MAX)
             return EOVERFLOW;
         uint64_t next = current + 1u;
-        if (atomic_compare_exchange_weak(&wl_next_relation_identity,
-            &current, next)) {
+        if (atomic_compare_exchange_weak_explicit(&wl_next_relation_identity,
+            &current, next, memory_order_relaxed, memory_order_relaxed)) {
             *out = current;
             return 0;
         }
@@ -43,7 +47,8 @@ col_rel_new_identity(uint64_t *out)
 int
 col_rel_test_set_next_identity(uint64_t next)
 {
-    atomic_store(&wl_next_relation_identity, next);
+    atomic_store_explicit(&wl_next_relation_identity, next,
+        memory_order_relaxed);
     return 0;
 }
 
