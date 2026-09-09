@@ -360,6 +360,9 @@ col_join_key_types_compatible(const col_rel_t *left, const uint32_t *lk,
     return true;
 }
 
+/* Parallel-fill writer: called from keyed fill workers on disjoint row
+ * ranges of a fresh output, so it uses col_rel_set_raw and leaves the
+ * single view-generation publication to the coordinator. */
 static int
 col_join_write_pair_at(col_rel_t *out, uint64_t out_row,
     const col_rel_t *left, uint32_t lr, const col_rel_t *right, uint32_t rr,
@@ -367,7 +370,7 @@ col_join_write_pair_at(col_rel_t *out, uint64_t out_row,
 {
     if (project_count > 0 && project_indices) {
         for (uint32_t c = 0; c < project_count; c++) {
-            int rc = col_rel_set(out, (uint32_t)out_row, c,
+            int rc = col_rel_set_raw(out, (uint32_t)out_row, c,
                     col_join_pair_value(left, lr, right, rr,
                     project_indices[c]));
             if (rc != 0)
@@ -375,13 +378,13 @@ col_join_write_pair_at(col_rel_t *out, uint64_t out_row,
         }
     } else {
         for (uint32_t c = 0; c < left->ncols; c++) {
-            int rc = col_rel_set(out, (uint32_t)out_row, c,
+            int rc = col_rel_set_raw(out, (uint32_t)out_row, c,
                     left->columns[c][lr]);
             if (rc != 0)
                 return rc;
         }
         for (uint32_t c = 0; c < right->ncols; c++) {
-            int rc = col_rel_set(out, (uint32_t)out_row, left->ncols + c,
+            int rc = col_rel_set_raw(out, (uint32_t)out_row, left->ncols + c,
                     right->columns[c][rr]);
             if (rc != 0)
                 return rc;
@@ -581,7 +584,7 @@ col_semijoin_fill_worker_fn(void *arg)
         if (ctx->op->project_count > 0 && ctx->op->project_indices) {
             for (uint32_t c = 0; c < ocols; c++) {
                 uint32_t si = ctx->op->project_indices[c];
-                int rc = col_rel_set(out, (uint32_t)out_row, c,
+                int rc = col_rel_set_raw(out, (uint32_t)out_row, c,
                         (si < left->ncols) ? left->columns[si][lr] : 0);
                 if (rc != 0) {
                     atomic_store_explicit(ctx->write_error, rc,
@@ -591,7 +594,7 @@ col_semijoin_fill_worker_fn(void *arg)
             }
         } else {
             for (uint32_t c = 0; c < left->ncols; c++) {
-                int rc = col_rel_set(out, (uint32_t)out_row, c,
+                int rc = col_rel_set_raw(out, (uint32_t)out_row, c,
                         left->columns[c][lr]);
                 if (rc != 0) {
                     atomic_store_explicit(ctx->write_error, rc,
@@ -632,7 +635,7 @@ col_join_cross_fill_worker_fn(void *arg)
         uint32_t rr = right->nrows - 1u - rpos;
         if (ctx->project_count > 0 && ctx->project_indices) {
             for (uint32_t c = 0; c < ctx->project_count; c++) {
-                int rc = col_rel_set(out, (uint32_t)oi, c,
+                int rc = col_rel_set_raw(out, (uint32_t)oi, c,
                         col_join_pair_value(left, lr, right, rr,
                         ctx->project_indices[c]));
                 if (rc != 0) {
@@ -643,7 +646,7 @@ col_join_cross_fill_worker_fn(void *arg)
             }
         } else {
             for (uint32_t c = 0; c < left->ncols; c++) {
-                int rc = col_rel_set(out, (uint32_t)oi, c,
+                int rc = col_rel_set_raw(out, (uint32_t)oi, c,
                         left->columns[c][lr]);
                 if (rc != 0) {
                     atomic_store_explicit(ctx->write_error, rc,
@@ -652,7 +655,7 @@ col_join_cross_fill_worker_fn(void *arg)
                 }
             }
             for (uint32_t c = 0; c < right->ncols; c++) {
-                int rc = col_rel_set(out, (uint32_t)oi, left->ncols + c,
+                int rc = col_rel_set_raw(out, (uint32_t)oi, left->ncols + c,
                         right->columns[c][rr]);
                 if (rc != 0) {
                     atomic_store_explicit(ctx->write_error, rc,
