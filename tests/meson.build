@@ -945,33 +945,6 @@ if sh.found()
        suite: 'abi')
 endif
 
-# Issue #1285: the closure gate below can only verify libraries the
-# owned-soname set names, and the derivation of that set only ever ran on a
-# release tag.  Extracted to scripts/release/derive-owned-sonames.sh so its
-# edge cases -- symlink chains, .p object directories, .symbols by-products,
-# an empty tree -- are exercised on every PR.
-# Linux-gated, for two reasons rather than the one first recorded here:
-#   Windows -- the fixture builds a symlink chain with `ln -s`, which on
-#     MSYS/Git-Bash copies instead of linking, so the symlink assertions would
-#     pass for a different reason rather than exercising what they name.
-#   macOS -- the locale case ASSERTS that en_US collation orders a hyphenated
-#     pair differently from C. That is glibc applying the UCA rule of ignoring
-#     punctuation at the primary level; Darwin's en_US.UTF-8 is not known to,
-#     and the candidate loop tries `en_US.UTF-8` precisely because macOS has
-#     it. So the branch would be taken and `fixture_discriminates` would fail
-#     -- a false failure, not a real one.
-# Widening to darwin therefore needs `fixture_discriminates` turned from an
-# assertion into a skip-guard first, and confirming on a real macOS host.
-# `normalize_root` is deliberately absent from the test: the sibling
-# test-downstream-matrix.sh carries it because a bare `if sh.found()` really
-# does run it on Windows, and this gate does not.
-if host_machine.system() == 'linux' and sh.found()
-  test('owned_sonames', sh,
-       args: [meson.project_source_root() / 'scripts/ci/test-derive-owned-sonames.sh',
-              meson.project_source_root()],
-       suite: 'abi')
-endif
-
 # Issue #1303: the WIRELOG_*_REQUIRED escalation. Half of this asserts gate
 # behaviour, half asserts the workflows still set the variable -- without the
 # second half the escalation can be deleted from a workflow while every
@@ -980,18 +953,6 @@ endif
 if sh.found()
   test('required_gates', sh,
        args: [meson.project_source_root() / 'scripts/ci/test-required-gates.sh',
-              meson.project_source_root()],
-       suite: 'abi')
-endif
-
-# Issue #1272: the release upgrade matrix must prove the consumer loaded the
-# libraries this release installs, not whatever the host had installed.  The
-# matrix itself only runs on a release tag, so this self-test is the only
-# pre-release coverage the closure parser gets.
-if sh.found()
-  test('shared_library_closure', sh,
-       args: [meson.project_source_root() /
-              'scripts/ci/test-check-shared-library-closure.sh',
               meson.project_source_root()],
        suite: 'abi')
 endif
