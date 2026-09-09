@@ -326,6 +326,146 @@ arr_free_contents(col_arrangement_t *arr)
     arr->generation = 0;
 }
 
+/**
+ * col_arr_entry_clone - Deep-copy one arrangement registry entry (#260).
+ *
+ * All owned memory (rel_name, key_cols, ht_head, ht_next) is freshly
+ * allocated.  arr.key_cols is set to the new entry's key_cols (shared alias,
+ * not a separate allocation — matches arrangement.c creation convention).
+ * Returns 0 on success; dst is memset-zeroed before returning on failure.
+ */
+static int
+col_arr_entry_clone(const col_arr_entry_t *src, col_arr_entry_t *dst,
+    wl_columnar_memory_governor_ref_t *memory_governor)
+{
+    size_t head_bytes = 0;
+    size_t next_bytes = 0;
+
+    memset(dst, 0, sizeof(*dst));
+
+    dst->rel_name = wl_strdup(src->rel_name);
+    if (!dst->rel_name)
+        return ENOMEM;
+
+    if (src->key_count > 0) {
+        dst->key_cols = (uint32_t *)malloc(src->key_count * sizeof(uint32_t));
+        if (!dst->key_cols) {
+            free(dst->rel_name);
+            memset(dst, 0, sizeof(*dst));
+            return ENOMEM;
+        }
+        memcpy(dst->key_cols, src->key_cols, src->key_count * sizeof(uint32_t));
+    }
+    dst->key_count = src->key_count;
+
+    /* arr.key_cols is a shared alias of entry.key_cols (not separately owned).
+    * Mirrors the convention in col_session_get_arrangement (arrangement.c). */
+    dst->arr.key_cols = dst->key_cols;
+    dst->arr.key_count = src->arr.key_count;
+    dst->arr.indexed_rows = src->arr.indexed_rows;
+    dst->arr.content_hash = src->arr.content_hash;
+    dst->arr.nbuckets = src->arr.nbuckets;
+    dst->arr.ht_cap = src->arr.ht_cap;
+    dst->arr.generation = src->arr.generation;
+    col_arr_attach_memory_governor(&dst->arr, memory_governor);
+    if (dst->arr.memory_governor && src->mem_bytes > 0) {
+        wl_columnar_memory_governor_t *governor
+            = wl_columnar_memory_governor_ref_get(memory_governor);
+        wl_columnar_memory_reservation_init(&dst->arr.reservation);
+        if (!wl_columnar_memory_reserve(governor, src->mem_bytes,
+            &dst->arr.reservation)
+            || !wl_columnar_memory_commit(&dst->arr.reservation, dst)) {
+            (void)wl_columnar_memory_release(&dst->arr.reservation);
+            col_arr_detach_memory_governor(&dst->arr);
+            free(dst->key_cols);
+            free(dst->rel_name);
+            memset(dst, 0, sizeof(*dst));
+            return ENOMEM;
+        }
+        dst->arr.reserved_bytes = src->mem_bytes;
+    }
+    /* Issue #216: copy LRU metadata so worker clones inherit access state. */
+    dst->lru_clock = src->lru_clock;
+    dst->mem_bytes = src->mem_bytes;
+
+    if (src->arr.nbuckets > 0 && src->arr.ht_head) {
+        head_bytes = (size_t)src->arr.nbuckets * sizeof(uint64_t);
+        if (head_bytes / sizeof(uint64_t) != src->arr.nbuckets)
+            goto fail;
+        dst->arr.ht_head
+            = (uint64_t *)malloc(head_bytes);
+        if (!dst->arr.ht_head)
+            goto fail;
+        memcpy(dst->arr.ht_head, src->arr.ht_head,
+            head_bytes);
+    }
+
+    if (src->arr.ht_cap > 0 && src->arr.ht_next) {
+        next_bytes = (size_t)src->arr.ht_cap * sizeof(uint32_t);
+        if (next_bytes / sizeof(uint32_t) != src->arr.ht_cap)
+            goto fail;
+        dst->arr.ht_next
+            = (uint32_t *)malloc(next_bytes);
+        if (!dst->arr.ht_next)
+            goto fail;
+        memcpy(dst->arr.ht_next, src->arr.ht_next,
+            next_bytes);
+    }
+
+    return 0;
+
+fail:
+    arr_free_contents(&dst->arr);
+    col_arr_detach_memory_governor(&dst->arr);
+    free(dst->key_cols);
+    free(dst->rel_name);
+    memset(dst, 0, sizeof(*dst));
+    return ENOMEM;
+}
+
+/**
+ * col_arr_entries_clone - Deep-copy an arrangement registry array (#260).
+ *
+ * Creates an independent copy of `count` entries for a K-fusion worker.
+ * On success, *out_entries owns all allocations and *out_cap equals count.
+ * On failure, *out_entries is NULL.
+ */
+int
+col_arr_entries_clone(const col_arr_entry_t *src, uint32_t count,
+    col_arr_entry_t **out_entries, uint32_t *out_cap,
+    wl_columnar_memory_governor_ref_t *memory_governor)
+{
+    *out_entries = NULL;
+    *out_cap = 0;
+
+    if (count == 0)
+        return 0;
+
+    col_arr_entry_t *cloned
+        = (col_arr_entry_t *)calloc(count, sizeof(col_arr_entry_t));
+    if (!cloned)
+        return ENOMEM;
+
+    for (uint32_t i = 0; i < count; i++) {
+        int clone_rc = col_arr_entry_clone(&src[i], &cloned[i],
+                memory_governor);
+        if (clone_rc != 0) {
+            for (uint32_t j = 0; j < i; j++) {
+                free(cloned[j].rel_name);
+                free(cloned[j].key_cols);
+                arr_free_contents(&cloned[j].arr);
+                col_arr_detach_memory_governor(&cloned[j].arr);
+            }
+            free(cloned);
+            return clone_rc;
+        }
+    }
+
+    *out_entries = cloned;
+    *out_cap = count;
+    return 0;
+}
+
 /* Full rebuild: index all nrows rows in rel into arr. */
 static int
 arr_build_full_impl(col_arrangement_t *arr, const col_rel_t *rel)

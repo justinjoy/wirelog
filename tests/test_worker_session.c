@@ -560,6 +560,96 @@ test_mat_cache_empty(void)
 }
 
 static int
+test_arrangement_clone_ownership(void)
+{
+    TEST("worker arrangement clone owns arrays and preserves metadata");
+
+    wl_plan_t *plan = NULL;
+    wirelog_program_t *prog = NULL;
+    wl_col_session_t *coord = make_coordinator(&plan, &prog);
+    if (!coord) {
+        FAIL("coordinator creation");
+        return 1;
+    }
+
+    int64_t rows[] = { 1, 2, 2, 3, 3, 4, 4, 5 };
+    if (insert_edges(coord, rows, 4) != 0) {
+        cleanup_coordinator(coord, plan, prog);
+        FAIL("insert");
+        return 1;
+    }
+
+    uint32_t key_cols[] = { 0 };
+    col_arrangement_t *arr
+        = col_session_get_arrangement(&coord->base, "edge", key_cols, 1);
+    if (!arr || coord->arr_count != 1) {
+        cleanup_coordinator(coord, plan, prog);
+        FAIL("coordinator arrangement build");
+        return 1;
+    }
+
+    col_rel_t **parts = NULL;
+    if (partition_rel(coord, "edge", 1, &parts) != 0) {
+        cleanup_coordinator(coord, plan, prog);
+        FAIL("partition");
+        return 1;
+    }
+
+    wl_col_session_t worker;
+    memset(&worker, 0, sizeof(worker));
+    if (col_worker_session_create(coord, 0, parts, 1, &worker) != 0) {
+        for (uint32_t i = 0; i < 1; i++) {
+            if (parts[i])
+                col_rel_destroy(parts[i]);
+        }
+        free(parts);
+        cleanup_coordinator(coord, plan, prog);
+        FAIL("worker create");
+        return 1;
+    }
+    free(parts);
+
+    col_arr_entry_t *src = &coord->arr_entries[0];
+    col_arr_entry_t *dst = &worker.arr_entries[0];
+    size_t head_bytes = (size_t)src->arr.nbuckets * sizeof(uint64_t);
+    size_t next_bytes = (size_t)src->arr.ht_cap * sizeof(uint32_t);
+    int ok = worker.arr_count == coord->arr_count
+        && worker.arr_cap == coord->arr_count
+        && dst != src
+        && dst->rel_name != src->rel_name
+        && strcmp(dst->rel_name, src->rel_name) == 0
+        && dst->key_cols != src->key_cols
+        && dst->key_count == src->key_count
+        && dst->key_cols[0] == src->key_cols[0]
+        && dst->arr.key_cols == dst->key_cols
+        && dst->arr.key_cols != src->arr.key_cols
+        && dst->arr.key_count == src->arr.key_count
+        && dst->arr.indexed_rows == src->arr.indexed_rows
+        && dst->arr.content_hash == src->arr.content_hash
+        && dst->arr.nbuckets == src->arr.nbuckets
+        && dst->arr.ht_cap == src->arr.ht_cap
+        && dst->arr.generation == src->arr.generation
+        && dst->arr.ht_head != src->arr.ht_head
+        && dst->arr.ht_next != src->arr.ht_next
+        && memcmp(dst->arr.ht_head, src->arr.ht_head, head_bytes) == 0
+        && memcmp(dst->arr.ht_next, src->arr.ht_next, next_bytes) == 0
+        && dst->lru_clock == src->lru_clock
+        && dst->mem_bytes == src->mem_bytes
+        && dst->arr.memory_governor == worker.memory_governor
+        && dst->arr.reserved_bytes == src->mem_bytes;
+
+    col_worker_session_destroy(&worker);
+    cleanup_coordinator(coord, plan, prog);
+
+    if (!ok) {
+        FAIL("arrangement clone did not preserve ownership/metadata");
+        return 1;
+    }
+    PASS();
+    return 0;
+}
+
+static int
 test_frontier_independence(void)
 {
     TEST("worker frontiers independent from coordinator");
@@ -1500,6 +1590,7 @@ main(void)
     test_wq_null();
     test_arena_pool_allocated();
     test_mat_cache_empty();
+    test_arrangement_clone_ownership();
     test_frontier_independence();
     test_coordinator_readonly();
     test_find_rel_returns_partition();
