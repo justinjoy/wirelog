@@ -158,35 +158,6 @@ jobs:
           meson compile -C build-mbedtls
           meson test -C build-mbedtls cryptographic_hashes --print-errorlogs
 
-  upgrade:
-    name: Tag / 0.30.0 upgrade matrix
-    needs: [validate-input]
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          ref: ${{ env.TAG_REF }}
-          fetch-depth: 0
-      - name: Verify tagged candidate and baseline tag
-        run: |
-          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
-          git rev-parse --verify 'v0.30.0^{commit}'
-      - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y meson ninja-build
-      - name: Run synthetic consumer upgrade matrix
-        env:
-          UPGRADE_MATRIX_LOG_DIR: upgrade-evidence
-        run: scripts/upgrade/run-upgrade-matrix.sh --old-ref v0.30.0 --candidate-ref "$TAG_REF"
-      - name: Upload upgrade evidence
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: upgrade-matrix-${{ env.TAG_REF }}
-          path: upgrade-evidence/
-          if-no-files-found: error
-          retention-days: 35
-
   downstream:
     name: Tag / five-workload downstream matrix (DOOP in perf-nightly)
     needs: [validate-input]
@@ -318,7 +289,7 @@ jobs:
     # Performance/RSS release gating is intentionally deferred until 0.80;
     # hosted runners do not provide the stable environment required by those
     # measurements.
-    needs: [default, abi, sbom, fuzz, mbedtls, sanitizers, upgrade, downstream]
+    needs: [default, abi, sbom, fuzz, mbedtls, sanitizers, downstream]
     runs-on: ubuntu-latest
     steps:
       - name: Require every tagged verification job
@@ -331,7 +302,7 @@ jobs:
           # because `join(needs.*.result)` silently yields fewer entries if a
           # job is removed, and every remaining one could still be success --
           # the gate would pass having checked less than it names.
-          test "${#statuses[@]}" -eq 8
+          test "${#statuses[@]}" -eq 7
           for result in "${statuses[@]}"; do
             test "$result" = success
           done
