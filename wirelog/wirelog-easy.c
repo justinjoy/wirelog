@@ -120,7 +120,10 @@ ensure_plan_built(wirelog_easy_session_t *s, uint32_t num_workers)
             &session);
     if (rc != 0 || !session) {
         wl_plan_free(plan);
-        return (rc == ENOMEM) ? WIRELOG_ERR_MEMORY : WIRELOG_ERR_EXEC;
+        /* ENOMEM is an allocation failure; EOVERFLOW is the memory
+         * governor refusing to admit the program's intern table (#1431). */
+        return (rc == ENOMEM || rc == EOVERFLOW)
+            ? WIRELOG_ERR_MEMORY : WIRELOG_ERR_EXEC;
     }
 
     /* Issue #718: seed inline `.dl` facts into the freshly built session

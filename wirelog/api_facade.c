@@ -22,6 +22,7 @@
 #include "session_facts.h"
 #include "wirelog-config.h"
 
+#include <errno.h>
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -670,10 +671,15 @@ wirelog_executor_create(wirelog_program_t *program, wirelog_error_t *error)
         set_error(error, WIRELOG_ERR_INVALID_IR);
         return NULL;
     }
-    if (wl_session_create(wl_backend_columnar(), executor->plan, 1,
-        &executor->session) != 0) {
+    int session_rc = wl_session_create(wl_backend_columnar(), executor->plan,
+            1, &executor->session);
+    if (session_rc != 0) {
         wirelog_executor_free(executor);
-        set_error(error, WIRELOG_ERR_EXEC);
+        /* ENOMEM is an allocation failure; EOVERFLOW is the memory governor
+         * refusing to admit the program's intern table (#1431).  Both are
+         * memory verdicts under the docs/MEMORY.md contract. */
+        set_error(error, (session_rc == ENOMEM || session_rc == EOVERFLOW)
+            ? WIRELOG_ERR_MEMORY : WIRELOG_ERR_EXEC);
         return NULL;
     }
     if (wl_session_load_facts(executor->session, program) != 0

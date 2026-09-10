@@ -1021,6 +1021,7 @@ col_session_create_internal(const wl_plan_t *plan, uint32_t num_workers,
     wl_columnar_memory_resolution_t memory_resolution;
     wl_columnar_memory_sources_t memory_sources;
     wl_columnar_memory_governor_ref_t *memory_governor;
+    bool intern_attached_here = false;
     const char *memory_budget = getenv("WIRELOG_MEMORY_BUDGET");
 
     if (!plan || !out)
@@ -1096,6 +1097,24 @@ col_session_create_internal(const wl_plan_t *plan, uint32_t num_workers,
 
     sess->plan = plan;
     sess->intern = plan->intern;
+    if (sess->intern) {
+        int intern_rc = wl_intern_attach_memory_governor(
+            sess->intern, sess->memory_governor);
+        /* A program-owned table may already be attached to the governor of
+        * an earlier session.  Its reservation must remain with the program;
+        * this session continues with its own governor for session-owned
+        * storage and must not rebind or double-charge the intern table. */
+        intern_attached_here = intern_rc == 0;
+        if (intern_rc != 0 && intern_rc != EALREADY && intern_rc != EBUSY) {
+            /* Attach failed before taking ownership, so there is nothing
+             * to detach: the table is either unattached or owned by an
+             * earlier session's governor. */
+            wl_columnar_memory_governor_ref_release(
+                sess->memory_governor);
+            free(sess);
+            return intern_rc;
+        }
+    }
     sess->num_workers = num_workers > 0 ? num_workers : 1;
     WL_LOG(WL_LOG_SEC_SESSION, WL_LOG_INFO, "session created num_workers=%u",
         sess->num_workers);
@@ -1160,6 +1179,9 @@ col_session_create_internal(const wl_plan_t *plan, uint32_t num_workers,
                     "(set WIRELOG_MAX_WORKERS to override, max %u)\n",
                     sess->num_workers, effective_cap,
                     WL_MAX_WORKERS_HARD_LIMIT);
+                if (intern_attached_here)
+                    (void)wl_intern_detach_memory_governor(
+                        sess->intern, sess->memory_governor);
                 wl_columnar_memory_governor_ref_release(
                     sess->memory_governor);
                 free(sess);
@@ -1227,6 +1249,9 @@ col_session_create_internal(const wl_plan_t *plan, uint32_t num_workers,
     sess->pending_input_change = true;
     sess->rels = (col_rel_t **)calloc(sess->rel_cap, sizeof(col_rel_t *));
     if (!sess->rels) {
+        if (intern_attached_here)
+            (void)wl_intern_detach_memory_governor(
+                sess->intern, sess->memory_governor);
         wl_columnar_memory_governor_ref_release(sess->memory_governor);
         free(sess);
         return ENOMEM;
@@ -1493,6 +1518,9 @@ oom:
     delta_pool_destroy(sess->delta_pool); /* NULL-safe */
     wl_arena_free(sess->eval_arena);      /* NULL-safe; releases admission */
     (void)wl_compound_arena_free_checked(sess->compound_arena);
+    if (intern_attached_here)
+        (void)wl_intern_detach_memory_governor(
+            sess->intern, sess->memory_governor);
     wl_columnar_memory_governor_ref_release(sess->memory_governor);
     free(sess);
     return ENOMEM;

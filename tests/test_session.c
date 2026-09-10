@@ -343,6 +343,93 @@ build_plan(const char *src)
 /* Tests                                                                    */
 /* ======================================================================== */
 
+/* Issue #1431: the program's intern table is charged to the governor of the
+ * first session created from its plan, a second session from the same plan
+ * tolerates that the table is already owned (EBUSY), destroying either
+ * session leaves the program-owned reservation in place, and only
+ * wirelog_program_free() releases it. */
+static void
+test_intern_reservation_program_lifetime(void)
+{
+    TEST("session: intern reservation is program-owned and survives destroy");
+    wirelog_error_t err;
+    wirelog_program_t *prog = wirelog_parse_string(
+        "edge(1, 2).\n"
+        "path(x, y) :- edge(x, y).\n", &err);
+    wl_plan_t *plan = NULL;
+    wl_session_t *first = NULL;
+    wl_session_t *second = NULL;
+    wl_columnar_memory_governor_ref_t *owner = NULL;
+    uint64_t with_first;
+    uint64_t retained;
+
+    if (!prog || wl_plan_from_program(prog, &plan) != 0 || !plan) {
+        if (prog)
+            wirelog_program_free(prog);
+        FAIL("plan generation failed");
+        return;
+    }
+    if (wl_session_create(wl_backend_columnar(), plan, 1, &first) != 0
+        || !first) {
+        wl_plan_free(plan);
+        wirelog_program_free(prog);
+        FAIL("first session create failed");
+        return;
+    }
+    owner = COL_SESSION(first)->memory_governor;
+    wl_columnar_memory_governor_ref_retain(owner);
+    with_first = wl_columnar_memory_reserved(
+        wl_columnar_memory_governor_ref_get(owner));
+
+    /* The second session gets its own governor; the intern stays with the
+     * first one and is neither re-charged nor stolen. */
+    if (wl_session_create(wl_backend_columnar(), plan, 1, &second) != 0
+        || !second
+        || COL_SESSION(second)->memory_governor == owner
+        || wl_columnar_memory_reserved(
+            wl_columnar_memory_governor_ref_get(owner)) != with_first) {
+        if (second)
+            wl_session_destroy(second);
+        wl_session_destroy(first);
+        wl_plan_free(plan);
+        wirelog_program_free(prog);
+        wl_columnar_memory_governor_ref_release(owner);
+        FAIL("second session did not tolerate the owned intern table");
+        return;
+    }
+    wl_session_destroy(second);
+    if (wl_columnar_memory_reserved(
+            wl_columnar_memory_governor_ref_get(owner)) != with_first) {
+        wl_session_destroy(first);
+        wl_plan_free(plan);
+        wirelog_program_free(prog);
+        wl_columnar_memory_governor_ref_release(owner);
+        FAIL("destroying the second session changed the owner's reservation");
+        return;
+    }
+    wl_session_destroy(first);
+    retained = wl_columnar_memory_reserved(
+        wl_columnar_memory_governor_ref_get(owner));
+    wl_plan_free(plan);
+    if (retained == 0 || retained > with_first
+        || wl_columnar_memory_reserved(
+            wl_columnar_memory_governor_ref_get(owner)) != retained) {
+        wirelog_program_free(prog);
+        wl_columnar_memory_governor_ref_release(owner);
+        FAIL("session destroy released or kept the wrong intern bytes");
+        return;
+    }
+    wirelog_program_free(prog);
+    if (wl_columnar_memory_reserved(
+            wl_columnar_memory_governor_ref_get(owner)) != 0) {
+        wl_columnar_memory_governor_ref_release(owner);
+        FAIL("wirelog_program_free did not release the intern reservation");
+        return;
+    }
+    wl_columnar_memory_governor_ref_release(owner);
+    PASS();
+}
+
 /*
  * Test: create a session and destroy it without crash.
  */
@@ -1226,6 +1313,7 @@ main(void)
 
     test_session_hash_overflow_rejected();
     test_retained_relation_admission();
+    test_intern_reservation_program_lifetime();
     test_session_create_destroy();
     test_session_create_destroy_columnar();
     test_session_create_with_options();

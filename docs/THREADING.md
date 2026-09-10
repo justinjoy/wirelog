@@ -194,7 +194,7 @@ On non-MSVC builds the same macros expand to
 
 ### 4.4 MSVC shim in `intern.c`
 
-`wirelog/intern.c:63-88` provides the same shape of shim for the
+`wirelog/intern.c:67-92` provides the same shape of shim for the
 `uint32_t` published-entry counter of the shared symbol table
 (Issue #958):
 
@@ -217,7 +217,7 @@ orders named above.
   `atomic_bool`, `atomic_uint_fast64_t` as MSVC-compatible aliases.
 - `wirelog/util/lockfree_queue.c:31,48` defines `wl_atomic_u32` per
   branch.
-- `wirelog/intern.c:74,80` defines `wl_intern_atomic_u32` per branch.
+- `wirelog/intern.c:78,84` defines `wl_intern_atomic_u32` per branch.
 
 These exist so struct fields can be declared portably; the audit in
 §5 below covers only call sites, not type-declaration sites.
@@ -411,7 +411,7 @@ named in the justification.
 | Anchor (`file:function[#N]`) | Field | Op | Order | Justification |
 |---|---|---|---|---|
 | `intern.c:WL_INTERN_LOAD_ACQUIRE` | `intern->count` | `atomic_load_explicit` | `acquire` | `WL_INTERN_LOAD_ACQUIRE`, used by `wl_intern_reverse`/`wl_intern_count`. Pairs with the release store below: an id below the observed count names a fully written entry, and the segment holding it is allocated and never moves |
-| `intern.c:WL_INTERN_LOAD_RELAXED` | `intern->count` | `atomic_load_explicit` | `relaxed` | `WL_INTERN_LOAD_RELAXED`, used by `wl_intern_put`, `intern_resize` and `wl_intern_free`. The writer holds `intern->lock` (or, in `free`, has exclusive access), so no edge is needed |
+| `intern.c:WL_INTERN_LOAD_RELAXED` | `intern->count` | `atomic_load_explicit` | `relaxed` | `WL_INTERN_LOAD_RELAXED`, used by `wl_intern_put`, `intern_resize_prepare`, `intern_retained_bytes_locked` and `wl_intern_free`. Every caller holds `intern->lock` (`wl_intern_free` takes it to release the governor reservation, Issue #1431), so no edge is needed |
 | `intern.c:WL_INTERN_STORE_RELEASE` | `intern->count` | `atomic_store_explicit` | `release` | `WL_INTERN_STORE_RELEASE`, used by `wl_intern_put` after the string and its segment pointer are written. Publishing the count first would let a lock-free reader dereference an unwritten slot |
 
 ### 5.11 Total

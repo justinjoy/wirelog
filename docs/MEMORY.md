@@ -255,7 +255,8 @@ propagate failure and must not report a truncated successful result.
 
 | Allocation class | Owner and lifetime | #1418 status | Failure contract |
 | --- | --- | --- | --- |
-| Parser AST, interned names, and parse diagnostics | `wirelog_program_t`, released by `wirelog_program_free()` | Excluded; parse context is created before a managed session | Return `NULL` with `WIRELOG_ERR_PARSE` or `WIRELOG_ERR_MEMORY`; no partial program is published |
+| Parser AST and parse diagnostics | `wirelog_program_t`, released by `wirelog_program_free()` | Excluded; parse context is created before a managed session | Return `NULL` with `WIRELOG_ERR_PARSE` or `WIRELOG_ERR_MEMORY`; no partial program is published |
+| Interned strings (`wl_intern_t`: hash slots, id segments, string copies) | `wirelog_program_t`; the reservation is retained until `wirelog_program_free()` | Covered from the first managed session (#1431): session creation attaches the program's table to that session's governor and admits the bytes it already holds transactionally, so session creation fails with `ENOMEM`/`EOVERFLOW` (public `WIRELOG_ERR_MEMORY`) when they exceed the budget; that governor owns the table for the program's lifetime regardless of later sessions' budgets, and session destruction never releases it. Each unique `wl_intern_put()` reserves the string copy plus any new id segment or doubled slot array before allocating, with the old footprint still held; duplicates are uncharged | `wl_intern_put()` returns `-1` and leaves every existing id, `wl_intern_reverse()` result and the reservation unchanged. Residual: string builtins and non-pre-interned literals evaluated under an enforcing budget carry that `-1` as a string id instead of failing the step (follow-up) |
 | IR/program relation metadata | `wirelog_program_t`, released with the program | Excluded; same owner as parser output | Return `NULL` with the existing parse/IR error; callers retain no partially initialized program |
 | Optimized execution plan | `wirelog_executor_t`, released by `wirelog_executor_free()` | Excluded; plan construction precedes result collection | Return `NULL` with `WIRELOG_ERR_INVALID_IR`, `WIRELOG_ERR_MEMORY`, or the existing executor error |
 | Executor/session wrapper and columnar session storage | `wirelog_executor_t` and its session | Covered by #1413/#1369 session admission, not charged again here | Session creation fails with the existing public memory error and releases all reservations |
@@ -372,9 +373,11 @@ workloads:
   teardown.  Branch arenas and pools are redirected to the parent (ARENA),
   but join outputs, arrangements and caches created inside a parallel
   branch (K ≥ 4) charge the throwaway copy.  #1375 retires this path.
-- Parser and IR, the execution plan, the intern table, nanoarrow schemas,
-  the compound-term arena, exchange buffers, thread stacks (8 MB per TDD
-  worker by default) and the work queue.
+- Parser and IR, the execution plan, nanoarrow schemas, the compound-term
+  arena, exchange buffers, thread stacks (8 MB per TDD worker by default)
+  and the work queue.  The intern table is program-owned but charged to
+  the first managed session's governor (#1431, see the #1418 matrix); its
+  bytes appear in that governor's reserved total, not in the session ledger.
 
 ## 3. Reading the report: `WL_MEM_REPORT`
 
