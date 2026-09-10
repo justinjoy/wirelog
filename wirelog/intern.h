@@ -34,6 +34,21 @@
 #include <stdint.h>
 
 typedef struct wl_intern wl_intern_t;
+typedef struct wl_columnar_memory_governor_ref
+    wl_columnar_memory_governor_ref_t;
+
+/* Attach program-owned intern storage to a retained governor.  Existing
+ * bytes are admitted transactionally; EBUSY means another governor already
+ * owns the table and the caller must continue using that owner. */
+int
+wl_intern_attach_memory_governor(
+    wl_intern_t *intern,
+    wl_columnar_memory_governor_ref_t *governor);
+
+int
+wl_intern_detach_memory_governor(
+    wl_intern_t *intern,
+    wl_columnar_memory_governor_ref_t *governor);
 
 /**
  * wl_intern_create:
