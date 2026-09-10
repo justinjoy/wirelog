@@ -624,7 +624,11 @@ test_arrangement_clone_ownership(void)
         && dst->arr.key_cols == dst->key_cols
         && dst->arr.key_cols != src->arr.key_cols
         && dst->arr.key_count == src->arr.key_count
-        && dst->arr.indexed_rows == src->arr.indexed_rows
+        /* Issue #1438: a clone is a cold entry -- the buckets are copied
+        * but the freshness token and indexed_rows are reset so the first
+        * lookup rebuilds against the worker's own partition relation. */
+        && dst->arr.indexed_rows == 0
+        && dst->source_snapshot.relation_identity == 0
         && dst->arr.content_hash == src->arr.content_hash
         && dst->arr.nbuckets == src->arr.nbuckets
         && dst->arr.ht_cap == src->arr.ht_cap

@@ -367,6 +367,13 @@ col_arr_entry_clone(const col_arr_entry_t *src, col_arr_entry_t *dst,
     dst->arr.nbuckets = src->arr.nbuckets;
     dst->arr.ht_cap = src->arr.ht_cap;
     dst->arr.generation = src->arr.generation;
+    /* A worker's relation is a partition with its own identity, and the
+     * differential join walks [indexed_rows, nrows) of its arrangement
+     * directly.  The clone therefore arrives cold: the freshness token is
+     * zeroed so the first lookup rebuilds against the worker's relation
+     * instead of trusting the coordinator's index (Issue #1438). */
+    dst->source_snapshot = (col_relation_snapshot_t){ 0, 0, 0 };
+    dst->arr.indexed_rows = 0;
     col_arr_attach_memory_governor(&dst->arr, memory_governor);
     if (dst->arr.memory_governor && src->mem_bytes > 0) {
         wl_columnar_memory_governor_t *governor
@@ -827,8 +834,10 @@ col_session_get_arrangement(wl_session_t *sess, const char *rel_name,
         if (!match)
             continue;
 
-        /* Found: update if stale. */
-        if (e->arr.indexed_rows == 0) {
+        /* A token mismatch invalidates the complete index. */
+        bool snapshot_match = wl_columnar_relation_snapshot_equal(
+            e->source_snapshot, wl_columnar_relation_snapshot(rel));
+        if (!snapshot_match || e->arr.indexed_rows == 0) {
             /* Deduct stale bytes before rebuild; restore on failure. */
             cs->arr_total_bytes -= e->mem_bytes;
             if (arr_build_full(&e->arr, rel) != 0) {
@@ -841,6 +850,7 @@ col_session_get_arrangement(wl_session_t *sess, const char *rel_name,
                 return NULL;
             }
             cs->arr_total_bytes += e->mem_bytes;
+            e->source_snapshot = wl_columnar_relation_snapshot(rel);
         } else if (e->arr.indexed_rows < rel->nrows) {
             uint32_t old = e->arr.indexed_rows;
             cs->arr_total_bytes -= e->mem_bytes;
@@ -854,6 +864,7 @@ col_session_get_arrangement(wl_session_t *sess, const char *rel_name,
                 return NULL;
             }
             cs->arr_total_bytes += e->mem_bytes;
+            e->source_snapshot = wl_columnar_relation_snapshot(rel);
         }
         /* Bump LRU clock on every access. */
         e->lru_clock = ++cs->arr_clock;
@@ -944,6 +955,7 @@ col_session_get_arrangement(wl_session_t *sess, const char *rel_name,
             cs->arr_count--;
         return NULL;
     }
+    e->source_snapshot = wl_columnar_relation_snapshot(rel);
     if (!arr_memory_bytes(&e->arr, &e->mem_bytes)) {
         arr_free_contents(&e->arr);
         col_arr_detach_memory_governor(&e->arr);
@@ -1190,14 +1202,18 @@ col_session_get_delta_arrangement(wl_col_session_t *cs, const char *rel_name,
         }
         if (!match)
             continue;
-        /* Found: rebuild if stale (delta changed size). */
-        if (e->arr.indexed_rows != delta_rel->nrows) {
+        /* A changed source token requires a complete rebuild even when the
+         * row count is unchanged. */
+        bool snapshot_match = wl_columnar_relation_snapshot_equal(
+            e->source_snapshot, wl_columnar_relation_snapshot(delta_rel));
+        if (!snapshot_match || e->arr.indexed_rows != delta_rel->nrows) {
             if (delta_rel->nrows > 0) {
                 if (arr_build_full(&e->arr, delta_rel) != 0)
                     return NULL;
             } else {
                 arr_free_contents(&e->arr);
             }
+            e->source_snapshot = wl_columnar_relation_snapshot(delta_rel);
         }
         return &e->arr;
     }
@@ -1245,6 +1261,7 @@ col_session_get_delta_arrangement(wl_col_session_t *cs, const char *rel_name,
         memset(e, 0, sizeof(*e));
         return NULL;
     }
+    e->source_snapshot = wl_columnar_relation_snapshot(delta_rel);
     return &e->arr;
 }
 
@@ -1309,14 +1326,16 @@ col_session_get_filt_arrangement(wl_col_session_t *cs, const char *rel_name,
         }
         if (!match)
             continue;
-        /* Found: rebuild if stale (filtered_rel grew since last build). */
-        if (e->arr.indexed_rows != filtered_rel->nrows) {
+        bool snapshot_match = wl_columnar_relation_snapshot_equal(
+            e->source_snapshot, wl_columnar_relation_snapshot(filtered_rel));
+        if (!snapshot_match || e->arr.indexed_rows != filtered_rel->nrows) {
             if (filtered_rel->nrows > 0) {
                 if (arr_build_full(&e->arr, filtered_rel) != 0)
                     return NULL;
             } else {
                 arr_free_contents(&e->arr);
             }
+            e->source_snapshot = wl_columnar_relation_snapshot(filtered_rel);
         }
         return &e->arr;
     }
@@ -1365,6 +1384,7 @@ col_session_get_filt_arrangement(wl_col_session_t *cs, const char *rel_name,
         memset(e, 0, sizeof(*e));
         return NULL;
     }
+    e->source_snapshot = wl_columnar_relation_snapshot(filtered_rel);
     return &e->arr;
 }
 
@@ -1440,8 +1460,10 @@ sarr_build(col_sorted_arr_t *sarr, const col_rel_t *rel, uint32_t key_col)
     sarr->key_col = key_col;
     sarr->indexed_rows = 0;
 
-    if (rel->nrows == 0)
+    if (rel->nrows == 0) {
+        sarr->source_snapshot = wl_columnar_relation_snapshot(rel);
         return 0;
+    }
 
     size_t bytes = (size_t)rel->nrows * rel->ncols * sizeof(int64_t);
     sarr->sorted = (int64_t *)malloc(bytes);
@@ -1466,6 +1488,7 @@ sarr_build(col_sorted_arr_t *sarr, const col_rel_t *rel, uint32_t key_col)
     }
     sarr->nrows = rel->nrows;
     sarr->indexed_rows = rel->nrows;
+    sarr->source_snapshot = wl_columnar_relation_snapshot(rel);
     return 0;
 }
 
@@ -1497,8 +1520,11 @@ col_session_get_sorted_arrangement(wl_col_session_t *cs, const char *rel_name,
             continue;
         if (strcmp(e->rel_name, rel_name) != 0)
             continue;
-        /* Found: rebuild if stale. */
-        if (e->sarr.indexed_rows != rel->nrows) {
+        /* indexed_rows is only a progress marker; freshness is the source
+         * snapshot. */
+        if (!wl_columnar_relation_snapshot_equal(e->sarr.source_snapshot,
+            wl_columnar_relation_snapshot(rel))
+            || e->sarr.indexed_rows != rel->nrows) {
             if (sarr_build(&e->sarr, rel, key_col) != 0)
                 return NULL;
         }
@@ -1566,16 +1592,21 @@ col_session_free_sorted_arrangements(wl_col_session_t *cs)
  * col_session_get_diff_arrangement:
  *
  * Return (or lazily create) a differential arrangement for `rel_name`
- * keyed on `key_cols[0..key_count)`. The arrangement persists across
- * iterations within an epoch, enabling incremental hash index reuse.
+ * keyed on `key_cols[0..key_count)`.  The arrangement persists across
+ * iterations within an epoch and the caller indexes only rows beyond
+ * `indexed_rows`, but only while its freshness token still matches
+ * `source_rel`: on a relation identity or generation mismatch the hash
+ * chains and progress counters are cleared and the token is poisoned, so
+ * the caller re-indexes from row 0 (Issue #1438).
  *
  * Returns NULL on allocation failure.
  */
 col_diff_arrangement_t *
 col_session_get_diff_arrangement(wl_col_session_t *cs, const char *rel_name,
+    const col_rel_t *source_rel,
     const uint32_t *key_cols, uint32_t key_count)
 {
-    if (!cs || !rel_name || key_count == 0)
+    if (!cs || !rel_name || !source_rel || key_count == 0)
         return NULL;
 
     /* Search existing entries. */
@@ -1592,8 +1623,22 @@ col_session_get_diff_arrangement(wl_col_session_t *cs, const char *rel_name,
                 break;
             }
         }
-        if (match)
+        if (match) {
+            col_diff_arrangement_t *arr = e->diff_arr;
+            if (!wl_columnar_relation_snapshot_equal(
+                    arr->source_snapshot,
+                    wl_columnar_relation_snapshot(source_rel))) {
+                memset(arr->ht_head, 0,
+                    (size_t)arr->nbuckets * sizeof(*arr->ht_head));
+                memset(arr->ht_next, 0,
+                    (size_t)arr->ht_cap * sizeof(*arr->ht_next));
+                arr->base_nrows = 0;
+                arr->current_nrows = 0;
+                arr->indexed_rows = 0;
+                arr->source_snapshot = (col_relation_snapshot_t){ 0, 0, 0 };
+            }
             return e->diff_arr;
+        }
     }
 
     /* Not found: grow registry and create new entry. */
@@ -1630,6 +1675,7 @@ col_session_get_diff_arrangement(wl_col_session_t *cs, const char *rel_name,
         memset(e, 0, sizeof(*e));
         return NULL;
     }
+    e->diff_arr->source_snapshot = (col_relation_snapshot_t){ 0, 0, 0 };
     col_diff_arrangement_attach_ledger(e->diff_arr, &cs->mem_ledger);
     cs->diff_arr_count++;
     return e->diff_arr;
@@ -1697,6 +1743,11 @@ col_diff_arr_entry_clone(const col_diff_arr_entry_t *src,
             memset(dst, 0, sizeof(*dst));
             return ENOMEM;
         }
+        dst->diff_arr->source_snapshot
+            = (col_relation_snapshot_t){ 0, 0, 0 };
+        dst->diff_arr->indexed_rows = 0;
+        dst->diff_arr->base_nrows = 0;
+        dst->diff_arr->current_nrows = 0;
     }
 
     return 0;

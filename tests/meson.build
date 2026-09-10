@@ -2536,6 +2536,24 @@ test_arrangement_cache_reuse_exe = executable(
 
 test('arrangement_cache_reuse', test_arrangement_cache_reuse_exe)
 
+# Generation-token consumer regressions (Issue #1438)
+test_generation_cache_exe = executable(
+  'test_generation_cache',
+  files('test_generation_cache.c'),
+  parser_src,
+  ir_src,
+  optimizer_src,
+  backend_src,
+  io_src,
+  arena_src,
+  thread_src,
+  workqueue_src,
+  include_directories: [wirelog_inc, wirelog_src_inc],
+  dependencies: [nanoarrow_dep, threads_dep, xxhash_dep, mbedtls_dep, math_dep],
+)
+
+test('generation_cache', test_generation_cache_exe)
+
 # ============================================================================
 # Arrangement LRU Eviction Tests (Issue #216)
 # ============================================================================

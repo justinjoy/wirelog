@@ -970,8 +970,12 @@ wl_columnar_filter_apply_right_filter_cached(wl_col_session_t *sess,
             || memcmp(sess->filt_cache[i].filter_data, fexpr->data,
             fexpr->size) != 0)
             continue;
-        /* Cache hit */
-        if (sess->filt_cache[i].source_nrows == rel->nrows)
+        /* Cache hit: the freshness token is the contract (Issue #1438);
+         * the row count is kept as a cheap second guard. */
+        if (wl_columnar_relation_snapshot_equal(
+                sess->filt_cache[i].source_snapshot,
+                wl_columnar_relation_snapshot(rel))
+            && sess->filt_cache[i].source_nrows == rel->nrows)
             return sess->filt_cache[i].filtered; /* still valid */
         /* Source grew — rebuild in-place */
         if (sess->filt_cache[i].filtered)
@@ -986,6 +990,8 @@ wl_columnar_filter_apply_right_filter_cached(wl_col_session_t *sess,
             return NULL;
         }
         sess->filt_cache[i].source_nrows = rel->nrows;
+        sess->filt_cache[i].source_snapshot
+            = wl_columnar_relation_snapshot(rel);
         return sess->filt_cache[i].filtered;
     }
 
@@ -1016,6 +1022,8 @@ wl_columnar_filter_apply_right_filter_cached(wl_col_session_t *sess,
     sess->filt_cache[idx].filter_size = fexpr->size;
     sess->filt_cache[idx].filter_hash = fhash;
     sess->filt_cache[idx].source_nrows = 0; /* will be set after fill */
+    sess->filt_cache[idx].source_snapshot = (col_relation_snapshot_t){ 0, 0,
+                                                                       0 };
     sess->filt_cache[idx].filtered = col_rel_new_like("$rfilter_cache", rel);
     if (!sess->filt_cache[idx].filtered) {
         free(sess->filt_cache[idx].filter_data);
@@ -1034,5 +1042,7 @@ wl_columnar_filter_apply_right_filter_cached(wl_col_session_t *sess,
         return NULL;
     }
     sess->filt_cache[idx].source_nrows = rel->nrows;
+    sess->filt_cache[idx].source_snapshot
+        = wl_columnar_relation_snapshot(rel);
     return out;
 }
