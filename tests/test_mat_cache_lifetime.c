@@ -291,11 +291,15 @@ test_snapshot_invalidates_same_shape_and_poisoned_generations(void)
         "outside-prefix mutation succeeds");
     ASSERT_TRUE(col_mat_cache_lookup(&long_cache, long_left, long_right)
         == NULL, "outside-prefix mutation is a miss");
+    col_mat_cache_release_pins(&long_cache);
     col_mat_cache_clear(&long_cache);
+    ASSERT_TRUE(long_cache.count == 0, "long snapshot cache is released");
     col_rel_destroy(long_left);
     col_rel_destroy(long_right);
 
+    col_mat_cache_release_pins(&cache);
     col_mat_cache_clear(&cache);
+    ASSERT_TRUE(cache.count == 0, "snapshot cache is released");
     col_rel_destroy(left);
     col_rel_destroy(right);
 }
