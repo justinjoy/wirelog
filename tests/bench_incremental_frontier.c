@@ -33,6 +33,7 @@
 #include "../wirelog/passes/sip.h"
 #include "../wirelog/session.h"
 #include "../wirelog/wirelog.h"
+#include "plan_fixture.h"
 
 static uint64_t
 now_ns(void)
@@ -61,9 +62,11 @@ build_plan(const char *src)
 
     wl_plan_t *plan = NULL;
     int rc = wl_plan_from_program(prog, &plan);
-    wirelog_program_free(prog);
-    if (rc != 0)
+    if (rc != 0) {
+        wirelog_program_free(prog);
         return NULL;
+    }
+    plan_fixture_hold(prog);
     return plan;
 }
 
@@ -83,9 +86,9 @@ main(void)
     printf("\n=== Phase 4 Frontier Persistence Performance Benchmark ===\n\n");
 
     const char *src = ".decl edge(x: int32, y: int32)\n"
-                      ".decl path(x: int32, y: int32)\n"
-                      "path(x, y) :- edge(x, y).\n"
-                      "path(x, z) :- path(x, y), edge(y, z).\n";
+        ".decl path(x: int32, y: int32)\n"
+        "path(x, y) :- edge(x, y).\n"
+        "path(x, z) :- path(x, y), edge(y, z).\n";
 
     wl_plan_t *plan = build_plan(src);
     if (!plan) {
@@ -213,9 +216,9 @@ main(void)
     /* Results */
     printf("RESULTS:\n");
     printf("  Baseline (full eval):      %.2f ms\n",
-           (double)full_time_ns / 1000000.0);
+        (double)full_time_ns / 1000000.0);
     printf("  Incremental (batched):     %.2f ms\n",
-           (double)incr_time_ns / 1000000.0);
+        (double)incr_time_ns / 1000000.0);
 
     double speedup = (double)full_time_ns / (double)incr_time_ns;
     printf("  Speedup:                   %.2fx\n\n", speedup);

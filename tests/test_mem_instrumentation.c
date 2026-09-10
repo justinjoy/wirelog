@@ -38,6 +38,7 @@
 #include "../wirelog/passes/sip.h"
 #include "../wirelog/session.h"
 #include "../wirelog/wirelog.h"
+#include "plan_fixture.h"
 
 #include <inttypes.h>
 #include <stdint.h>
@@ -177,9 +178,11 @@ run_chain(uint32_t workers, run_result_t *out)
 
     wl_plan_t *plan = NULL;
     int rc = wl_plan_from_program(prog, &plan);
-    wirelog_program_free(prog);
-    if (rc != 0 || !plan)
+    if (rc != 0 || !plan) {
+        wirelog_program_free(prog);
         return;
+    }
+    plan_fixture_hold(prog);
 
     wl_session_t *sess = NULL;
     rc = wl_session_create(wl_backend_columnar(), plan, workers, &sess);

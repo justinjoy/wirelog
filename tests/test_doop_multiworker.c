@@ -28,6 +28,7 @@
 #include "../wirelog/passes/fusion.h"
 #include "../wirelog/session.h"
 #include "../wirelog/wirelog.h"
+#include "plan_fixture.h"
 
 #include <inttypes.h>
 #include <stdio.h>
@@ -143,9 +144,11 @@ run_multi_idb_chain(int chain_len, uint32_t num_workers)
 
     wl_plan_t *plan = NULL;
     int rc = wl_plan_from_program(prog, &plan);
-    wirelog_program_free(prog);
-    if (rc != 0 || !plan)
+    if (rc != 0 || !plan) {
+        wirelog_program_free(prog);
         return -1;
+    }
+    plan_fixture_hold(prog);
 
     wl_session_t *session = NULL;
     rc = wl_session_create(wl_backend_columnar(), plan, num_workers, &session);
@@ -272,9 +275,11 @@ run_doop_synthetic(uint32_t num_workers)
 
     wl_plan_t *plan = NULL;
     int rc = wl_plan_from_program(prog, &plan);
-    wirelog_program_free(prog);
-    if (rc != 0 || !plan)
+    if (rc != 0 || !plan) {
+        wirelog_program_free(prog);
         return -1;
+    }
+    plan_fixture_hold(prog);
 
     wl_session_t *sess = NULL;
     rc = wl_session_create(wl_backend_columnar(), plan, num_workers, &sess);

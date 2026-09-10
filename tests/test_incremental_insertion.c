@@ -24,28 +24,29 @@
 #include "../wirelog/passes/sip.h"
 #include "../wirelog/session.h"
 #include "../wirelog/wirelog.h"
+#include "plan_fixture.h"
 
 /* ======================================================================== */
 /* TEST HARNESS MACROS                                                       */
 /* ======================================================================== */
 
 #define TEST(name)                       \
-    do {                                 \
-        printf("  [TEST] %-60s ", name); \
-        fflush(stdout);                  \
-    } while (0)
+        do {                                 \
+            printf("  [TEST] %-60s ", name); \
+            fflush(stdout);                  \
+        } while (0)
 
 #define PASS              \
-    do {                  \
-        printf("PASS\n"); \
-        tests_passed++;   \
-    } while (0)
+        do {                  \
+            printf("PASS\n"); \
+            tests_passed++;   \
+        } while (0)
 
 #define FAIL(msg)                  \
-    do {                           \
-        printf("FAIL: %s\n", msg); \
-        tests_failed++;            \
-    } while (0)
+        do {                           \
+            printf("FAIL: %s\n", msg); \
+            tests_failed++;            \
+        } while (0)
 
 static int tests_passed = 0;
 static int tests_failed = 0;
@@ -74,9 +75,11 @@ build_plan(const char *src)
 
     wl_plan_t *plan = NULL;
     int rc = wl_plan_from_program(prog, &plan);
-    wirelog_program_free(prog);
-    if (rc != 0)
+    if (rc != 0) {
+        wirelog_program_free(prog);
         return NULL;
+    }
+    plan_fixture_hold(prog);
     return plan;
 }
 
@@ -112,9 +115,9 @@ test_frontier_preserved_after_incremental_insert(void)
     TEST("frontier_preserved_after_incremental_insert");
 
     const char *src = ".decl edge(x: int32, y: int32)\n"
-                      ".decl path(x: int32, y: int32)\n"
-                      "path(x, y) :- edge(x, y).\n"
-                      "path(x, z) :- path(x, y), edge(y, z).\n";
+        ".decl path(x: int32, y: int32)\n"
+        "path(x, y) :- edge(x, y).\n"
+        "path(x, z) :- path(x, y), edge(y, z).\n";
 
     wl_plan_t *plan = build_plan(src);
     if (!plan) {
@@ -179,7 +182,7 @@ test_frontier_preserved_after_incremental_insert(void)
     if (rc != 0) {
         char msg[64];
         snprintf(msg, sizeof(msg), "col_session_insert_incremental returned %d",
-                 rc);
+            rc);
         wl_session_destroy(sess);
         wl_plan_free(plan);
         FAIL(msg);
@@ -200,9 +203,9 @@ test_frontier_preserved_after_incremental_insert(void)
         || f_after.outer_epoch != f_before.outer_epoch) {
         char msg[128];
         snprintf(msg, sizeof(msg),
-                 "frontier changed: before=(%u,%u) after=(%u,%u)",
-                 f_before.iteration, f_before.outer_epoch, f_after.iteration,
-                 f_after.outer_epoch);
+            "frontier changed: before=(%u,%u) after=(%u,%u)",
+            f_before.iteration, f_before.outer_epoch, f_after.iteration,
+            f_after.outer_epoch);
         wl_session_destroy(sess);
         wl_plan_free(plan);
         FAIL(msg);
@@ -233,9 +236,9 @@ test_incremental_insert_enables_affected_stratum_detection(void)
     TEST("incremental_insert_enables_affected_stratum_detection");
 
     const char *src = ".decl edge(x: int32, y: int32)\n"
-                      ".decl path(x: int32, y: int32)\n"
-                      "path(x, y) :- edge(x, y).\n"
-                      "path(x, z) :- path(x, y), edge(y, z).\n";
+        ".decl path(x: int32, y: int32)\n"
+        "path(x, y) :- edge(x, y).\n"
+        "path(x, z) :- path(x, y), edge(y, z).\n";
 
     wl_plan_t *plan = build_plan(src);
     if (!plan) {
@@ -275,7 +278,7 @@ test_incremental_insert_enables_affected_stratum_detection(void)
     if (rc != 0) {
         char msg[64];
         snprintf(msg, sizeof(msg), "col_session_insert_incremental returned %d",
-                 rc);
+            rc);
         wl_session_destroy(sess);
         wl_plan_free(plan);
         FAIL(msg);
@@ -313,9 +316,9 @@ test_multiple_incremental_inserts_preserve_frontier(void)
     TEST("multiple_incremental_inserts_preserve_cumulative_frontier");
 
     const char *src = ".decl edge(x: int32, y: int32)\n"
-                      ".decl path(x: int32, y: int32)\n"
-                      "path(x, y) :- edge(x, y).\n"
-                      "path(x, z) :- path(x, y), edge(y, z).\n";
+        ".decl path(x: int32, y: int32)\n"
+        "path(x, y) :- edge(x, y).\n"
+        "path(x, z) :- path(x, y), edge(y, z).\n";
 
     wl_plan_t *plan = build_plan(src);
     if (!plan) {
@@ -454,9 +457,9 @@ test_empty_incremental_insert_safe_frontier_unchanged(void)
     TEST("empty_incremental_insert_safe_frontier_unchanged");
 
     const char *src = ".decl edge(x: int32, y: int32)\n"
-                      ".decl path(x: int32, y: int32)\n"
-                      "path(x, y) :- edge(x, y).\n"
-                      "path(x, z) :- path(x, y), edge(y, z).\n";
+        ".decl path(x: int32, y: int32)\n"
+        "path(x, y) :- edge(x, y).\n"
+        "path(x, z) :- path(x, y), edge(y, z).\n";
 
     wl_plan_t *plan = build_plan(src);
     if (!plan) {
@@ -531,10 +534,10 @@ test_empty_incremental_insert_safe_frontier_unchanged(void)
         || f_after.outer_epoch != f_before.outer_epoch) {
         char msg[128];
         snprintf(msg, sizeof(msg),
-                 "frontier changed after empty insert: before=(%u,%u) "
-                 "after=(%u,%u)",
-                 f_before.iteration, f_before.outer_epoch, f_after.iteration,
-                 f_after.outer_epoch);
+            "frontier changed after empty insert: before=(%u,%u) "
+            "after=(%u,%u)",
+            f_before.iteration, f_before.outer_epoch, f_after.iteration,
+            f_after.outer_epoch);
         wl_session_destroy(sess);
         wl_plan_free(plan);
         FAIL(msg);
@@ -562,7 +565,7 @@ main(void)
     test_empty_incremental_insert_safe_frontier_unchanged();
 
     printf("\n=== Results: %d/%d passed ===\n", tests_passed,
-           tests_passed + tests_failed);
+        tests_passed + tests_failed);
 
     return tests_failed > 0 ? 1 : 0;
 }

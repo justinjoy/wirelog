@@ -47,6 +47,7 @@
 #include "../wirelog/wirelog.h"
 
 #include "test_tmpdir.h"
+#include "plan_fixture.h"
 
 /* ======================================================================== */
 /* TEST HARNESS MACROS                                                       */
@@ -176,8 +177,12 @@ build_plan(const char *src, bool optimize)
 
     wl_plan_t *plan = NULL;
     int rc = wl_plan_from_program(prog, &plan);
-    wirelog_program_free(prog);
-    return (rc == 0) ? plan : NULL;
+    if (rc != 0) {
+        wirelog_program_free(prog);
+        return NULL;
+    }
+    plan_fixture_hold(prog);
+    return plan;
 }
 
 /*

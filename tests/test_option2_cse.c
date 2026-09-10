@@ -18,6 +18,7 @@
 #include "../wirelog/session.h"
 #include "../wirelog/session_facts.h"
 #include "../wirelog/wirelog.h"
+#include "plan_fixture.h"
 
 #include <inttypes.h>
 #include <stdint.h>
@@ -34,30 +35,30 @@ static int pass_count = 0;
 static int fail_count = 0;
 
 #define TEST(name)                                      \
-    do {                                                \
-        test_count++;                                   \
-        printf("TEST %d: %s ... ", test_count, (name)); \
-    } while (0)
+        do {                                                \
+            test_count++;                                   \
+            printf("TEST %d: %s ... ", test_count, (name)); \
+        } while (0)
 
 #define PASS()            \
-    do {                  \
-        pass_count++;     \
-        printf("PASS\n"); \
-    } while (0)
+        do {                  \
+            pass_count++;     \
+            printf("PASS\n"); \
+        } while (0)
 
 #define FAIL(msg)                    \
-    do {                             \
-        fail_count++;                \
-        printf("FAIL: %s\n", (msg)); \
-    } while (0)
+        do {                             \
+            fail_count++;                \
+            printf("FAIL: %s\n", (msg)); \
+        } while (0)
 
 #define ASSERT(cond, msg) \
-    do {                  \
-        if (!(cond)) {    \
-            FAIL(msg);    \
-            return;       \
-        }                 \
-    } while (0)
+        do {                  \
+            if (!(cond)) {    \
+                FAIL(msg);    \
+                return;       \
+            }                 \
+        } while (0)
 
 /* ========================================================================
  * K-FUSION mode detection
@@ -95,7 +96,11 @@ make_plan(const char *src)
 
     wl_plan_t *plan = NULL;
     wl_plan_from_program(prog, &plan);
-    wirelog_program_free(prog);
+    if (!plan) {
+        wirelog_program_free(prog);
+        return NULL;
+    }
+    plan_fixture_hold(prog);
     return plan;
 }
 
@@ -151,7 +156,7 @@ struct count_ctx {
 
 static void
 count_cb(const char *relation, const int64_t *row, uint32_t ncols,
-         void *user_data)
+    void *user_data)
 {
     struct count_ctx *ctx = (struct count_ctx *)user_data;
     ctx->count++;
@@ -217,10 +222,10 @@ test_2atom_no_expansion(void)
     TEST("2-atom rule (TC) is not expanded");
 
     const char *src = ".decl edge(x: int32, y: int32)\n"
-                      "edge(1, 2). edge(2, 3).\n"
-                      ".decl tc(x: int32, y: int32)\n"
-                      "tc(x, y) :- edge(x, y).\n"
-                      "tc(x, z) :- tc(x, y), edge(y, z).\n";
+        "edge(1, 2). edge(2, 3).\n"
+        ".decl tc(x: int32, y: int32)\n"
+        "tc(x, y) :- edge(x, y).\n"
+        "tc(x, z) :- tc(x, y), edge(y, z).\n";
 
     wl_plan_t *plan = make_plan(src);
     ASSERT(plan != NULL, "plan generation failed");
@@ -241,14 +246,14 @@ test_3atom_expansion(void)
     TEST("3-atom recursive rule produces K=3 copies");
 
     const char *src = ".decl a(x: int32, y: int32)\n"
-                      ".decl b(x: int32, y: int32)\n"
-                      ".decl c(x: int32, y: int32)\n"
-                      ".decl r(x: int32, w: int32)\n"
-                      "a(1, 2). b(2, 3). c(3, 4).\n"
-                      "r(x, w) :- a(x, y), b(y, z), c(z, w).\n"
-                      "a(x, y) :- r(x, y).\n"
-                      "b(x, y) :- r(x, y).\n"
-                      "c(x, y) :- r(x, y).\n";
+        ".decl b(x: int32, y: int32)\n"
+        ".decl c(x: int32, y: int32)\n"
+        ".decl r(x: int32, w: int32)\n"
+        "a(1, 2). b(2, 3). c(3, 4).\n"
+        "r(x, w) :- a(x, y), b(y, z), c(z, w).\n"
+        "a(x, y) :- r(x, y).\n"
+        "b(x, y) :- r(x, y).\n"
+        "c(x, y) :- r(x, y).\n";
 
     wl_plan_t *plan = make_plan(src);
     ASSERT(plan != NULL, "plan generation failed");
@@ -259,7 +264,7 @@ test_3atom_expansion(void)
     if (using_k_fusion()) {
         uint32_t k_fusions = count_ops(r, WL_PLAN_OP_K_FUSION);
         ASSERT(k_fusions >= 1,
-               "expected K_FUSION operator with ENABLE_K_FUSION=1");
+            "expected K_FUSION operator with ENABLE_K_FUSION=1");
     } else {
         uint32_t force_delta = count_delta_mode(r, WL_DELTA_FORCE_DELTA);
         ASSERT(force_delta == 3, "expected 3 FORCE_DELTA ops for 3-atom rule");
@@ -281,14 +286,14 @@ test_3atom_materialization_hints(void)
     TEST("3-atom rule has materialization hints on first K-2 joins");
 
     const char *src = ".decl a(x: int32, y: int32)\n"
-                      ".decl b(x: int32, y: int32)\n"
-                      ".decl c(x: int32, y: int32)\n"
-                      ".decl r(x: int32, w: int32)\n"
-                      "a(1, 2). b(2, 3). c(3, 4).\n"
-                      "r(x, w) :- a(x, y), b(y, z), c(z, w).\n"
-                      "a(x, y) :- r(x, y).\n"
-                      "b(x, y) :- r(x, y).\n"
-                      "c(x, y) :- r(x, y).\n";
+        ".decl b(x: int32, y: int32)\n"
+        ".decl c(x: int32, y: int32)\n"
+        ".decl r(x: int32, w: int32)\n"
+        "a(1, 2). b(2, 3). c(3, 4).\n"
+        "r(x, w) :- a(x, y), b(y, z), c(z, w).\n"
+        "a(x, y) :- r(x, y).\n"
+        "b(x, y) :- r(x, y).\n"
+        "c(x, y) :- r(x, y).\n";
 
     wl_plan_t *plan = make_plan(src);
     ASSERT(plan != NULL, "plan generation failed");
@@ -300,13 +305,13 @@ test_3atom_materialization_hints(void)
         /* K_FUSION encapsulates all copies; materialization hints are internal */
         uint32_t k_fusions = count_ops(r, WL_PLAN_OP_K_FUSION);
         ASSERT(k_fusions >= 1,
-               "expected K_FUSION operator with ENABLE_K_FUSION=1");
+            "expected K_FUSION operator with ENABLE_K_FUSION=1");
     } else {
         /* K=3: first K-2=1 JOIN position is materialized per copy.
          * 3 copies × 1 materialized JOIN = 3 total. */
         uint32_t mat = count_materialized(r);
         ASSERT(mat == 3,
-               "expected 3 materialized hints (1 per copy × 3 copies)");
+            "expected 3 materialized hints (1 per copy × 3 copies)");
     }
 
     wl_plan_free(plan);
@@ -319,14 +324,14 @@ test_3atom_force_full(void)
     TEST("3-atom rule has correct FORCE_FULL count");
 
     const char *src = ".decl a(x: int32, y: int32)\n"
-                      ".decl b(x: int32, y: int32)\n"
-                      ".decl c(x: int32, y: int32)\n"
-                      ".decl r(x: int32, w: int32)\n"
-                      "a(1, 2). b(2, 3). c(3, 4).\n"
-                      "r(x, w) :- a(x, y), b(y, z), c(z, w).\n"
-                      "a(x, y) :- r(x, y).\n"
-                      "b(x, y) :- r(x, y).\n"
-                      "c(x, y) :- r(x, y).\n";
+        ".decl b(x: int32, y: int32)\n"
+        ".decl c(x: int32, y: int32)\n"
+        ".decl r(x: int32, w: int32)\n"
+        "a(1, 2). b(2, 3). c(3, 4).\n"
+        "r(x, w) :- a(x, y), b(y, z), c(z, w).\n"
+        "a(x, y) :- r(x, y).\n"
+        "b(x, y) :- r(x, y).\n"
+        "c(x, y) :- r(x, y).\n";
 
     wl_plan_t *plan = make_plan(src);
     ASSERT(plan != NULL, "plan generation failed");
@@ -338,12 +343,12 @@ test_3atom_force_full(void)
         /* K_FUSION encapsulates all copies; FORCE_FULL is internal */
         uint32_t k_fusions = count_ops(r, WL_PLAN_OP_K_FUSION);
         ASSERT(k_fusions >= 1,
-               "expected K_FUSION operator with ENABLE_K_FUSION=1");
+            "expected K_FUSION operator with ENABLE_K_FUSION=1");
     } else {
         /* Each copy: 1 FORCE_DELTA + 2 FORCE_FULL = K*(K-1) = 6 FORCE_FULL */
         uint32_t force_full = count_delta_mode(r, WL_DELTA_FORCE_FULL);
         ASSERT(force_full == 6,
-               "expected 6 FORCE_FULL ops (2 per copy × 3 copies)");
+            "expected 6 FORCE_FULL ops (2 per copy × 3 copies)");
     }
 
     wl_plan_free(plan);
@@ -356,11 +361,11 @@ test_nonrecursive_no_rewrite(void)
     TEST("non-recursive stratum is not rewritten");
 
     const char *src = ".decl a(x: int32, y: int32)\n"
-                      ".decl b(x: int32, y: int32)\n"
-                      ".decl c(x: int32, y: int32)\n"
-                      ".decl r(x: int32, w: int32)\n"
-                      "a(1, 2). b(2, 3). c(3, 4).\n"
-                      "r(x, w) :- a(x, y), b(y, z), c(z, w).\n";
+        ".decl b(x: int32, y: int32)\n"
+        ".decl c(x: int32, y: int32)\n"
+        ".decl r(x: int32, w: int32)\n"
+        "a(1, 2). b(2, 3). c(3, 4).\n"
+        "r(x, w) :- a(x, y), b(y, z), c(z, w).\n";
 
     wl_plan_t *plan = make_plan(src);
     ASSERT(plan != NULL, "plan generation failed");
@@ -381,14 +386,14 @@ test_delta_and_full_invariant(void)
     TEST("K=3 expansion: FORCE_DELTA + FORCE_FULL = K*K");
 
     const char *src = ".decl a(x: int32, y: int32)\n"
-                      ".decl b(x: int32, y: int32)\n"
-                      ".decl c(x: int32, y: int32)\n"
-                      ".decl r(x: int32, w: int32)\n"
-                      "a(1, 2). b(2, 3). c(3, 4).\n"
-                      "r(x, w) :- a(x, y), b(y, z), c(z, w).\n"
-                      "a(x, y) :- r(x, y).\n"
-                      "b(x, y) :- r(x, y).\n"
-                      "c(x, y) :- r(x, y).\n";
+        ".decl b(x: int32, y: int32)\n"
+        ".decl c(x: int32, y: int32)\n"
+        ".decl r(x: int32, w: int32)\n"
+        "a(1, 2). b(2, 3). c(3, 4).\n"
+        "r(x, w) :- a(x, y), b(y, z), c(z, w).\n"
+        "a(x, y) :- r(x, y).\n"
+        "b(x, y) :- r(x, y).\n"
+        "c(x, y) :- r(x, y).\n";
 
     wl_plan_t *plan = make_plan(src);
     ASSERT(plan != NULL, "plan generation failed");
@@ -400,7 +405,7 @@ test_delta_and_full_invariant(void)
         /* K_FUSION encapsulates all copies; fd/ff counts are internal */
         uint32_t k_fusions = count_ops(r, WL_PLAN_OP_K_FUSION);
         ASSERT(k_fusions >= 1,
-               "expected K_FUSION operator with ENABLE_K_FUSION=1");
+            "expected K_FUSION operator with ENABLE_K_FUSION=1");
     } else {
         /* For K copies, each copy has K IDB positions:
          * 1 FORCE_DELTA + (K-1) FORCE_FULL = K per copy.
@@ -410,7 +415,7 @@ test_delta_and_full_invariant(void)
         uint32_t ff = count_delta_mode(r, WL_DELTA_FORCE_FULL);
         char msg[128];
         snprintf(msg, sizeof(msg), "expected fd+ff=9 (K*K), got fd=%u ff=%u",
-                 fd, ff);
+            fd, ff);
         ASSERT(fd + ff == 9, msg);
     }
 
@@ -424,14 +429,14 @@ test_expanded_plan_free(void)
     TEST("wl_plan_free handles expanded plan without crash");
 
     const char *src = ".decl a(x: int32, y: int32)\n"
-                      ".decl b(x: int32, y: int32)\n"
-                      ".decl c(x: int32, y: int32)\n"
-                      ".decl r(x: int32, w: int32)\n"
-                      "a(1, 2). b(2, 3). c(3, 4).\n"
-                      "r(x, w) :- a(x, y), b(y, z), c(z, w).\n"
-                      "a(x, y) :- r(x, y).\n"
-                      "b(x, y) :- r(x, y).\n"
-                      "c(x, y) :- r(x, y).\n";
+        ".decl b(x: int32, y: int32)\n"
+        ".decl c(x: int32, y: int32)\n"
+        ".decl r(x: int32, w: int32)\n"
+        "a(1, 2). b(2, 3). c(3, 4).\n"
+        "r(x, w) :- a(x, y), b(y, z), c(z, w).\n"
+        "a(x, y) :- r(x, y).\n"
+        "b(x, y) :- r(x, y).\n"
+        "c(x, y) :- r(x, y).\n";
 
     wl_plan_t *plan = make_plan(src);
     ASSERT(plan != NULL, "plan generation failed");
@@ -450,10 +455,10 @@ test_expanded_plan_free(void)
  * ======================================================================== */
 
 static const char *k2_src = ".decl a(x: int32, y: int32)\n"
-                            ".decl b(x: int32, y: int32)\n"
-                            "a(1, 2). b(2, 3).\n"
-                            "a(x, z) :- a(x, y), b(y, z).\n"
-                            "b(x, y) :- a(x, y).\n";
+    ".decl b(x: int32, y: int32)\n"
+    "a(1, 2). b(2, 3).\n"
+    "a(x, z) :- a(x, y), b(y, z).\n"
+    "b(x, y) :- a(x, y).\n";
 
 static void
 test_2atom_k2_expansion(void)
@@ -469,13 +474,13 @@ test_2atom_k2_expansion(void)
     if (using_k_fusion()) {
         uint32_t k_fusions = count_ops(a, WL_PLAN_OP_K_FUSION);
         ASSERT(k_fusions >= 1,
-               "expected K_FUSION operator with ENABLE_K_FUSION=1");
+            "expected K_FUSION operator with ENABLE_K_FUSION=1");
     } else {
         uint32_t force_delta = count_delta_mode(a, WL_DELTA_FORCE_DELTA);
         char msg[128];
         snprintf(msg, sizeof(msg),
-                 "expected >= 2 FORCE_DELTA ops for K=2 rule, got %u",
-                 force_delta);
+            "expected >= 2 FORCE_DELTA ops for K=2 rule, got %u",
+            force_delta);
         ASSERT(force_delta >= 2, msg);
     }
 
@@ -498,15 +503,15 @@ test_2atom_k2_force_full(void)
         /* K_FUSION encapsulates all copies; FORCE_FULL is internal */
         uint32_t k_fusions = count_ops(a, WL_PLAN_OP_K_FUSION);
         ASSERT(k_fusions >= 1,
-               "expected K_FUSION operator with ENABLE_K_FUSION=1");
+            "expected K_FUSION operator with ENABLE_K_FUSION=1");
     } else {
         /* K=2: each copy has 1 FORCE_DELTA + 1 FORCE_FULL.
          * 2 copies => 2 FORCE_FULL total. */
         uint32_t force_full = count_delta_mode(a, WL_DELTA_FORCE_FULL);
         char msg[128];
         snprintf(msg, sizeof(msg),
-                 "expected >= 2 FORCE_FULL ops for K=2 rule, got %u",
-                 force_full);
+            "expected >= 2 FORCE_FULL ops for K=2 rule, got %u",
+            force_full);
         ASSERT(force_full >= 2, msg);
     }
 
@@ -529,18 +534,18 @@ test_2atom_k2_concat_consolidate(void)
         /* K_FUSION replaces CONCAT+CONSOLIDATE structure */
         uint32_t k_fusions = count_ops(a, WL_PLAN_OP_K_FUSION);
         ASSERT(k_fusions >= 1,
-               "expected K_FUSION operator with ENABLE_K_FUSION=1");
+            "expected K_FUSION operator with ENABLE_K_FUSION=1");
     } else {
         uint32_t concats = count_ops(a, WL_PLAN_OP_CONCAT);
         char msg_concat[128];
         snprintf(msg_concat, sizeof(msg_concat),
-                 "expected >= 2 CONCAT ops for K=2 rule, got %u", concats);
+            "expected >= 2 CONCAT ops for K=2 rule, got %u", concats);
         ASSERT(concats >= 2, msg_concat);
 
         uint32_t consols = count_ops(a, WL_PLAN_OP_CONSOLIDATE);
         char msg_consol[128];
         snprintf(msg_consol, sizeof(msg_consol),
-                 "expected >= 1 CONSOLIDATE op for K=2 rule, got %u", consols);
+            "expected >= 1 CONSOLIDATE op for K=2 rule, got %u", consols);
         ASSERT(consols >= 1, msg_consol);
     }
 
@@ -563,13 +568,13 @@ test_2atom_k2_invariant(void)
         /* K_FUSION encapsulates all copies; fd/ff counts are internal */
         uint32_t k_fusions = count_ops(a, WL_PLAN_OP_K_FUSION);
         ASSERT(k_fusions >= 1,
-               "expected K_FUSION operator with ENABLE_K_FUSION=1");
+            "expected K_FUSION operator with ENABLE_K_FUSION=1");
     } else {
         uint32_t fd = count_delta_mode(a, WL_DELTA_FORCE_DELTA);
         uint32_t ff = count_delta_mode(a, WL_DELTA_FORCE_FULL);
         char msg[128];
         snprintf(msg, sizeof(msg),
-                 "expected fd+ff=4 (K*K for K=2), got fd=%u ff=%u", fd, ff);
+            "expected fd+ff=4 (K*K for K=2), got fd=%u ff=%u", fd, ff);
         ASSERT(fd + ff == 4, msg);
     }
 
@@ -592,13 +597,13 @@ test_2atom_k2_no_materialization(void)
         /* K_FUSION encapsulates all copies; materialization is internal */
         uint32_t k_fusions = count_ops(a, WL_PLAN_OP_K_FUSION);
         ASSERT(k_fusions >= 1,
-               "expected K_FUSION operator with ENABLE_K_FUSION=1");
+            "expected K_FUSION operator with ENABLE_K_FUSION=1");
     } else {
         /* K=2: K-2 = 0 intermediate joins to materialize per copy. */
         uint32_t mat = count_materialized(a);
         char msg[128];
         snprintf(msg, sizeof(msg),
-                 "expected 0 materialized hints for K=2 rule, got %u", mat);
+            "expected 0 materialized hints for K=2 rule, got %u", mat);
         ASSERT(mat == 0, msg);
     }
 
@@ -614,10 +619,10 @@ test_k1_k3_unaffected(void)
     /* K=1: single-IDB-atom rule (transitive closure with EDB join).
      * The body has only 1 IDB atom (tc) so it should NOT be expanded. */
     const char *tc_src = ".decl edge(x: int32, y: int32)\n"
-                         "edge(1, 2). edge(2, 3).\n"
-                         ".decl tc(x: int32, y: int32)\n"
-                         "tc(x, y) :- edge(x, y).\n"
-                         "tc(x, z) :- tc(x, y), edge(y, z).\n";
+        "edge(1, 2). edge(2, 3).\n"
+        ".decl tc(x: int32, y: int32)\n"
+        "tc(x, y) :- edge(x, y).\n"
+        "tc(x, z) :- tc(x, y), edge(y, z).\n";
 
     wl_plan_t *plan_tc = make_plan(tc_src);
     ASSERT(plan_tc != NULL, "TC plan generation failed");
@@ -628,21 +633,21 @@ test_k1_k3_unaffected(void)
     uint32_t fd_k1 = count_delta_mode(tc, WL_DELTA_FORCE_DELTA);
     char msg_k1[128];
     snprintf(msg_k1, sizeof(msg_k1),
-             "K=1 TC should have 0 FORCE_DELTA ops, got %u", fd_k1);
+        "K=1 TC should have 0 FORCE_DELTA ops, got %u", fd_k1);
     ASSERT(fd_k1 == 0, msg_k1);
 
     wl_plan_free(plan_tc);
 
     /* K=3: 3-atom recursive rule should still produce exactly 3 copies. */
     const char *cspa_src = ".decl a(x: int32, y: int32)\n"
-                           ".decl b(x: int32, y: int32)\n"
-                           ".decl c(x: int32, y: int32)\n"
-                           ".decl r(x: int32, w: int32)\n"
-                           "a(1, 2). b(2, 3). c(3, 4).\n"
-                           "r(x, w) :- a(x, y), b(y, z), c(z, w).\n"
-                           "a(x, y) :- r(x, y).\n"
-                           "b(x, y) :- r(x, y).\n"
-                           "c(x, y) :- r(x, y).\n";
+        ".decl b(x: int32, y: int32)\n"
+        ".decl c(x: int32, y: int32)\n"
+        ".decl r(x: int32, w: int32)\n"
+        "a(1, 2). b(2, 3). c(3, 4).\n"
+        "r(x, w) :- a(x, y), b(y, z), c(z, w).\n"
+        "a(x, y) :- r(x, y).\n"
+        "b(x, y) :- r(x, y).\n"
+        "c(x, y) :- r(x, y).\n";
 
     wl_plan_t *plan_cspa = make_plan(cspa_src);
     ASSERT(plan_cspa != NULL, "CSPA plan generation failed");
@@ -654,14 +659,14 @@ test_k1_k3_unaffected(void)
         uint32_t k_fusions = count_ops(r, WL_PLAN_OP_K_FUSION);
         char msg_k3[128];
         snprintf(msg_k3, sizeof(msg_k3),
-                 "K=3 rule should have K_FUSION operator, got %u k_fusions",
-                 k_fusions);
+            "K=3 rule should have K_FUSION operator, got %u k_fusions",
+            k_fusions);
         ASSERT(k_fusions >= 1, msg_k3);
     } else {
         uint32_t fd_k3 = count_delta_mode(r, WL_DELTA_FORCE_DELTA);
         char msg_k3[128];
         snprintf(msg_k3, sizeof(msg_k3),
-                 "K=3 rule should have 3 FORCE_DELTA ops, got %u", fd_k3);
+            "K=3 rule should have 3 FORCE_DELTA ops, got %u", fd_k3);
         ASSERT(fd_k3 == 3, msg_k3);
     }
 
@@ -679,10 +684,10 @@ test_integ_two_way_join_regression(void)
     TEST("integ: 2-way TC unaffected by delta expansion (regression guard)");
 
     const char *src = ".decl edge(x: int32, y: int32)\n"
-                      "edge(1, 2). edge(2, 3). edge(3, 4).\n"
-                      ".decl tc(x: int32, y: int32)\n"
-                      "tc(x, y) :- edge(x, y).\n"
-                      "tc(x, z) :- tc(x, y), edge(y, z).\n";
+        "edge(1, 2). edge(2, 3). edge(3, 4).\n"
+        ".decl tc(x: int32, y: int32)\n"
+        "tc(x, y) :- edge(x, y).\n"
+        "tc(x, z) :- tc(x, y), edge(y, z).\n";
 
     int64_t count = run_program(src, 1);
     ASSERT(count >= 0, "TC evaluation failed");
@@ -700,9 +705,9 @@ test_integ_three_way_join_correctness(void)
     TEST("integ: 3-way join (3-hop path) correctness");
 
     const char *src = ".decl edge(x: int32, y: int32)\n"
-                      "edge(1, 2). edge(2, 3). edge(3, 4).\n"
-                      ".decl path3(x: int32, z: int32)\n"
-                      "path3(x, z) :- edge(x, y), edge(y, w), edge(w, z).\n";
+        "edge(1, 2). edge(2, 3). edge(3, 4).\n"
+        ".decl path3(x: int32, z: int32)\n"
+        "path3(x, z) :- edge(x, y), edge(y, w), edge(w, z).\n";
 
     int64_t count = run_program(src, 1);
     ASSERT(count >= 0, "program evaluation failed");
@@ -720,19 +725,19 @@ test_integ_cspa_memory_alias(void)
     TEST("integ: CSPA memoryAlias 3-atom recursive rule correctness");
 
     const char *src = ".decl pointsTo(ptr: int32, cell: int32)\n"
-                      "pointsTo(1, 10). pointsTo(2, 10). pointsTo(3, 20). "
-                      "pointsTo(4, 20).\n"
-                      ".decl memoryAlias(x: int32, y: int32)\n"
-                      "memoryAlias(x, y) :- pointsTo(x, a), pointsTo(y, a).\n"
-                      "memoryAlias(x, z) :- pointsTo(x, a), memoryAlias(a, b), "
-                      "pointsTo(z, b).\n";
+        "pointsTo(1, 10). pointsTo(2, 10). pointsTo(3, 20). "
+        "pointsTo(4, 20).\n"
+        ".decl memoryAlias(x: int32, y: int32)\n"
+        "memoryAlias(x, y) :- pointsTo(x, a), pointsTo(y, a).\n"
+        "memoryAlias(x, z) :- pointsTo(x, a), memoryAlias(a, b), "
+        "pointsTo(z, b).\n";
 
     int64_t count = run_program(src, 1);
     ASSERT(count >= 0, "CSPA evaluation failed");
 
     char msg[128];
     snprintf(msg, sizeof(msg), "expected 8 memoryAlias facts, got %" PRId64,
-             count);
+        count);
     ASSERT(count == 8, msg);
 
     PASS();
@@ -772,6 +777,6 @@ main(void)
     test_integ_cspa_memory_alias();
 
     printf("\n%d tests: %d passed, %d failed\n", test_count, pass_count,
-           fail_count);
+        fail_count);
     return fail_count > 0 ? 1 : 0;
 }
