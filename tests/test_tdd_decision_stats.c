@@ -14,6 +14,7 @@
 #include "../wirelog/passes/sip.h"
 #include "../wirelog/session.h"
 #include "../wirelog/wirelog.h"
+#include "plan_fixture.h"
 
 #include <stdint.h>
 #include <errno.h>
@@ -129,9 +130,11 @@ run_snapshot_frames(void)
     wl_sip_apply(prog, NULL);
     wl_plan_t *plan = NULL;
     int rc = wl_plan_from_program(prog, &plan);
-    wirelog_program_free(prog);
-    if (rc != 0)
+    if (rc != 0) {
+        wirelog_program_free(prog);
         return 1;
+    }
+    plan_fixture_hold(prog);
     if (plan->stratum_count != 3) {
         wl_plan_free(plan);
         return 1;
@@ -207,9 +210,11 @@ run_audit_boundary(int mode)
     wl_sip_apply(prog, NULL);
     wl_plan_t *plan = NULL;
     int rc = wl_plan_from_program(prog, &plan);
-    wirelog_program_free(prog);
-    if (rc != 0)
+    if (rc != 0) {
+        wirelog_program_free(prog);
         return 1;
+    }
+    plan_fixture_hold(prog);
     wl_session_t *sess = NULL;
     rc = wl_session_create(wl_backend_columnar(), plan, 8, &sess);
     if (rc != 0) {
@@ -307,9 +312,11 @@ run_bdx_mode(decision_stats_t *stats, int use_step)
 
     wl_plan_t *plan = NULL;
     int rc = wl_plan_from_program(prog, &plan);
-    wirelog_program_free(prog);
-    if (rc != 0 || !plan)
+    if (rc != 0 || !plan) {
+        wirelog_program_free(prog);
         return 1;
+    }
+    plan_fixture_hold(prog);
 
     wl_session_t *sess = NULL;
     rc = wl_session_create(wl_backend_columnar(), plan, 8, &sess);
@@ -375,9 +382,11 @@ run_bdx_repeated_snapshot(decision_stats_t *first, decision_stats_t *second,
 
     wl_plan_t *plan = NULL;
     int rc = wl_plan_from_program(prog, &plan);
-    wirelog_program_free(prog);
-    if (rc != 0 || !plan)
+    if (rc != 0 || !plan) {
+        wirelog_program_free(prog);
         return 1;
+    }
+    plan_fixture_hold(prog);
 
     wl_session_t *sess = NULL;
     rc = wl_session_create(wl_backend_columnar(), plan, 8, &sess);
@@ -443,9 +452,11 @@ run_remove_invalidates_stable_snapshot(decision_stats_t *after_remove,
 
     wl_plan_t *plan = NULL;
     int rc = wl_plan_from_program(prog, &plan);
-    wirelog_program_free(prog);
-    if (rc != 0 || !plan)
+    if (rc != 0 || !plan) {
+        wirelog_program_free(prog);
         return 1;
+    }
+    plan_fixture_hold(prog);
 
     wl_session_t *sess = NULL;
     rc = wl_session_create(wl_backend_columnar(), plan, 8, &sess);

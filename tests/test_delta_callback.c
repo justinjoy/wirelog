@@ -22,6 +22,7 @@
 #include "../wirelog/wirelog-parser.h"
 #include "../wirelog/wirelog-extension.h"
 #include "../wirelog/wirelog.h"
+#include "plan_fixture.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -80,9 +81,11 @@ build_plan(const char *src)
 
     wl_plan_t *plan = NULL;
     int rc = wl_plan_from_program(prog, &plan);
-    wirelog_program_free(prog);
-    if (rc != 0)
+    if (rc != 0) {
+        wirelog_program_free(prog);
         return NULL;
+    }
+    plan_fixture_hold(prog);
     return plan;
 }
 
@@ -406,7 +409,7 @@ test_no_partial_delta_on_error(void)
         FAIL("could not generate failure plan");
         return 1;
     }
-    wirelog_program_free(program);
+    plan_fixture_hold(program);
     wl_session_t *session = NULL;
     if (wl_session_create_with_snapshot(wl_backend_columnar(), plan, 1,
         snapshot, &session) != 0

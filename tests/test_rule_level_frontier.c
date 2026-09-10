@@ -32,28 +32,29 @@
 #include "../wirelog/passes/sip.h"
 #include "../wirelog/session.h"
 #include "../wirelog/wirelog.h"
+#include "plan_fixture.h"
 
 /* ======================================================================== */
 /* TEST HARNESS MACROS                                                       */
 /* ======================================================================== */
 
 #define TEST(name)                       \
-    do {                                 \
-        printf("  [TEST] %-62s ", name); \
-        fflush(stdout);                  \
-    } while (0)
+        do {                                 \
+            printf("  [TEST] %-62s ", name); \
+            fflush(stdout);                  \
+        } while (0)
 
 #define PASS              \
-    do {                  \
-        printf("PASS\n"); \
-        tests_passed++;   \
-    } while (0)
+        do {                  \
+            printf("PASS\n"); \
+            tests_passed++;   \
+        } while (0)
 
 #define FAIL(msg)                  \
-    do {                           \
-        printf("FAIL: %s\n", msg); \
-        tests_failed++;            \
-    } while (0)
+        do {                           \
+            printf("FAIL: %s\n", msg); \
+            tests_failed++;            \
+        } while (0)
 
 static int tests_passed = 0;
 static int tests_failed = 0;
@@ -81,7 +82,7 @@ make_var_op(const char *rel_name)
  */
 static void
 init_relation(wl_plan_relation_t *pr, const char *rel_name, const char *dep_rel,
-              wl_plan_op_t *op_storage)
+    wl_plan_op_t *op_storage)
 {
     op_storage[0] = make_var_op(dep_rel);
     pr->name = rel_name;
@@ -111,9 +112,11 @@ build_plan(const char *src)
 
     wl_plan_t *plan = NULL;
     int rc = wl_plan_from_program(prog, &plan);
-    wirelog_program_free(prog);
-    if (rc != 0)
+    if (rc != 0) {
+        wirelog_program_free(prog);
         return NULL;
+    }
+    plan_fixture_hold(prog);
     return plan;
 }
 
@@ -136,7 +139,7 @@ find_recursive_stratum(const wl_plan_t *plan)
 
 static void
 count_cb(const char *relation, const int64_t *row, uint32_t ncols,
-         void *user_data)
+    void *user_data)
 {
     int64_t *count = (int64_t *)user_data;
     (*count)++;
@@ -195,14 +198,14 @@ test_direct_rule_dependency_affects_single_rule(void)
     if (mask_edge != (uint64_t)0x1) {
         char buf[80];
         snprintf(buf, sizeof(buf), "edge: expected 0x1, got 0x%" PRIx64,
-                 mask_edge);
+            mask_edge);
         FAIL(buf);
         return;
     }
     if (mask_node != (uint64_t)0x2) {
         char buf[80];
         snprintf(buf, sizeof(buf), "node: expected 0x2, got 0x%" PRIx64,
-                 mask_node);
+            mask_node);
         FAIL(buf);
         return;
     }
@@ -273,7 +276,7 @@ test_transitive_rule_dependency_marks_chain(void)
     } else {
         char buf[80];
         snprintf(buf, sizeof(buf), "expected 0x%" PRIx64 ", got 0x%" PRIx64,
-                 expected, mask);
+            expected, mask);
         FAIL(buf);
     }
 }
@@ -297,9 +300,9 @@ test_unaffected_stratum_frontier_preserved_after_insert(void)
     TEST("unaffected stratum frontier preserved after incremental insert");
 
     const char *src = ".decl edge(x: int32, y: int32)\n"
-                      ".decl path(x: int32, y: int32)\n"
-                      "path(x, y) :- edge(x, y).\n"
-                      "path(x, z) :- path(x, y), edge(y, z).\n";
+        ".decl path(x: int32, y: int32)\n"
+        "path(x, y) :- edge(x, y).\n"
+        "path(x, z) :- path(x, y), edge(y, z).\n";
 
     wl_plan_t *plan = build_plan(src);
     if (!plan) {
@@ -363,7 +366,7 @@ test_unaffected_stratum_frontier_preserved_after_insert(void)
     if (rc != 0) {
         char msg[64];
         snprintf(msg, sizeof(msg), "col_session_insert_incremental returned %d",
-                 rc);
+            rc);
         wl_session_destroy(sess);
         wl_plan_free(plan);
         FAIL(msg);
@@ -383,9 +386,9 @@ test_unaffected_stratum_frontier_preserved_after_insert(void)
         || f_after.outer_epoch != f_before.outer_epoch) {
         char msg[128];
         snprintf(msg, sizeof(msg),
-                 "frontier changed by insert: before=(%u,%u) after=(%u,%u)",
-                 f_before.iteration, f_before.outer_epoch, f_after.iteration,
-                 f_after.outer_epoch);
+            "frontier changed by insert: before=(%u,%u) after=(%u,%u)",
+            f_before.iteration, f_before.outer_epoch, f_after.iteration,
+            f_after.outer_epoch);
         wl_session_destroy(sess);
         wl_plan_free(plan);
         FAIL(msg);
@@ -420,12 +423,12 @@ static void
 test_output_correctness_incremental_matches_baseline(void)
 {
     TEST("output correctness: incremental matches full-reset baseline (6 "
-         "paths)");
+        "paths)");
 
     const char *src = ".decl edge(x: int32, y: int32)\n"
-                      ".decl path(x: int32, y: int32)\n"
-                      "path(x, y) :- edge(x, y).\n"
-                      "path(x, z) :- path(x, y), edge(y, z).\n";
+        ".decl path(x: int32, y: int32)\n"
+        "path(x, y) :- edge(x, y).\n"
+        "path(x, z) :- path(x, y), edge(y, z).\n";
 
     /* ---- Baseline session: insert all edges at once ---- */
     wl_plan_t *plan_base = build_plan(src);
@@ -506,7 +509,7 @@ test_output_correctness_incremental_matches_baseline(void)
     if (rc != 0) {
         char msg[64];
         snprintf(msg, sizeof(msg), "col_session_insert_incremental returned %d",
-                 rc);
+            rc);
         wl_session_destroy(sess_inc);
         wl_plan_free(plan_inc);
         FAIL(msg);
@@ -534,8 +537,8 @@ test_output_correctness_incremental_matches_baseline(void)
     if (incremental_count != baseline_count) {
         char msg[128];
         snprintf(msg, sizeof(msg),
-                 "count mismatch: baseline=%" PRId64 " incremental=%" PRId64,
-                 baseline_count, incremental_count);
+            "count mismatch: baseline=%" PRId64 " incremental=%" PRId64,
+            baseline_count, incremental_count);
         FAIL(msg);
         return;
     }
@@ -642,7 +645,7 @@ test_null_insertion_returns_zero_mask(void)
     } else {
         char buf[80];
         snprintf(buf, sizeof(buf), "expected 0,0 got 0x%" PRIx64 ",0x%" PRIx64,
-                 m1, m2);
+            m1, m2);
         FAIL(buf);
     }
 }
@@ -708,7 +711,7 @@ test_global_rule_indices_across_strata(void)
     } else {
         char buf[80];
         snprintf(buf, sizeof(buf), "expected 0x%" PRIx64 ", got 0x%" PRIx64,
-                 expected, mask);
+            expected, mask);
         FAIL(buf);
     }
 }
@@ -729,9 +732,9 @@ test_multiple_incremental_inserts_preserve_frontier(void)
     TEST("multiple incremental inserts: frontier preserved across all cycles");
 
     const char *src = ".decl edge(x: int32, y: int32)\n"
-                      ".decl path(x: int32, y: int32)\n"
-                      "path(x, y) :- edge(x, y).\n"
-                      "path(x, z) :- path(x, y), edge(y, z).\n";
+        ".decl path(x: int32, y: int32)\n"
+        "path(x, y) :- edge(x, y).\n"
+        "path(x, z) :- path(x, y), edge(y, z).\n";
 
     wl_plan_t *plan = build_plan(src);
     if (!plan) {
@@ -847,7 +850,7 @@ int
 main(void)
 {
     printf("\n=== Rule-Level Frontier Integration Tests (Phase 4, US-4-006) "
-           "===\n\n");
+        "===\n\n");
 
     test_direct_rule_dependency_affects_single_rule();
     test_transitive_rule_dependency_marks_chain();
@@ -859,7 +862,7 @@ main(void)
     test_multiple_incremental_inserts_preserve_frontier();
 
     printf("\n=== Results: %d/%d passed ===\n\n", tests_passed,
-           tests_passed + tests_failed);
+        tests_passed + tests_failed);
 
     return tests_failed > 0 ? 1 : 0;
 }
