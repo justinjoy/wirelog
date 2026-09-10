@@ -497,7 +497,7 @@ col_mat_cache_attach_reclaimer(col_mat_cache_t *cache)
     if (cache->reclaimer_handle != 0)
         return 0;
     int rc = wl_mem_ledger_register_reclaimer(cache->ledger,
-        mat_cache_reclaimer, cache, &cache->reclaimer_handle);
+            mat_cache_reclaimer, cache, &cache->reclaimer_handle);
     if (rc == 0)
         cache->reclaimer_owner_alive = true;
     return rc;
