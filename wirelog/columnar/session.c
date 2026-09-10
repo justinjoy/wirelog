@@ -2428,8 +2428,7 @@ col_session_step(wl_session_t *session)
 
     if (sess->delta_cb && !sess->pending_input_change
         && sess->last_inserted_relation == NULL
-        && sess->last_removed_relation == NULL)
-    {
+        && sess->last_removed_relation == NULL){
         col_session_reclaim_quiescent(sess);
         return 0;
     }
@@ -2695,7 +2694,7 @@ col_session_reclaim_quiescent(wl_col_session_t *sess)
         return;
     if (!wl_mem_ledger_over_budget(&sess->mem_ledger)
         && !wl_mem_ledger_subsys_over_budget(&sess->mem_ledger,
-            WL_MEM_SUBSYS_CACHE))
+        WL_MEM_SUBSYS_CACHE))
         return;
     (void)wl_mem_ledger_reclaim(&sess->mem_ledger);
 }

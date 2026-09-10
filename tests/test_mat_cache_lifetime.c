@@ -136,7 +136,10 @@ test_lru_preserves_pinned_entry(void)
     ASSERT_TRUE(col_mat_cache_lookup(&cache, left[0], right[0]) == result[0],
         "LRU preserves the pinned entry");
     col_mat_cache_pin_release(&pin);
+    /* The legacy lookup above also holds a pin until the epoch ends. */
+    col_mat_cache_release_pins(&cache);
     col_mat_cache_clear(&cache);
+    ASSERT_TRUE(cache.count == 0, "quiescent cache clear releases all entries");
 
     /* Entries inserted into the cache are cache-owned after success. */
     for (size_t i = 0; i < COL_MAT_CACHE_MAX + 1; i++) {
