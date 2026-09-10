@@ -26,6 +26,7 @@
 #include "../wirelog/session.h"
 #include "../wirelog/session_facts.h"
 #include "../wirelog/wirelog.h"
+#include "../wirelog/columnar/internal.h"
 
 #include <inttypes.h>
 #include <stdint.h>
@@ -42,29 +43,29 @@ static int pass_count = 0;
 static int fail_count = 0;
 
 #define TEST(name)                                      \
-    do {                                                \
-        test_count++;                                   \
-        printf("TEST %d: %s ... ", test_count, (name)); \
-    } while (0)
+        do {                                                \
+            test_count++;                                   \
+            printf("TEST %d: %s ... ", test_count, (name)); \
+        } while (0)
 
 #define PASS()            \
-    do {                  \
-        pass_count++;     \
-        printf("PASS\n"); \
-    } while (0)
+        do {                  \
+            pass_count++;     \
+            printf("PASS\n"); \
+        } while (0)
 
 #define FAIL(msg)                    \
-    do {                             \
-        fail_count++;                \
-        printf("FAIL: %s\n", (msg)); \
-        return;                      \
-    } while (0)
+        do {                             \
+            fail_count++;                \
+            printf("FAIL: %s\n", (msg)); \
+            return;                      \
+        } while (0)
 
 #define ASSERT(cond, msg) \
-    do {                  \
-        if (!(cond))      \
+        do {                  \
+            if (!(cond))      \
             FAIL(msg);    \
-    } while (0)
+        } while (0)
 
 /* ----------------------------------------------------------------
  * Helpers
@@ -83,7 +84,7 @@ noop_cb(const char *r, const int64_t *row, uint32_t nc, void *u)
  * Caller owns *out_sess, *out_plan, *out_prog and must free them. */
 static int
 make_session(const char *src, wl_session_t **out_sess, wl_plan_t **out_plan,
-             wirelog_program_t **out_prog)
+    wirelog_program_t **out_prog)
 {
     wirelog_error_t err;
     wirelog_program_t *prog = wirelog_parse_string(src, &err);
@@ -135,6 +136,50 @@ free_session(wl_session_t *sess, wl_plan_t *plan, wirelog_program_t *prog)
     wirelog_program_free(prog);
 }
 
+static void
+test_same_nrows_mutation_rebuilds_arrangement(void)
+{
+    TEST("Same-nrows mutation invalidates arrangement snapshot");
+    const char *src = ".decl valueFlow(z: int32, x: int32)\n"
+        "valueFlow(10, 1). valueFlow(20, 2).\n"
+        "valueFlow(30, 3). valueFlow(40, 4).\n";
+    wl_session_t *sess = NULL;
+    wl_plan_t *plan = NULL;
+    wirelog_program_t *prog = NULL;
+    ASSERT(make_session(src, &sess, &plan, &prog) == 0,
+        "session creation failed");
+    uint32_t key_cols[1] = { 0 };
+    col_arrangement_t *arr
+        = col_session_get_arrangement(sess, "valueFlow", key_cols, 1);
+    ASSERT(arr != NULL, "initial arrangement must build");
+
+    col_rel_t *rel = NULL;
+    wl_col_session_t *internal = COL_SESSION(sess);
+    for (uint32_t i = 0; i < internal->nrels; i++) {
+        if (internal->rels[i] && internal->rels[i]->name
+            && strcmp(internal->rels[i]->name, "valueFlow") == 0) {
+            rel = internal->rels[i];
+            break;
+        }
+    }
+    ASSERT(rel != NULL, "source relation must be found");
+    int64_t changed = 99;
+    ASSERT(col_rel_set(rel, 0, 0, changed) == 0,
+        "same-nrows mutation must succeed");
+
+    col_arrangement_t *rebuilt
+        = col_session_get_arrangement(sess, "valueFlow", key_cols, 1);
+    ASSERT(rebuilt == arr, "registry entry remains stable");
+    int64_t key[1] = { 99 };
+    ASSERT(col_arrangement_find_first_typed(rebuilt, rel, key) != UINT32_MAX,
+        "rebuilt arrangement contains changed key");
+    key[0] = 10;
+    ASSERT(col_arrangement_find_first_typed(rebuilt, rel, key) == UINT32_MAX,
+        "rebuilt arrangement drops old key");
+    free_session(sess, plan, prog);
+    PASS();
+}
+
 /* ================================================================
  * Test 1: First get_arrangement call builds the index
  *
@@ -149,16 +194,16 @@ test_first_call_builds_index(void)
 
     /* valueFlow-like: 2 columns (z, x); 4 base facts */
     const char *src = ".decl valueFlow(z: int32, x: int32)\n"
-                      "valueFlow(10, 1). valueFlow(20, 2).\n"
-                      "valueFlow(30, 3). valueFlow(40, 4).\n"
-                      ".decl sink(z: int32, x: int32)\n"
-                      "sink(z, x) :- valueFlow(z, x).\n";
+        "valueFlow(10, 1). valueFlow(20, 2).\n"
+        "valueFlow(30, 3). valueFlow(40, 4).\n"
+        ".decl sink(z: int32, x: int32)\n"
+        "sink(z, x) :- valueFlow(z, x).\n";
 
     wl_session_t *sess = NULL;
     wl_plan_t *plan = NULL;
     wirelog_program_t *prog = NULL;
     ASSERT(make_session(src, &sess, &plan, &prog) == 0,
-           "session creation failed");
+        "session creation failed");
 
     /* Request arrangement on col 0 (z key) */
     uint32_t key_cols[1] = { 0 };
@@ -167,7 +212,7 @@ test_first_call_builds_index(void)
 
     ASSERT(arr != NULL, "arrangement must be non-NULL for existing relation");
     ASSERT(arr->indexed_rows > 0,
-           "first call must build index (indexed_rows > 0)");
+        "first call must build index (indexed_rows > 0)");
     ASSERT(arr->indexed_rows == 4, "indexed_rows must equal fact count (4)");
 
     free_session(sess, plan, prog);
@@ -187,16 +232,16 @@ test_second_call_same_pointer(void)
     TEST("Second get_arrangement call: same pointer (cache hit)");
 
     const char *src = ".decl valueFlow(z: int32, x: int32)\n"
-                      "valueFlow(10, 1). valueFlow(20, 2).\n"
-                      "valueFlow(30, 3). valueFlow(40, 4).\n"
-                      ".decl sink(z: int32, x: int32)\n"
-                      "sink(z, x) :- valueFlow(z, x).\n";
+        "valueFlow(10, 1). valueFlow(20, 2).\n"
+        "valueFlow(30, 3). valueFlow(40, 4).\n"
+        ".decl sink(z: int32, x: int32)\n"
+        "sink(z, x) :- valueFlow(z, x).\n";
 
     wl_session_t *sess = NULL;
     wl_plan_t *plan = NULL;
     wirelog_program_t *prog = NULL;
     ASSERT(make_session(src, &sess, &plan, &prog) == 0,
-           "session creation failed");
+        "session creation failed");
 
     uint32_t key_cols[1] = { 0 };
 
@@ -211,7 +256,7 @@ test_second_call_same_pointer(void)
     ASSERT(arr_r9 != NULL, "R9 arrangement must be non-NULL");
 
     ASSERT(arr_r6 == arr_r9,
-           "R6 and R9 must receive same arrangement pointer (cache hit)");
+        "R6 and R9 must receive same arrangement pointer (cache hit)");
 
     free_session(sess, plan, prog);
     PASS();
@@ -230,17 +275,17 @@ test_no_rebuild_between_rules(void)
     TEST("No rebuild between rules: indexed_rows unchanged on 2nd/3rd call");
 
     const char *src = ".decl valueFlow(z: int32, x: int32)\n"
-                      "valueFlow(10, 1). valueFlow(20, 2).\n"
-                      "valueFlow(30, 3). valueFlow(40, 4).\n"
-                      "valueFlow(50, 5).\n"
-                      ".decl sink(z: int32, x: int32)\n"
-                      "sink(z, x) :- valueFlow(z, x).\n";
+        "valueFlow(10, 1). valueFlow(20, 2).\n"
+        "valueFlow(30, 3). valueFlow(40, 4).\n"
+        "valueFlow(50, 5).\n"
+        ".decl sink(z: int32, x: int32)\n"
+        "sink(z, x) :- valueFlow(z, x).\n";
 
     wl_session_t *sess = NULL;
     wl_plan_t *plan = NULL;
     wirelog_program_t *prog = NULL;
     ASSERT(make_session(src, &sess, &plan, &prog) == 0,
-           "session creation failed");
+        "session creation failed");
 
     uint32_t key_cols[1] = { 0 };
 
@@ -256,14 +301,14 @@ test_no_rebuild_between_rules(void)
         = col_session_get_arrangement(sess, "valueFlow", key_cols, 1);
     ASSERT(arr2 == arr, "must return same pointer");
     ASSERT(arr->indexed_rows == rows_after_r6,
-           "indexed_rows must be unchanged after second access (no rebuild)");
+        "indexed_rows must be unchanged after second access (no rebuild)");
 
     /* R10: third access */
     col_arrangement_t *arr3
         = col_session_get_arrangement(sess, "valueFlow", key_cols, 1);
     ASSERT(arr3 == arr, "third access must return same pointer");
     ASSERT(arr->indexed_rows == rows_after_r6,
-           "indexed_rows must be unchanged after third access");
+        "indexed_rows must be unchanged after third access");
 
     free_session(sess, plan, prog);
     PASS();
@@ -281,16 +326,16 @@ test_different_keycols_separate_entries(void)
     TEST("Different key_cols: separate cache entries (distinct pointers)");
 
     const char *src = ".decl valueFlow(z: int32, x: int32)\n"
-                      "valueFlow(10, 1). valueFlow(20, 2).\n"
-                      "valueFlow(30, 3).\n"
-                      ".decl sink(z: int32, x: int32)\n"
-                      "sink(z, x) :- valueFlow(z, x).\n";
+        "valueFlow(10, 1). valueFlow(20, 2).\n"
+        "valueFlow(30, 3).\n"
+        ".decl sink(z: int32, x: int32)\n"
+        "sink(z, x) :- valueFlow(z, x).\n";
 
     wl_session_t *sess = NULL;
     wl_plan_t *plan = NULL;
     wirelog_program_t *prog = NULL;
     ASSERT(make_session(src, &sess, &plan, &prog) == 0,
-           "session creation failed");
+        "session creation failed");
 
     /* Arrangement keyed on col 0 (z) */
     uint32_t key_col0[1] = { 0 };
@@ -305,7 +350,7 @@ test_different_keycols_separate_entries(void)
     ASSERT(arr_x != NULL, "arrangement on col 1 must be non-NULL");
 
     ASSERT(arr_z != arr_x,
-           "different key_cols must produce distinct cache entries");
+        "different key_cols must produce distinct cache entries");
 
     /* Both must be fully indexed */
     ASSERT(arr_z->indexed_rows == 3, "col-0 arrangement must index all 3 rows");
@@ -336,29 +381,29 @@ test_invalidation_resets_indexed_rows(void)
     TEST("Invalidation: indexed_rows reset to 0 immediately");
 
     const char *src = ".decl valueFlow(z: int32, x: int32)\n"
-                      "valueFlow(10, 1). valueFlow(20, 2).\n"
-                      "valueFlow(30, 3). valueFlow(40, 4).\n"
-                      ".decl sink(z: int32, x: int32)\n"
-                      "sink(z, x) :- valueFlow(z, x).\n";
+        "valueFlow(10, 1). valueFlow(20, 2).\n"
+        "valueFlow(30, 3). valueFlow(40, 4).\n"
+        ".decl sink(z: int32, x: int32)\n"
+        "sink(z, x) :- valueFlow(z, x).\n";
 
     wl_session_t *sess = NULL;
     wl_plan_t *plan = NULL;
     wirelog_program_t *prog = NULL;
     ASSERT(make_session(src, &sess, &plan, &prog) == 0,
-           "session creation failed");
+        "session creation failed");
 
     uint32_t key_cols[1] = { 0 };
     col_arrangement_t *arr
         = col_session_get_arrangement(sess, "valueFlow", key_cols, 1);
     ASSERT(arr != NULL, "arrangement must be non-NULL");
     ASSERT(arr->indexed_rows == 4,
-           "indexed_rows must be 4 before invalidation");
+        "indexed_rows must be 4 before invalidation");
 
     /* Simulate iteration boundary: invalidate */
     col_session_invalidate_arrangements(sess, "valueFlow");
 
     ASSERT(arr->indexed_rows == 0,
-           "indexed_rows must be 0 immediately after invalidation");
+        "indexed_rows must be 0 immediately after invalidation");
 
     free_session(sess, plan, prog);
     PASS();
@@ -377,16 +422,16 @@ test_rebuild_after_invalidation(void)
     TEST("Rebuild after invalidation: indexed_rows restored to N");
 
     const char *src = ".decl valueFlow(z: int32, x: int32)\n"
-                      "valueFlow(10, 1). valueFlow(20, 2).\n"
-                      "valueFlow(30, 3). valueFlow(40, 4).\n"
-                      ".decl sink(z: int32, x: int32)\n"
-                      "sink(z, x) :- valueFlow(z, x).\n";
+        "valueFlow(10, 1). valueFlow(20, 2).\n"
+        "valueFlow(30, 3). valueFlow(40, 4).\n"
+        ".decl sink(z: int32, x: int32)\n"
+        "sink(z, x) :- valueFlow(z, x).\n";
 
     wl_session_t *sess = NULL;
     wl_plan_t *plan = NULL;
     wirelog_program_t *prog = NULL;
     ASSERT(make_session(src, &sess, &plan, &prog) == 0,
-           "session creation failed");
+        "session creation failed");
 
     uint32_t key_cols[1] = { 0 };
 
@@ -395,7 +440,7 @@ test_rebuild_after_invalidation(void)
         = col_session_get_arrangement(sess, "valueFlow", key_cols, 1);
     ASSERT(arr != NULL, "arrangement must be non-NULL");
     ASSERT(arr->indexed_rows == 4,
-           "indexed_rows must be 4 before invalidation");
+        "indexed_rows must be 4 before invalidation");
 
     /* Invalidate (iteration boundary) */
     col_session_invalidate_arrangements(sess, "valueFlow");
@@ -406,7 +451,7 @@ test_rebuild_after_invalidation(void)
         = col_session_get_arrangement(sess, "valueFlow", key_cols, 1);
     ASSERT(arr2 != NULL, "arrangement must be non-NULL after rebuild");
     ASSERT(arr2->indexed_rows == 4,
-           "indexed_rows must be restored to 4 after rebuild");
+        "indexed_rows must be restored to 4 after rebuild");
 
     free_session(sess, plan, prog);
     PASS();
@@ -423,19 +468,19 @@ test_invalidation_scope(void)
     TEST("Invalidation scope: only named relation is reset");
 
     const char *src = ".decl valueFlow(z: int32, x: int32)\n"
-                      "valueFlow(10, 1). valueFlow(20, 2).\n"
-                      ".decl edge(a: int32, b: int32)\n"
-                      "edge(1, 2). edge(2, 3). edge(3, 4).\n"
-                      ".decl sink(z: int32, x: int32)\n"
-                      "sink(z, x) :- valueFlow(z, x).\n"
-                      ".decl reach(a: int32, b: int32)\n"
-                      "reach(a, b) :- edge(a, b).\n";
+        "valueFlow(10, 1). valueFlow(20, 2).\n"
+        ".decl edge(a: int32, b: int32)\n"
+        "edge(1, 2). edge(2, 3). edge(3, 4).\n"
+        ".decl sink(z: int32, x: int32)\n"
+        "sink(z, x) :- valueFlow(z, x).\n"
+        ".decl reach(a: int32, b: int32)\n"
+        "reach(a, b) :- edge(a, b).\n";
 
     wl_session_t *sess = NULL;
     wl_plan_t *plan = NULL;
     wirelog_program_t *prog = NULL;
     ASSERT(make_session(src, &sess, &plan, &prog) == 0,
-           "session creation failed");
+        "session creation failed");
 
     uint32_t key_cols[1] = { 0 };
 
@@ -453,9 +498,9 @@ test_invalidation_scope(void)
     col_session_invalidate_arrangements(sess, "valueFlow");
 
     ASSERT(arr_vf->indexed_rows == 0,
-           "valueFlow indexed_rows must be 0 after invalidation");
+        "valueFlow indexed_rows must be 0 after invalidation");
     ASSERT(arr_edge->indexed_rows == 3,
-           "edge indexed_rows must be unchanged (not invalidated)");
+        "edge indexed_rows must be unchanged (not invalidated)");
 
     free_session(sess, plan, prog);
     PASS();
@@ -480,17 +525,17 @@ test_valueflow_z_key_cache_reuse(void)
     /* valueFlow with 6 facts, 2 columns (z, x).
      * Three rules (R6, R9, R10) all join on col 0 = z. */
     const char *src = ".decl valueFlow(z: int32, x: int32)\n"
-                      "valueFlow(10, 1). valueFlow(20, 2).\n"
-                      "valueFlow(30, 3). valueFlow(40, 4).\n"
-                      "valueFlow(50, 5). valueFlow(60, 6).\n"
-                      ".decl result(z: int32, x: int32)\n"
-                      "result(z, x) :- valueFlow(z, x).\n";
+        "valueFlow(10, 1). valueFlow(20, 2).\n"
+        "valueFlow(30, 3). valueFlow(40, 4).\n"
+        "valueFlow(50, 5). valueFlow(60, 6).\n"
+        ".decl result(z: int32, x: int32)\n"
+        "result(z, x) :- valueFlow(z, x).\n";
 
     wl_session_t *sess = NULL;
     wl_plan_t *plan = NULL;
     wirelog_program_t *prog = NULL;
     ASSERT(make_session(src, &sess, &plan, &prog) == 0,
-           "session creation failed");
+        "session creation failed");
 
     uint32_t key_col_z[1] = { 0 }; /* col 0 = z */
 
@@ -507,14 +552,14 @@ test_valueflow_z_key_cache_reuse(void)
     ASSERT(arr_r9 != NULL, "R9: arrangement must be non-NULL");
     ASSERT(arr_r9 == arr_r6, "R9: must receive same pointer as R6 (cache hit)");
     ASSERT(arr_r9->indexed_rows == rows_at_r6,
-           "R9: indexed_rows must be unchanged (no rebuild between R6 and R9)");
+        "R9: indexed_rows must be unchanged (no rebuild between R6 and R9)");
 
     /* R10 accesses same arrangement */
     col_arrangement_t *arr_r10
         = col_session_get_arrangement(sess, "valueFlow", key_col_z, 1);
     ASSERT(arr_r10 != NULL, "R10: arrangement must be non-NULL");
     ASSERT(arr_r10 == arr_r6,
-           "R10: must receive same pointer as R6 (cache hit)");
+        "R10: must receive same pointer as R6 (cache hit)");
     ASSERT(
         arr_r10->indexed_rows == rows_at_r6,
         "R10: indexed_rows must be unchanged (no rebuild between R9 and R10)");
@@ -522,15 +567,15 @@ test_valueflow_z_key_cache_reuse(void)
     /* Verify that invalidation (iteration boundary) is what resets it */
     col_session_invalidate_arrangements(sess, "valueFlow");
     ASSERT(arr_r6->indexed_rows == 0,
-           "indexed_rows must be 0 after iteration boundary invalidation");
+        "indexed_rows must be 0 after iteration boundary invalidation");
 
     /* After iteration boundary: next rule access rebuilds */
     col_arrangement_t *arr_next_iter
         = col_session_get_arrangement(sess, "valueFlow", key_col_z, 1);
     ASSERT(arr_next_iter != NULL,
-           "post-invalidation get_arrangement must return non-NULL");
+        "post-invalidation get_arrangement must return non-NULL");
     ASSERT(arr_next_iter->indexed_rows == 6,
-           "post-invalidation: index must be fully rebuilt (indexed_rows = 6)");
+        "post-invalidation: index must be fully rebuilt (indexed_rows = 6)");
 
     free_session(sess, plan, prog);
     PASS();
@@ -553,6 +598,7 @@ main(void)
     test_rebuild_after_invalidation();
     test_invalidation_scope();
     test_valueflow_z_key_cache_reuse();
+    test_same_nrows_mutation_rebuilds_arrangement();
 
     printf("\nResults: %d/%d passed", pass_count, test_count);
     if (fail_count > 0)

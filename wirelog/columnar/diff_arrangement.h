@@ -18,6 +18,12 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+typedef struct col_relation_snapshot {
+    uint64_t relation_identity;
+    uint64_t view_generation;
+    uint64_t storage_generation;
+} col_relation_snapshot_t;
+
 /**
  * col_diff_arrangement - Delta-aware hash table for incremental indexing.
  *
@@ -44,6 +50,7 @@ typedef struct col_diff_arrangement {
     uint32_t *ht_next;
     uint32_t nbuckets;
     uint32_t ht_cap;
+    col_relation_snapshot_t source_snapshot;
     /* Issue #1380: when non-NULL, the struct, key_cols, ht_head and ht_next
     * bytes are charged to WL_MEM_SUBSYS_ARRANGEMENT on this ledger.  NULL
     * until col_diff_arrangement_attach_ledger(); deep copies start NULL. */

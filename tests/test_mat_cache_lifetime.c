@@ -248,6 +248,58 @@ test_copy_survives_cache_eviction(void)
     col_rel_destroy(right);
 }
 
+static void
+test_snapshot_invalidates_same_shape_and_poisoned_generations(void)
+{
+    tests_run++;
+    col_mat_cache_t cache = { 0 };
+    col_rel_t *left = make_relation(6000);
+    col_rel_t *right = make_relation(6001);
+    col_rel_t *result = make_relation(6002);
+    ASSERT_TRUE(left && right && result, "snapshot relations allocated");
+    ASSERT_TRUE(col_mat_cache_insert(&cache, left, right, result) == 0,
+        "snapshot cache insert succeeds");
+    ASSERT_TRUE(col_mat_cache_lookup(&cache, left, right) == result,
+        "matching snapshot is a hit");
+
+    /* Keep nrows and the first row shape unchanged while changing the view. */
+    ASSERT_TRUE(col_rel_set(left, 0, 0, 6999) == 0,
+        "same-shape mutation succeeds");
+    ASSERT_TRUE(col_mat_cache_lookup(&cache, left, right) == NULL,
+        "same-nrows mutation is a miss");
+
+    /* A poisoned generation is never evidence of freshness. */
+    left->view_generation = WL_COLUMNAR_REL_GENERATION_INVALID;
+    ASSERT_TRUE(col_mat_cache_lookup(&cache, left, right) == NULL,
+        "invalid generation is always a miss");
+
+    /* Mutating beyond the legacy 100-row hash prefix is still stale. */
+    col_mat_cache_t long_cache = { 0 };
+    col_rel_t *long_left = col_rel_new_auto("long-left", 1);
+    col_rel_t *long_right = make_relation(7001);
+    col_rel_t *long_result = make_relation(7002);
+    ASSERT_TRUE(long_left && long_right && long_result,
+        "long snapshot relations allocated");
+    for (int64_t i = 0; i < 101; i++)
+        ASSERT_TRUE(col_rel_append_row(long_left, &i) == 0,
+            "long relation row append succeeds");
+    ASSERT_TRUE(col_mat_cache_insert(&long_cache, long_left, long_right,
+        long_result) == 0, "long snapshot cache insert succeeds");
+    ASSERT_TRUE(col_mat_cache_lookup(&long_cache, long_left, long_right)
+        == long_result, "long snapshot initially hits");
+    ASSERT_TRUE(col_rel_set(long_left, 100, 0, 7999) == 0,
+        "outside-prefix mutation succeeds");
+    ASSERT_TRUE(col_mat_cache_lookup(&long_cache, long_left, long_right)
+        == NULL, "outside-prefix mutation is a miss");
+    col_mat_cache_clear(&long_cache);
+    col_rel_destroy(long_left);
+    col_rel_destroy(long_right);
+
+    col_mat_cache_clear(&cache);
+    col_rel_destroy(left);
+    col_rel_destroy(right);
+}
+
 int
 main(void)
 {
@@ -256,6 +308,7 @@ main(void)
     test_lru_preserves_pinned_entry();
     test_all_pinned_insert_retains_callers_ownership();
     test_copy_survives_cache_eviction();
+    test_snapshot_invalidates_same_shape_and_poisoned_generations();
     printf("materialization-cache lifetime: %d tests, %d failures\n",
         tests_run, tests_failed);
     return tests_failed == 0 ? 0 : 1;

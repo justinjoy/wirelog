@@ -78,6 +78,7 @@ col_diff_arrangement_create(const uint32_t *key_cols, uint32_t key_count,
     arr->worker_id = worker_id;
     arr->nbuckets = DIFF_ARRANGEMENT_INITIAL_BUCKETS;
     arr->ht_cap = DIFF_ARRANGEMENT_INITIAL_BUCKETS;
+    arr->source_snapshot = (col_relation_snapshot_t){ 0, 0, 0 };
     arr->ledger = NULL;
 
     arr->ht_head = calloc(arr->ht_cap, sizeof(uint32_t));
@@ -162,6 +163,7 @@ col_diff_arrangement_deep_copy(const col_diff_arrangement_t *arr)
     copy->worker_id = arr->worker_id;
     copy->nbuckets = arr->nbuckets;
     copy->ht_cap = arr->ht_cap;
+    copy->source_snapshot = arr->source_snapshot;
     /* The copy belongs to whoever asked for it (a worker session); the
     * caller attaches the right ledger.  Never inherit the source's. */
     copy->ledger = NULL;
